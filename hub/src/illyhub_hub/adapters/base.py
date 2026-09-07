@@ -1,0 +1,140 @@
+"""Adapter interfaces shared by the real protocol adapters and the fakes.
+
+Phase 0 covers connection lifecycle, status, and event fan-out. Command methods (transport,
+volume, seek, power) arrive in Phase 1; the abstract classes below leave explicit hooks.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import random
+from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from ..logsetup import get_logger
+from ..state import ConnectionStatus, ConnState, StateStore
+from ..tasks import cancel_all, spawn
+
+
+class AdapterEvent(BaseModel):
+    """Normalized event emitted by an adapter after it has updated the StateStore."""
+
+    kind: str
+    adapter: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+EventCallback = Callable[[AdapterEvent], Awaitable[None] | None]
+
+
+class Backoff:
+    """Exponential backoff, capped, with jitter applied *inside* the cap.
+
+    ``next()`` returns ``min(cap, base * 2**attempt) * (1 - U(0, jitter))``. The attempt counter
+    is clamped so ``2**attempt`` cannot overflow on a long outage.
+    """
+
+    MAX_ATTEMPT = 20
+
+    def __init__(self, base: float = 1.0, cap: float = 60.0, jitter: float = 0.2) -> None:
+        self.base, self.cap, self.jitter = base, cap, jitter
+        self.attempt = 0
+
+    def next(self) -> float:
+        delay = min(self.cap, self.base * (2**self.attempt))
+        self.attempt = min(self.attempt + 1, self.MAX_ATTEMPT)
+        return delay * (1 - random.uniform(0, self.jitter))
+
+    def reset(self) -> None:
+        self.attempt = 0
+
+
+class BaseAdapter(ABC):
+    """Common lifecycle: connect/disconnect, connection status, event subscription.
+
+    ``status()`` reads through to the store so ``since`` timestamps agree everywhere.
+    Background work goes through :meth:`_spawn` so :meth:`_cancel_tasks` can stop it.
+    """
+
+    name: str = "adapter"
+
+    def __init__(self, store: StateStore) -> None:
+        self.store = store
+        self.log = get_logger(f"adapter.{self.name}")
+        self._callbacks: list[EventCallback] = []
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._connected_at: float | None = None
+
+    # -- lifecycle ------------------------------------------------------------------
+
+    @abstractmethod
+    async def connect(self) -> None: ...
+
+    @abstractmethod
+    async def disconnect(self) -> None: ...
+
+    def status(self) -> ConnectionStatus:
+        return self.store.state.connections.get(self.name, ConnectionStatus(state="disconnected"))
+
+    def _set_status(self, state: ConnState, error: str | None = None) -> None:
+        self.store.set_connection(self.name, state, error)
+
+    def _spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any] | None:
+        return spawn(coro, self._tasks)
+
+    async def _cancel_tasks(self) -> None:
+        await cancel_all(self._tasks)
+
+    # -- backoff bookkeeping --------------------------------------------------------
+
+    def _mark_connected(self) -> None:
+        self._connected_at = asyncio.get_running_loop().time()
+
+    def _held_at_least(self, seconds: float) -> bool:
+        """True when the last connection stayed up for ``seconds``; used to gate backoff reset."""
+        if self._connected_at is None:
+            return False
+        return asyncio.get_running_loop().time() - self._connected_at >= seconds
+
+    # -- events ---------------------------------------------------------------------
+
+    def on_event(self, callback: EventCallback) -> Callable[[], None]:
+        self._callbacks.append(callback)
+
+        def unsubscribe() -> None:
+            if callback in self._callbacks:
+                self._callbacks.remove(callback)
+
+        return unsubscribe
+
+    def _emit(self, kind: str, **payload: Any) -> None:
+        event = AdapterEvent(kind=kind, adapter=self.name, payload=payload)
+        for cb in list(self._callbacks):
+            try:
+                result = cb(event)
+            except Exception:  # noqa: BLE001 - one bad listener must not break the adapter
+                self.log.exception("event callback failed", extra={"extra": {"kind": kind}})
+                continue
+            if asyncio.iscoroutine(result):
+                self._spawn(result)
+
+
+class HeosAdapter(BaseAdapter, ABC):
+    name = "heos"
+    # TODO(Phase 1): set_play_state, play_next/previous, seek, set_volume, set_mute, set_group
+
+
+class SonosAdapter(BaseAdapter, ABC):
+    name = "sonos"
+    # TODO(Phase 1): transport, seek, set_volume, set_mute, join/unjoin, position poll
+
+
+class DenonAdapter(BaseAdapter, ABC):
+    name = "denon"
+
+    @abstractmethod
+    async def set_power(self, zone_id: str, on: bool) -> None:
+        """Zone power is the only Denon command Phase 0 declares (ZON-1)."""

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.illyhub.hub</string>
+
+  <!-- caffeinate -s keeps the Mac awake while the hub runs (sleep insurance on top of Energy settings). -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-s</string>
+    <string>__UV__</string>
+    <string>run</string>
+    <string>--project</string>
+    <string>__REPO__/hub</string>
+    <string>hub</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO__/hub</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HUB_ENV_FILE</key>
+    <string>__REPO__/hub/.env</string>
+    <!-- The hub rotates its own log (10 MB x 7). launchd's stdout/err files below only catch
+         output before logging is configured (import errors, uvicorn bind failures). -->
+    <key>HUB_LOG_FILE</key>
+    <string>__LOGDIR__/hub.log</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- Back off if the hub crash-loops so launchd does not spin. -->
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+
+  <key>StandardOutPath</key>
+  <string>__LOGDIR__/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOGDIR__/launchd.err.log</string>
+
+  <key>ProcessType</key>
+  <string>Interactive</string>
+</dict>
+</plist>
