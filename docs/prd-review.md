@@ -81,6 +81,14 @@ Decision 2 (PWA first) is right, but three facts should be in the PRD:
 
 ---
 
+## 6a. Found during the Phase 1 build: HEOS cannot seek
+
+The HEOS CLI protocol has no seek command (verified against the CLI specification and pyheos 1.x; player commands are play/pause/stop/next/previous/volume/mute/play-mode/queue only). Consequences:
+
+- CTL-3 and CTL-4 apply to Sonos only. HEOS sides carry `supports_seek=false`, and the hub returns `unsupported_action` for seek and skip on HEOS targets. The PWA renders the scrubber and ±15 disabled for HEOS sides, as it already does for radio sources.
+- CTL-6 drift correction cannot nudge the HEOS side. The sync engine should treat HEOS as the clock master and always correct by seeking Sonos, forward or backward. That covers both signs of drift and removes the leader/laggard decision.
+- Position on HEOS is still readable via `player_now_playing_progress` events, so the scrubber can display position on HEOS; it just cannot be dragged.
+
 ## 7. Recommended changes to the build plan
 
 1. Add two go/no-go gates to Phase 0: the concurrent-stream manual test (§1.1) and the Tidal-ID-to-both-refs spike (§2.1). Together they take under a day and de-risk Phases 3 and 4.
@@ -89,3 +97,4 @@ Decision 2 (PWA first) is right, but three facts should be in the PRD:
 4. Adopt "browse via service API, play by ID" as the Phase 3 architecture; demote SoCo MusicService browsing to a fallback.
 5. Add queue view and search as Phase 3 P1 items so the API surface is shaped for them.
 6. Re-scope the Phase 6 HEOS spike as "yt-dlp plus hub proxy," time-boxed to two days.
+7. Record the HEOS no-seek constraint (§6a) in the PRD CTL notes and §7, and make Sonos the corrected side in the sync engine.

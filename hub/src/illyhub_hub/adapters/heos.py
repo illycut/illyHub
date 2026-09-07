@@ -1,28 +1,34 @@
 """HEOS adapter over ``pyheos``: one persistent CLI socket, heartbeat, reconnect with backoff.
 
+Commands map onto ``pyheos.HeosPlayer`` methods and ``Heos.set_group``. The HEOS CLI protocol
+has **no seek command** (player commands stop at play/pause/stop, next/previous, volume, mute,
+play modes and queue operations), so :meth:`PyHeosAdapter.seek` raises
+:class:`UnsupportedCommandError` and HEOS players advertise ``supports_seek=False``. Position
+comes from ``player_now_playing_progress`` events, which fire right after the device's counter
+ticks, and is fed to the :class:`~illyhub_hub.positions.PositionTracker` as edge observations.
+
 Verified only against a mocked ``pyheos.Heos``; no physical HEOS device has been exercised.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
 from ..config import Settings
+from ..positions import PositionTracker
 from ..state import (
     Art,
     Capabilities,
     GroupTopology,
     NowPlaying,
     Player,
-    Position,
     StateStore,
-    now,
     side_id_for,
 )
 from ..tasks import stop_task
-from .base import Backoff, HeosAdapter
+from .base import Backoff, HeosAdapter, UnsupportedCommandError
 
 EVENT_PLAYERS_CHANGED = "event/players_changed"
 EVENT_GROUPS_CHANGED = "event/groups_changed"
@@ -42,6 +48,7 @@ class HeosClient(Protocol):
     def add_on_connected(self, cb: Callable[[], Any]) -> Callable[[], None]: ...
     def add_on_disconnected(self, cb: Callable[[], Any]) -> Callable[[], None]: ...
     def add_on_controller_event(self, cb: Callable[[str, Any], Any]) -> Callable[[], None]: ...
+    async def set_group(self, player_ids: Sequence[int]) -> None: ...
 
 
 HeosFactory = Callable[[str, Settings], HeosClient]
@@ -64,13 +71,34 @@ def player_id(pid: int | str) -> str:
     return f"heos-{pid}"
 
 
+def raw_pid(player_id_: str) -> int:
+    """``heos-12`` -> 12. Raises ValueError for ids that are not HEOS players."""
+    prefix = "heos-"
+    if not player_id_.startswith(prefix) or player_id_.startswith("heos-g"):
+        raise ValueError(f"not a HEOS player id: {player_id_!r}")
+    return int(player_id_[len(prefix) :])
+
+
 def group_id(gid: int | str) -> str:
     return f"heos-g{gid}"
 
 
-def _play_state(raw: Any) -> str:
+def _enum_value(raw: Any) -> str:
+    """pyheos uses StrEnums; unwrap to the plain string (or pass strings through)."""
     value = getattr(raw, "value", raw)
+    return str(value) if value is not None else ""
+
+
+def _play_state(raw: Any) -> str:
+    value = _enum_value(raw)
     return value if value in ("play", "pause", "stop") else "unknown"
+
+
+def _controls(media: Any) -> set[str]:
+    """``supported_controls`` from pyheos ``HeosNowPlayingMedia`` as plain strings; empty when
+    the attribute is missing (older pyheos), in which case callers assume everything works."""
+    raw = getattr(media, "supported_controls", None)
+    return {_enum_value(c) for c in raw} if raw else set()
 
 
 class PyHeosAdapter(HeosAdapter):
@@ -80,15 +108,19 @@ class PyHeosAdapter(HeosAdapter):
         settings: Settings,
         host: str,
         factory: HeosFactory = default_heos_factory,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         super().__init__(store)
         self.settings = settings
         self.host = host
         self._factory = factory
+        self._clock = clock or (lambda: asyncio.get_running_loop().time())
         self._heos: HeosClient | None = None
         self._task: asyncio.Task[None] | None = None
         self._backoff = Backoff(cap=settings.reconnect_max_s)
         self._player_unsubs: dict[str, Callable[[], None]] = {}
+        self._raw_players: dict[str, Any] = {}
+        self._trackers: dict[str, PositionTracker] = {}
         self._disconnected = asyncio.Event()
         self._closing = False
 
@@ -113,6 +145,7 @@ class PyHeosAdapter(HeosAdapter):
         for unsub in self._player_unsubs.values():
             unsub()
         self._player_unsubs.clear()
+        self._raw_players.clear()
         heos, self._heos = self._heos, None
         if heos is not None:
             try:
@@ -160,14 +193,22 @@ class PyHeosAdapter(HeosAdapter):
         for pid, raw in players.items():
             p = self._to_player(pid, raw)
             seen.add(p.id)
+            self._raw_players[p.id] = raw
             self.store.upsert_player(p)
-            if p.id not in self._player_unsubs and hasattr(raw, "add_on_player_event"):
-                self._player_unsubs[p.id] = raw.add_on_player_event(
-                    lambda event, _raw=raw, _pid=pid: self._on_player_event(_pid, _raw, event)
-                )
+            if p.id not in self._player_unsubs:
+                if callable(getattr(raw, "add_on_player_event", None)):
+                    self._player_unsubs[p.id] = raw.add_on_player_event(
+                        lambda event, _raw=raw, _pid=pid: self._on_player_event(_pid, _raw, event)
+                    )
+                else:
+                    self.log.warning(
+                        "pyheos player has no add_on_player_event; live updates disabled",
+                        extra={"extra": {"player": p.id}},
+                    )
         for stale in [pid for pid in self.store.state.players if pid.startswith("heos-")]:
             if stale not in seen:
                 self.store.remove_player(stale)
+                self._raw_players.pop(stale, None)
                 unsub = self._player_unsubs.pop(stale, None)
                 if unsub:
                     unsub()
@@ -208,8 +249,60 @@ class PyHeosAdapter(HeosAdapter):
             muted=bool(getattr(raw, "is_muted", False)),
             play_state=_play_state(getattr(raw, "state", "unknown")),  # type: ignore[arg-type]
             group_id=existing.group_id if existing else None,
-            capabilities=Capabilities(supports_power=True),
+            # The HEOS CLI cannot seek; see module docstring.
+            capabilities=Capabilities(supports_power=True, supports_seek=False),
         )
+
+    # -- commands (Phase 1) ---------------------------------------------------------
+
+    def _raw(self, player_id_: str) -> Any:
+        raw = self._raw_players.get(player_id_)
+        if raw is None or self._heos is None:
+            raise ConnectionError(f"HEOS player {player_id_!r} is not available")
+        return raw
+
+    async def play(self, player_id: str) -> None:
+        await self._raw(player_id).play()
+
+    async def pause(self, player_id: str) -> None:
+        await self._raw(player_id).pause()
+
+    async def stop(self, player_id: str) -> None:
+        await self._raw(player_id).stop()
+
+    async def next(self, player_id: str) -> None:
+        await self._raw(player_id).play_next()
+
+    async def previous(self, player_id: str) -> None:
+        await self._raw(player_id).play_previous()
+
+    async def seek(self, player_id: str, position_ms: int) -> None:
+        raise UnsupportedCommandError("the HEOS CLI protocol has no seek command")
+
+    async def set_volume(self, player_id: str, level: int) -> None:
+        await self._raw(player_id).set_volume(level)
+
+    async def set_mute(self, player_id: str, muted: bool) -> None:
+        await self._raw(player_id).set_mute(muted)
+
+    async def set_group(self, member_ids: list[str]) -> None:
+        """``group/set_group`` with the desired membership, leader first.
+
+        HEOS applies the list as the new group in one call (players not listed leave, new ones
+        join), so no diffing is needed here. A single id removes that player from its group;
+        if it is the leader, HEOS dissolves the group.
+        """
+        heos = self._heos
+        if heos is None:
+            raise ConnectionError("HEOS is not connected")
+        await heos.set_group([raw_pid(m) for m in member_ids])
+
+    async def dissolve(self, coordinator_id: str, member_ids: list[str]) -> None:
+        """HEOS dissolves a group only via the *leader's* pid (pyheos ``remove_group``)."""
+        heos = self._heos
+        if heos is None:
+            raise ConnectionError("HEOS is not connected")
+        await heos.set_group([raw_pid(coordinator_id)])
 
     def _side_id(self, pid: int) -> str | None:
         p = self.store.state.players.get(player_id(pid))
@@ -220,6 +313,8 @@ class PyHeosAdapter(HeosAdapter):
         if media is None:
             return
         duration = getattr(media, "duration", None)
+        controls = _controls(media)
+        is_station = _enum_value(getattr(media, "type", "")) == "station"
         self.store.set_now_playing(
             side_id_for(p),
             NowPlaying(
@@ -228,7 +323,9 @@ class PyHeosAdapter(HeosAdapter):
                 artist=getattr(media, "artist", None),
                 album=getattr(media, "album", None),
                 source=str(getattr(media, "source_id", "") or "") or None,
-                seekable=(getattr(media, "type", "") or "") != "station",
+                seekable=not is_station,  # the CLI cannot seek anyway; kept for the UI badge
+                supports_next="play_next" in controls if controls else not is_station,
+                supports_prev="play_previous" in controls if controls else not is_station,
                 duration_ms=int(duration) if duration else None,
                 track_id=str(getattr(media, "media_id", "") or "") or None,
             ),
@@ -276,6 +373,15 @@ class PyHeosAdapter(HeosAdapter):
             pos = getattr(media, "current_position", None)
             side = self._side_id(pid)
             if pos is not None and side:
-                self.store.set_position(
-                    side, Position(position_ms=int(pos), reported_at=now(), confidence=0.9)
-                )
+                self._observe_position(side, int(pos), p_id)
+
+    def _observe_position(self, side: str, position_ms: int, p_id: str) -> None:
+        """Progress events arrive right after the device ticks: an edge observation."""
+        tracker = self._trackers.setdefault(side, PositionTracker())
+        loop_now = self._clock()
+        playing = self.store.state.players[p_id].play_state == "play"
+        tracker.set_playing(playing, loop_now)
+        tracker.observe(position_ms, loop_now, is_edge=True)
+        position = tracker.to_position(loop_now)
+        if position is not None:
+            self.store.set_position(side, position)

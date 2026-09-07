@@ -1,7 +1,9 @@
 """Adapter interfaces shared by the real protocol adapters and the fakes.
 
-Phase 0 covers connection lifecycle, status, and event fan-out. Command methods (transport,
-volume, seek, power) arrive in Phase 1; the abstract classes below leave explicit hooks.
+Phase 0 covers connection lifecycle, status, and event fan-out. Phase 1 adds the command
+surface: :class:`PlaybackAdapter` for the two music ecosystems (transport, seek, volume, mute,
+grouping) and :class:`DenonAdapter.set_power` for amplifier zones. Adapters raise
+:class:`UnsupportedCommand` for anything their protocol cannot do (HEOS has no seek).
 """
 
 from __future__ import annotations
@@ -122,14 +124,60 @@ class BaseAdapter(ABC):
                 self._spawn(result)
 
 
-class HeosAdapter(BaseAdapter, ABC):
+class UnsupportedCommandError(Exception):
+    """The protocol has no way to perform this command (e.g. seek on the HEOS CLI)."""
+
+
+class PlaybackAdapter(BaseAdapter, ABC):
+    """Command surface for a music ecosystem. Player ids are hub ids (``heos-1``, ``sonos-…``).
+
+    Transport commands target the *coordinator* of a side; the router resolves that. Volume and
+    mute target individual players.
+
+    Grouping contract: ``set_group`` receives the **desired** full member list, coordinator
+    first, and the adapter reconciles it against the current topology (players not listed leave,
+    new ones join). A single-element list removes that player from whatever group it is in.
+    ``dissolve`` takes a side apart; vendors differ (HEOS needs the leader's id, Sonos has every
+    non-coordinator ``unjoin``), which is why the router does not express it via ``set_group``.
+    """
+
+    @abstractmethod
+    async def play(self, player_id: str) -> None: ...
+
+    @abstractmethod
+    async def pause(self, player_id: str) -> None: ...
+
+    @abstractmethod
+    async def stop(self, player_id: str) -> None: ...
+
+    @abstractmethod
+    async def next(self, player_id: str) -> None: ...
+
+    @abstractmethod
+    async def previous(self, player_id: str) -> None: ...
+
+    @abstractmethod
+    async def seek(self, player_id: str, position_ms: int) -> None: ...
+
+    @abstractmethod
+    async def set_volume(self, player_id: str, level: int) -> None: ...
+
+    @abstractmethod
+    async def set_mute(self, player_id: str, muted: bool) -> None: ...
+
+    @abstractmethod
+    async def set_group(self, member_ids: list[str]) -> None: ...
+
+    @abstractmethod
+    async def dissolve(self, coordinator_id: str, member_ids: list[str]) -> None: ...
+
+
+class HeosAdapter(PlaybackAdapter, ABC):
     name = "heos"
-    # TODO(Phase 1): set_play_state, play_next/previous, seek, set_volume, set_mute, set_group
 
 
-class SonosAdapter(BaseAdapter, ABC):
+class SonosAdapter(PlaybackAdapter, ABC):
     name = "sonos"
-    # TODO(Phase 1): transport, seek, set_volume, set_mute, join/unjoin, position poll
 
 
 class DenonAdapter(BaseAdapter, ABC):
@@ -137,4 +185,4 @@ class DenonAdapter(BaseAdapter, ABC):
 
     @abstractmethod
     async def set_power(self, zone_id: str, on: bool) -> None:
-        """Zone power is the only Denon command Phase 0 declares (ZON-1)."""
+        """Zone power (ZON-1). ``zone_id`` may be a bare key or the namespaced id."""

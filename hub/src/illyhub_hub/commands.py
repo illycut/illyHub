@@ -1,0 +1,608 @@
+"""Normalized commands, target resolution, and dispatch to protocol adapters.
+
+A **target** is a player id, a side id, or ``"all"``. Transport and seek commands resolve to
+sides and act on each side's coordinator; volume and mute resolve to players. Every command
+produces exactly one terminal :class:`Ack` per correlation id, carrying the state version the
+router observed after it ran (a lower bound for the effect, since device writes may still be
+in flight or coalesced). Multi-target commands apply to every target they can and report the
+ones that failed in ``partial``; ``ok`` is false only when nothing succeeded. Failures use the
+:class:`ErrorEnvelope` with a code from :data:`ERROR_CATALOGUE` and a message written as a plain
+statement of what did not happen.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import math
+import time
+from collections.abc import Awaitable, Callable, Iterable
+from datetime import UTC, datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+from .adapters.base import DenonAdapter, PlaybackAdapter, UnsupportedCommandError
+from .coalesce import Coalescer
+from .config import Vendor
+from .logsetup import correlation_id, get_logger
+from .state import HubState, Player, Side, StateStore
+
+log = get_logger("commands")
+
+ErrorCode = Literal[
+    "unknown_target",
+    "unsupported_action",
+    "not_seekable",
+    "adapter_disconnected",
+    "device_offline",
+    "invalid_argument",
+    "vendor_error",
+]
+
+ERROR_CATALOGUE: dict[str, tuple[int, str]] = {
+    # code: (HTTP status, meaning)
+    "unknown_target": (404, "No player, side, zone, or 'all' matches the target."),
+    "unsupported_action": (409, "The protocol for this device cannot perform the action."),
+    "not_seekable": (409, "The current source (e.g. a radio station) does not support seek."),
+    "adapter_disconnected": (503, "The hub has no live connection to that ecosystem right now."),
+    "device_offline": (409, "The target device is known but not reachable."),
+    "invalid_argument": (
+        400,
+        "A parameter is out of range or malformed (e.g. linked volume "
+        "with neither level nor delta, or a group across vendors).",
+    ),
+    "vendor_error": (502, "The device rejected the command or the hub hit an unexpected error."),
+}
+
+TransportAction = Literal["play", "pause", "toggle", "stop", "next", "prev"]
+SKIP_MS = 15_000
+
+
+class CommandError(Exception):
+    def __init__(self, code: ErrorCode, message: str, target: str | None = None) -> None:
+        super().__init__(message)
+        self.code: ErrorCode = code
+        self.message = message
+        self.target = target
+
+
+class ErrorEnvelope(BaseModel):
+    code: ErrorCode
+    message: str
+    target: str | None = None
+    correlation_id: str
+
+
+class PartialFailure(BaseModel):
+    target: str
+    code: ErrorCode
+    message: str
+
+
+class Ack(BaseModel):
+    correlation_id: str
+    ok: bool
+    action: str
+    target: str | None = None
+    state_version: int
+    error: ErrorEnvelope | None = None
+    partial: list[PartialFailure] = Field(default_factory=list)
+
+
+AckCallback = Callable[[Ack], Awaitable[None] | None]
+
+
+def _name(state: HubState, target: str) -> str:
+    if target in state.players:
+        return state.players[target].name
+    if target in state.sides:
+        return state.sides[target].name
+    if target in state.zones:
+        return state.zones[target].name
+    return target
+
+
+def resolve_sides(state: HubState, target: str) -> list[Side]:
+    if target == "all":
+        return list(state.sides.values())
+    if target in state.sides:
+        return [state.sides[target]]
+    if target in state.players:
+        player = state.players[target]
+        for side in state.sides.values():
+            if player.id in side.member_ids:
+                return [side]
+    raise CommandError("unknown_target", f"Nothing is called {target!r}.", target)
+
+
+def resolve_players(state: HubState, target: str) -> list[Player]:
+    if target == "all":
+        return list(state.players.values())
+    if target in state.players:
+        return [state.players[target]]
+    if target in state.sides:
+        return [state.players[m] for m in state.sides[target].member_ids if m in state.players]
+    raise CommandError("unknown_target", f"Nothing is called {target!r}.", target)
+
+
+def linked_volumes(
+    current: dict[str, int],
+    ratios: dict[str, float],
+    *,
+    level: int | None,
+    delta: int | None,
+) -> tuple[dict[str, int], dict[str, float]]:
+    """Levels for a master move that preserve each player's ratio to the loudest player.
+
+    ``ratios`` are the router's remembered per-player ratios (floats), so a quiet player that
+    the integer clamp pinned at 1 keeps its true ratio for the next move instead of collapsing.
+    Returns ``(new_levels, new_ratios)``. Non-zero players never drop below 1 while the master
+    is above 0; when every player is at 0 a positive move raises them all together.
+    """
+    if not current:
+        return {}, dict(ratios)
+    master = max(current.values())
+    if level is None:
+        if delta is None:
+            raise CommandError("invalid_argument", "Linked volume needs a level or a delta.")
+        new_master = master + delta
+    else:
+        new_master = level
+    new_master = max(0, min(100, new_master))
+    new_ratios = dict(ratios)
+    if master == 0:
+        for pid in current:
+            new_ratios[pid] = 1.0
+        return dict.fromkeys(current, new_master), new_ratios
+    levels: dict[str, int] = {}
+    for pid, vol in current.items():
+        ratio = new_ratios.get(pid)
+        if ratio is None or vol == 0:
+            ratio = vol / master
+            new_ratios[pid] = ratio
+        target = math.floor(ratio * new_master + 0.5)
+        if ratio > 0 and new_master > 0:
+            target = max(1, target)
+        levels[pid] = max(0, min(100, target))
+    return levels, new_ratios
+
+
+class _Outcomes:
+    """Per-target results of one command, for partial-success acks."""
+
+    def __init__(self) -> None:
+        self.attempted = 0
+        self.failures: list[CommandError] = []
+
+    async def attempt(self, target: str, coro: Awaitable[None]) -> bool:
+        self.attempted += 1
+        try:
+            await coro
+            return True
+        except CommandError as exc:
+            exc.target = target  # per-target outcome, not the user's selector ("all")
+            self.failures.append(exc)
+            return False
+
+    @property
+    def all_failed(self) -> bool:
+        return self.attempted > 0 and len(self.failures) == self.attempted
+
+
+Run = Callable[[_Outcomes], Awaitable[None]]
+
+
+class CommandRouter:
+    """Resolves targets against the state model and dispatches to the vendor adapters."""
+
+    def __init__(
+        self,
+        store: StateStore,
+        *,
+        playback: dict[str, PlaybackAdapter] | None = None,
+        denon: DenonAdapter | None = None,
+        coalescer: Coalescer | None = None,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self.store = store
+        self.playback: dict[str, PlaybackAdapter] = dict(playback or {})
+        self.denon = denon
+        self.coalescer = coalescer or Coalescer()
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._ack_callbacks: list[AckCallback] = []
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._pending_seek: dict[str, int] = {}  # side id -> absolute target not yet written
+        self._linked_ratios: dict[str, float] = {}
+        self._linked_written: dict[str, int] = {}  # last level the linked master wrote
+
+    # -- wiring ---------------------------------------------------------------------
+
+    def register(self, adapter: PlaybackAdapter | DenonAdapter) -> None:
+        if isinstance(adapter, DenonAdapter):
+            self.denon = adapter
+        else:
+            self.playback[adapter.name] = adapter
+
+    def on_ack(self, callback: AckCallback) -> Callable[[], None]:
+        self._ack_callbacks.append(callback)
+
+        def unsubscribe() -> None:
+            if callback in self._ack_callbacks:
+                self._ack_callbacks.remove(callback)
+
+        return unsubscribe
+
+    async def aclose(self) -> None:
+        await self.coalescer.drain()
+
+    # -- public commands ------------------------------------------------------------
+
+    async def transport(self, target: str, action: TransportAction) -> Ack:
+        async def run(out: _Outcomes) -> None:
+            for side in resolve_sides(self.state, target):
+                await out.attempt(side.id, self._transport_side(side, action, target))
+
+        return await self._execute(action, target, run)
+
+    async def _transport_side(self, side: Side, action: str, target: str) -> None:
+        adapter = self._adapter_for(side.vendor, target)
+        self._require_online(side.coordinator_player_id, target)
+        if action == "next" and not side.capabilities.supports_next:
+            raise CommandError("unsupported_action", f"{side.name} has no next track.", target)
+        if action == "prev" and not side.capabilities.supports_prev:
+            raise CommandError("unsupported_action", f"{side.name} has no previous track.", target)
+        await self._call(
+            lambda: self._transport_on(adapter, side, action), action, target, side.name
+        )
+
+    async def seek(self, target: str, position_ms: int) -> Ack:
+        async def run(out: _Outcomes) -> None:
+            if position_ms < 0:
+                raise CommandError("invalid_argument", "Position must be zero or more.", target)
+            for side in resolve_sides(self.state, target):
+                await out.attempt(side.id, self._seek_side(side, position_ms, "seek", target))
+
+        return await self._execute("seek", target, run)
+
+    async def skip(self, target: str, delta_ms: int = SKIP_MS) -> Ack:
+        async def run(out: _Outcomes) -> None:
+            for side in resolve_sides(self.state, target):
+                base = self._pending_seek.get(side.id)
+                if base is None:
+                    base = self._extrapolated_position(side)
+                await out.attempt(side.id, self._seek_side(side, base + delta_ms, "skip", target))
+
+        return await self._execute("skip", target, run)
+
+    def _extrapolated_position(self, side: Side) -> int:
+        pos = self.state.positions.get(side.id)
+        if pos is None:
+            return 0
+        if side.play_state != "play":
+            return pos.position_ms
+        elapsed = (self._clock() - pos.reported_at).total_seconds()
+        return pos.position_ms + max(0, int(elapsed * 1000))
+
+    async def _seek_side(self, side: Side, position_ms: int, action: str, target: str) -> None:
+        adapter = self._adapter_for(side.vendor, target)
+        self._require_seekable(side, target)
+        np = self.state.now_playing.get(side.id)
+        pos = max(0, position_ms)
+        if np and np.duration_ms:
+            pos = min(pos, np.duration_ms)
+        self._pending_seek[side.id] = pos
+        coord, sid, name = side.coordinator_player_id, side.id, side.name
+
+        async def write() -> None:
+            try:
+                await self._call(lambda: adapter.seek(coord, pos), action, target, name)
+            finally:
+                if self._pending_seek.get(sid) == pos:
+                    self._pending_seek.pop(sid, None)
+
+        await self.coalescer.submit(f"seek:{sid}", write)
+
+    async def volume(self, target: str, level: int) -> Ack:
+        async def run(out: _Outcomes) -> None:
+            if not 0 <= level <= 100:
+                raise CommandError("invalid_argument", "Volume must be between 0 and 100.", target)
+            for player in resolve_players(self.state, target):
+                if await out.attempt(player.id, self._set_player_volume(player, level, target)):
+                    self._linked_written.pop(player.id, None)  # user moved it: re-learn ratio
+
+        return await self._execute("volume", target, run)
+
+    async def linked_volume(self, *, level: int | None = None, delta: int | None = None) -> Ack:
+        async def run(out: _Outcomes) -> None:
+            players = [p for p in self.state.players.values() if p.online]
+            if not players:
+                raise CommandError("device_offline", "No players are online.", "all")
+            current = {p.id: p.volume for p in players}
+            # Forget a remembered ratio when the player moved since we last wrote it (vendor app
+            # or a direct volume command); keep it when the value is our own clamped output.
+            ratios = {
+                pid: r
+                for pid, r in self._linked_ratios.items()
+                if pid in current and self._linked_written.get(pid) == current[pid]
+            }
+            new_levels, new_ratios = linked_volumes(current, ratios, level=level, delta=delta)
+            self._linked_ratios.update(new_ratios)
+            for player in players:
+                new = new_levels[player.id]
+                if new == player.volume:
+                    self._linked_written[player.id] = new
+                    continue
+                if await out.attempt(player.id, self._set_player_volume(player, new, "all")):
+                    self._linked_written[player.id] = new
+
+        return await self._execute("linked_volume", "all", run)
+
+    async def mute(self, target: str, muted: bool) -> Ack:
+        async def run(out: _Outcomes) -> None:
+            for player in resolve_players(self.state, target):
+                await out.attempt(player.id, self._mute_player(player, muted, target))
+
+        return await self._execute("mute", target, run)
+
+    async def _mute_player(self, player: Player, muted: bool, target: str) -> None:
+        adapter = self._adapter_for(player.vendor, target)
+        self._require_online(player.id, target)
+        await self._call(lambda: adapter.set_mute(player.id, muted), "mute", target, player.name)
+
+    async def zone_power(self, zone_id: str, on: bool) -> Ack:
+        async def run(out: _Outcomes) -> None:
+            state = self.state
+            if zone_id in state.zones:
+                await self._denon_power(state, zone_id, on)
+                return
+            # Sonos has no power concept: "off" is stop + leave the group; "on" is a no-op.
+            for side in resolve_sides(state, zone_id):
+                await out.attempt(side.id, self._sonos_power(side, on, zone_id))
+
+        return await self._execute("zone_power", zone_id, run)
+
+    async def _denon_power(self, state: HubState, zone_id: str, on: bool) -> None:
+        zone = state.zones[zone_id]
+        if self.denon is None or self.denon.status().state != "connected":
+            raise CommandError(
+                "adapter_disconnected",
+                f"{zone.name} didn't change; the amplifier link is down.",
+                zone_id,
+            )
+        if not zone.online:
+            raise CommandError("device_offline", f"{zone.name} is not answering.", zone_id)
+        denon = self.denon
+        await self._call(lambda: denon.set_power(zone_id, on), "zone_power", zone_id, zone.name)
+
+    async def _sonos_power(self, side: Side, on: bool, target: str) -> None:
+        if on:
+            return
+        if side.vendor != "sonos":
+            raise CommandError(
+                "unsupported_action",
+                f"{side.name} has no power control; use its amplifier zone.",
+                target,
+            )
+        adapter = self._adapter_for("sonos", target)
+        coord = side.coordinator_player_id
+        await self._call(lambda: adapter.stop(coord), "zone_power", target, side.name)
+        if len(side.member_ids) > 1:
+            await self._call(
+                lambda: adapter.dissolve(coord, side.member_ids), "zone_power", target, side.name
+            )
+
+    async def group(self, vendor: Vendor, coordinator_id: str, member_ids: list[str]) -> Ack:
+        members = [coordinator_id, *[m for m in member_ids if m != coordinator_id]]
+        target = coordinator_id
+
+        async def run(_out: _Outcomes) -> None:
+            adapter = self._adapter_for(vendor, target)
+            for m in members:
+                p = self.state.players.get(m)
+                if p is None:
+                    raise CommandError("unknown_target", f"Nothing is called {m!r}.", m)
+                if p.vendor != vendor:
+                    raise CommandError(
+                        "invalid_argument",
+                        f"{p.name} can't join a {vendor} group; groups stay within one system.",
+                        m,
+                    )
+                if not p.capabilities.can_group:
+                    raise CommandError("unsupported_action", f"{p.name} can't be grouped.", m)
+                self._require_online(m, m)
+            await self._call(
+                lambda: adapter.set_group(members), "group", target, _name(self.state, target)
+            )
+
+        return await self._execute("group", target, run)
+
+    async def ungroup(self, side_id: str) -> Ack:
+        async def run(_out: _Outcomes) -> None:
+            side = self.state.sides.get(side_id)
+            if side is None:
+                raise CommandError("unknown_target", f"Nothing is called {side_id!r}.", side_id)
+            adapter = self._adapter_for(side.vendor, side_id)
+            coord, members = side.coordinator_player_id, side.member_ids
+            await self._call(
+                lambda: adapter.dissolve(coord, members), "ungroup", side_id, side.name
+            )
+
+        return await self._execute("ungroup", side_id, run)
+
+    # -- internals ------------------------------------------------------------------
+
+    @property
+    def state(self) -> HubState:
+        return self.store.state
+
+    def _adapter_for(self, vendor: str, target: str) -> PlaybackAdapter:
+        adapter = self.playback.get(vendor)
+        if adapter is None or adapter.status().state != "connected":
+            raise CommandError(
+                "adapter_disconnected",
+                f"{_name(self.state, target)} didn't respond; the {vendor} link is down.",
+                target,
+            )
+        return adapter
+
+    def _require_online(self, player_id: str, target: str) -> None:
+        p = self.state.players.get(player_id)
+        if p is not None and not p.online:
+            raise CommandError("device_offline", f"{p.name} is offline.", target)
+
+    def _require_seekable(self, side: Side, target: str) -> None:
+        if not side.capabilities.supports_seek:
+            np = self.state.now_playing.get(side.id)
+            if np is not None and not np.seekable:
+                raise CommandError(
+                    "not_seekable", f"{side.name} is playing a station; it can't seek.", target
+                )
+            raise CommandError(
+                "unsupported_action", f"{side.name} can't seek from this hub.", target
+            )
+
+    async def _set_player_volume(self, player: Player, level: int, target: str) -> None:
+        adapter = self._adapter_for(player.vendor, target)
+        self._require_online(player.id, target)
+        pid, name = player.id, player.name
+        await self.coalescer.submit(
+            f"volume:{pid}",
+            lambda: self._call(lambda: adapter.set_volume(pid, level), "volume", target, name),
+        )
+
+    async def _transport_on(self, adapter: PlaybackAdapter, side: Side, action: str) -> None:
+        coord = side.coordinator_player_id
+        if action == "toggle":
+            action = "pause" if side.play_state == "play" else "play"
+        if action == "play":
+            await adapter.play(coord)
+        elif action == "pause":
+            await adapter.pause(coord)
+        elif action == "stop":
+            await adapter.stop(coord)
+        elif action == "next":
+            await adapter.next(coord)
+        elif action == "prev":
+            await adapter.previous(coord)
+        else:  # pragma: no cover - guarded by the Literal type at the API layer
+            raise CommandError("invalid_argument", f"Unknown transport action {action!r}.")
+
+    async def _call(
+        self, fn: Callable[[], Awaitable[Any]], action: str, target: str, name: str
+    ) -> None:
+        """Run one adapter call, mapping protocol failures onto the error catalogue."""
+        try:
+            await fn()
+        except CommandError:
+            raise
+        except UnsupportedCommandError as exc:
+            raise CommandError(
+                "unsupported_action", f"{name} can't {action} from this hub.", target
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - vendor libraries raise their own types
+            log.warning(
+                "adapter command failed",
+                extra={"extra": {"action": action, "target": target, "error": str(exc)}},
+            )
+            raise CommandError(
+                "vendor_error", f"{_verb(action)} didn't happen on {name}.", target
+            ) from exc
+
+    async def _execute(self, action: str, target: str | None, run: Run) -> Ack:
+        """Run a command and emit exactly one ack, whatever happens inside."""
+        cid = correlation_id.get() or "-"
+        started = time.perf_counter()
+        out = _Outcomes()
+        error: CommandError | None = None
+        try:
+            await run(out)
+        except CommandError as exc:
+            error = exc
+        except Exception:  # noqa: BLE001 - never leak: the caller needs an ack
+            log.exception("command crashed", extra={"extra": {"action": action}})
+            error = CommandError("vendor_error", f"{_verb(action)} failed unexpectedly.", target)
+        if error is None and out.all_failed:
+            error = out.failures[0]
+        ok = error is None
+        partial = (
+            []
+            if not out.failures or (out.all_failed and len(out.failures) == 1)
+            else [
+                PartialFailure(target=f.target or "-", code=f.code, message=f.message)
+                for f in out.failures
+            ]
+        )
+        latency_ms = round((time.perf_counter() - started) * 1000, 1)
+        ack = Ack(
+            correlation_id=cid,
+            ok=ok,
+            action=action,
+            target=target,
+            state_version=self.state.version,
+            error=(
+                ErrorEnvelope(
+                    code=error.code,
+                    message=error.message,
+                    target=error.target or target,
+                    correlation_id=cid,
+                )
+                if error
+                else None
+            ),
+            partial=partial,
+        )
+        log.info(
+            "command",
+            extra={
+                "extra": {
+                    "action": action,
+                    "target": target,
+                    "ok": ack.ok,
+                    "latency_ms": latency_ms,
+                    "partial": len(partial),
+                    **({"code": error.code} if error else {}),
+                }
+            },
+        )
+        self._broadcast(ack)
+        return ack
+
+    def _broadcast(self, ack: Ack) -> None:
+        from .tasks import spawn
+
+        for cb in list(self._ack_callbacks):
+            try:
+                result = cb(ack)
+            except Exception:  # noqa: BLE001
+                log.exception("ack callback failed")
+                continue
+            if asyncio.iscoroutine(result):
+                spawn(result, self._tasks)
+
+
+def _verb(action: str) -> str:
+    return {
+        "play": "Play",
+        "pause": "Pause",
+        "toggle": "Play/pause",
+        "stop": "Stop",
+        "next": "Next track",
+        "prev": "Previous track",
+        "seek": "Seek",
+        "skip": "Skip",
+        "volume": "Volume",
+        "linked_volume": "Linked volume",
+        "mute": "Mute",
+        "zone_power": "Power",
+        "group": "Grouping",
+        "ungroup": "Ungrouping",
+    }.get(action, action.capitalize())
+
+
+def http_status(code: str) -> int:
+    return ERROR_CATALOGUE.get(code, (500, ""))[0]
+
+
+def catalogue() -> Iterable[tuple[str, int, str]]:
+    for code, (status, meaning) in ERROR_CATALOGUE.items():
+        yield code, status, meaning

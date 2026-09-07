@@ -5,6 +5,11 @@ synchronous SOAP calls. Everything the adapter needs is therefore captured into 
 :class:`ZoneSnapshot` / :class:`GroupSnapshot` records inside ``asyncio.to_thread`` by
 :func:`snapshot_zones`; the adapter itself only ever reads snapshot fields.
 
+Commands run the SoCo method on the coordinator (transport, seek) or the member (volume, mute)
+inside ``asyncio.to_thread``. Position is polled from ``get_current_track_info`` while a side's
+coordinator is playing, at instants chosen by the :class:`~illyhub_hub.positions.PositionTracker`
+so the whole-second reports converge to a sub-second estimate.
+
 Verified only against fakes of the SoCo objects; no physical Sonos player has been exercised.
 """
 
@@ -16,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ..config import Settings
+from ..positions import PositionTracker
 from ..state import (
     Art,
     Capabilities,
@@ -23,6 +29,7 @@ from ..state import (
     NowPlaying,
     Player,
     StateStore,
+    optimistic_position,
     side_id_for,
 )
 from ..tasks import stop_task
@@ -30,6 +37,7 @@ from .base import Backoff, SonosAdapter
 
 SERVICES = ("avTransport", "renderingControl")
 SUBSCRIPTION_TIMEOUT_S = 600
+RESNAPSHOT_MIN_GAP_S = 2.0  # topology events re-run discovery at most this often
 # Sonos music-service ids seen in stream URIs (``sid=``). Best-effort; unknown ids stay None.
 SERVICE_IDS = {"174": "tidal", "236": "pandora", "284": "ytmusic"}
 
@@ -71,6 +79,15 @@ class SonosSubscription(Protocol):
 SnapshotFn = Callable[[], Awaitable[Topology]]
 GroupsFn = Callable[[Any], Awaitable[list[GroupSnapshot]]]
 SubscribeFn = Callable[[Any, str, Callable[[Any], None]], Awaitable[SonosSubscription]]
+RunSync = Callable[..., Awaitable[Any]]
+
+
+def ms_to_hms(position_ms: int) -> str:
+    """Milliseconds to Sonos ``H:MM:SS`` (seconds truncated)."""
+    total = max(0, position_ms) // 1000
+    h, rem = divmod(total, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}:{m:02d}:{sec:02d}"
 
 
 def snapshot_zones(zones: Iterable[Any], *, include_state: bool = True) -> Topology:
@@ -181,12 +198,19 @@ class SoCoAdapter(SonosAdapter):
         snapshot: SnapshotFn | None = None,
         groups: GroupsFn = default_groups,
         subscribe: SubscribeFn = default_subscribe,
+        run_sync: RunSync = asyncio.to_thread,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         super().__init__(store)
         self.settings = settings
         self._snapshot = snapshot or (lambda: default_snapshot(settings))
         self._groups = groups
         self._subscribe = subscribe
+        self._run_sync = run_sync
+        self._clock = clock or (lambda: asyncio.get_running_loop().time())
+        self._trackers: dict[str, PositionTracker] = {}
+        self._pollers: dict[str, asyncio.Task[None]] = {}
+        self._last_snapshot_at: float | None = None
         self._topology = Topology()
         self._subs: list[SonosSubscription] = []
         self._task: asyncio.Task[None] | None = None
@@ -209,6 +233,9 @@ class SoCoAdapter(SonosAdapter):
         self._set_status("disconnected")
 
     async def _teardown(self) -> None:
+        for task in list(self._pollers.values()):
+            await stop_task(task)
+        self._pollers.clear()
         subs, self._subs = self._subs, []
         for sub in subs:
             try:
@@ -238,6 +265,7 @@ class SoCoAdapter(SonosAdapter):
 
     async def _connect_once(self) -> None:
         topo = await self._snapshot()
+        self._last_snapshot_at = self._clock()
         if not topo.zones:
             raise ConnectionError("no Sonos players discovered")
         self._topology = topo
@@ -251,6 +279,136 @@ class SoCoAdapter(SonosAdapter):
         self._mark_connected()
         self._set_status("connected")
         self._emit("connected", players=len(topo.zones))
+        self._sync_pollers()
+
+    # -- commands (Phase 1) ---------------------------------------------------------
+
+    def _raw(self, player_id_: str) -> Any:
+        uid = player_id_.removeprefix("sonos-")
+        raw = self._topology.raw.get(uid)
+        if raw is None:
+            raise ConnectionError(f"Sonos player {player_id_!r} is not available")
+        return raw
+
+    async def play(self, player_id: str) -> None:
+        await self._run_sync(self._raw(player_id).play)
+
+    async def pause(self, player_id: str) -> None:
+        await self._run_sync(self._raw(player_id).pause)
+
+    async def stop(self, player_id: str) -> None:
+        await self._run_sync(self._raw(player_id).stop)
+
+    async def next(self, player_id: str) -> None:
+        await self._run_sync(self._raw(player_id).next)
+
+    async def previous(self, player_id: str) -> None:
+        await self._run_sync(self._raw(player_id).previous)
+
+    async def seek(self, player_id: str, position_ms: int) -> None:
+        raw = self._raw(player_id)
+        await self._run_sync(raw.seek, ms_to_hms(position_ms))
+        player = self.store.state.players.get(player_id)
+        if player is not None:
+            side = side_id_for(player)
+            tracker = self._trackers.get(side)
+            if tracker is not None:
+                tracker.reset()
+            # Optimistic: the scrubber lands where the user put it until the next poll confirms.
+            if side in self.store.state.sides:
+                self.store.set_position(side, optimistic_position(position_ms))
+
+    async def set_volume(self, player_id: str, level: int) -> None:
+        raw = self._raw(player_id)
+        await self._run_sync(setattr, raw, "volume", level)
+
+    async def set_mute(self, player_id: str, muted: bool) -> None:
+        raw = self._raw(player_id)
+        await self._run_sync(setattr, raw, "mute", muted)
+
+    def _current_members(self, player_id_: str) -> list[str]:
+        """Members of the native group ``player_id_`` is in right now (itself when solo)."""
+        state = self.store.state
+        p = state.players.get(player_id_)
+        if p is None or p.group_id is None or p.group_id not in state.groups:
+            return [player_id_]
+        return list(state.groups[p.group_id].member_ids)
+
+    async def set_group(self, member_ids: list[str]) -> None:
+        """Reconcile the coordinator's group to ``member_ids``: leavers ``unjoin`` first, then
+        newcomers ``join``. A single id ``unjoin``s that player."""
+        if not member_ids:
+            raise ValueError("set_group needs at least one member")
+        coordinator_id = member_ids[0]
+        coordinator = self._raw(coordinator_id)
+        if len(member_ids) == 1:
+            await self._run_sync(coordinator.unjoin)
+            return
+        current = self._current_members(coordinator_id)
+        wanted = set(member_ids)
+        for leaver in current:
+            if leaver not in wanted and leaver != coordinator_id:
+                await self._run_sync(self._raw(leaver).unjoin)
+        for member in member_ids[1:]:
+            if member not in current:
+                await self._run_sync(self._raw(member).join, coordinator)
+
+    async def dissolve(self, coordinator_id: str, member_ids: list[str]) -> None:
+        """Sonos has no group object to delete: every non-coordinator ``unjoin``s."""
+        for member in member_ids:
+            if member != coordinator_id:
+                await self._run_sync(self._raw(member).unjoin)
+
+    # -- position polling -------------------------------------------------------------
+
+    def _sync_pollers(self) -> None:
+        """One poller per side whose coordinator is playing; stop the rest."""
+        state = self.store.state
+        wanted = {
+            sid: side.coordinator_player_id
+            for sid, side in state.sides.items()
+            if side.vendor == "sonos" and side.play_state == "play"
+        }
+        for sid in list(self._pollers):
+            if sid not in wanted:
+                self._pollers.pop(sid).cancel()
+                tracker = self._trackers.get(sid)
+                if tracker is not None:
+                    tracker.set_playing(False, self._clock())
+                    pos = tracker.to_position(self._clock())
+                    if pos is not None and sid in state.sides:
+                        self.store.set_position(sid, pos)
+        for sid, coordinator in wanted.items():
+            if sid not in self._pollers:
+                tracker = self._trackers.setdefault(sid, PositionTracker())
+                tracker.set_playing(True, self._clock())
+                task = self._spawn(self._poll_position(sid, coordinator))
+                if task is not None:
+                    self._pollers[sid] = task
+
+    async def _poll_once(self, side_id: str, coordinator: str) -> None:
+        """One ``GetPositionInfo`` read folded into the side's tracker and written to state."""
+        tracker = self._trackers[side_id]
+        info = await self._run_sync(self._raw(coordinator).get_current_track_info)
+        reported = _hms_to_ms(str(info.get("position", "")))
+        now_s = self._clock()
+        if reported is not None:
+            tracker.observe(reported, now_s)
+            pos = tracker.to_position(now_s)
+            if pos is not None and side_id in self.store.state.sides:
+                self.store.set_position(side_id, pos)
+
+    async def _poll_position(self, side_id: str, coordinator: str) -> None:
+        tracker = self._trackers[side_id]
+        base = self.settings.position_poll_s
+        while True:
+            try:
+                await self._poll_once(side_id, coordinator)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - keep polling through transient errors
+                self.log.debug("position poll failed", extra={"extra": {"error": str(exc)}})
+            await asyncio.sleep(tracker.next_poll_in(self._clock(), base))
 
     async def _add_subscription(self, zone: ZoneSnapshot, service: str) -> None:
         raw = self._topology.raw.get(zone.uid)
@@ -336,14 +494,22 @@ class SoCoAdapter(SonosAdapter):
         if state:
             self.store.update_player(p_id, play_state=_play_state(state))
             self._emit("play_state", player_id=p_id)
+            self._sync_pollers()
         meta = variables.get("current_track_meta_data")
         if meta:
             player = self.store.state.players.get(p_id)
             if not player:
                 return
-            self.store.set_now_playing(
-                side_id_for(player), self._now_playing(meta, variables, zone)
-            )
+            side = side_id_for(player)
+            previous = self.store.state.now_playing.get(side)
+            np = self._now_playing(meta, variables, zone)
+            self.store.set_now_playing(side, np)
+            if previous is None or previous.track_id != np.track_id:
+                tracker = self._trackers.get(side)
+                if tracker is not None:
+                    tracker.reset()
+                if side in self.store.state.sides:
+                    self.store.set_position(side, optimistic_position(0))
             self._emit("now_playing", player_id=p_id)
 
     @staticmethod
@@ -352,26 +518,56 @@ class SoCoAdapter(SonosAdapter):
         art = get("album_art_uri") or get("album_art")
         uri = variables.get("current_track_uri") or get("uri")
         duration = variables.get("current_track_duration")
+        broadcast = "audioBroadcast" in (get("item_class") or "")
         return NowPlaying(
             title=get("title"),
             artist=get("creator"),
             album=get("album"),
             art=Art(url=absolutize(art, zone.ip)),
             source=source_from_uri(uri),
-            seekable="audioBroadcast" not in (get("item_class") or ""),
+            seekable=not broadcast,
+            supports_next=not broadcast,
+            supports_prev=not broadcast,
             duration_ms=_hms_to_ms(duration) if duration else None,
             track_id=uri or None,
         )
 
     async def _refresh_groups(self, zone: ZoneSnapshot) -> None:
-        raw = self._topology.raw.get(zone.uid)
+        """Topology changed. Re-run discovery (throttled) so new or returning players enter the
+        store and get subscriptions; otherwise just re-read the groups."""
         try:
-            groups = await self._groups(raw)
-            self._topology.groups = groups
-            self.store.set_groups("sonos", self._to_groups(groups))
+            now_s = self._clock()
+            last = self._last_snapshot_at
+            if last is None or now_s - last >= RESNAPSHOT_MIN_GAP_S:
+                await self._resnapshot()
+            else:
+                raw = self._topology.raw.get(zone.uid)
+                groups = await self._groups(raw)
+                self._topology.groups = groups
+                self.store.set_groups("sonos", self._to_groups(groups))
             self._emit("topology")
+            self._sync_pollers()
         except Exception as exc:  # noqa: BLE001
             self.log.warning("group refresh failed", extra={"extra": {"error": str(exc)}})
+
+    async def _resnapshot(self) -> None:
+        topo = await self._snapshot()
+        self._last_snapshot_at = self._clock()
+        if not topo.zones:
+            return  # transient discovery miss; keep what we have
+        known = {z.uid for z in self._topology.zones}
+        for z in topo.zones:
+            self._topology.raw[z.uid] = topo.raw.get(z.uid)
+            if z.uid not in known:
+                self.store.upsert_player(self._to_player(z))
+                for service in SERVICES:
+                    await self._add_subscription(z, service)
+                self.log.info("sonos player joined", extra={"extra": {"player": z.name}})
+            else:
+                self.store.update_player(player_id(z.uid), online=True, ip=z.ip, name=z.name)
+        self._topology.zones = topo.zones
+        self._topology.groups = topo.groups
+        self.store.set_groups("sonos", self._to_groups(topo.groups))
 
 
 def _hms_to_ms(value: str) -> int | None:

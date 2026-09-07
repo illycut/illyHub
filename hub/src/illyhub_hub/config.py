@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     reconnect_max_s: float = 60.0
     backoff_reset_after_s: float = 30.0
     position_poll_s: float = 1.0
+    command_coalesce_s: float = 0.1  # min gap between device writes per volume/seek target
 
     @property
     def effective_stdout_level(self) -> str:

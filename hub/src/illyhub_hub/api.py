@@ -1,4 +1,9 @@
-"""FastAPI application factory. Phase 0 exposes ``/api/health`` and ``/api/devices``."""
+"""FastAPI application factory.
+
+Phase 0: ``GET /api/health``, ``GET /api/devices``. Phase 1: command endpoints under ``/api``
+(transport, seek, skip, volume, mute, zone power, group), the ``/ws`` state stream, and the
+fake-only ``/api/dev/fake/{scenario}`` scenario trigger. See ``docs/api.md``.
+"""
 
 from __future__ import annotations
 
@@ -7,18 +12,22 @@ import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import FastAPI, Request
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, Request, WebSocket
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, model_validator
 
 from . import __version__
 from .adapters.base import BaseAdapter
 from .adapters.fake import FakeBundle
-from .config import Settings
-from .discovery import DiscoveryService, Registry
+from .coalesce import Coalescer
+from .commands import Ack, CommandError, CommandRouter, ErrorEnvelope, http_status
+from .config import Settings, Vendor
+from .discovery import DiscoveredDevice, DiscoveryService, Registry, SearchFn
 from .logsetup import correlation_id, get_logger
 from .state import ConnectionStatus, Player, Side, StateStore, Zone
+from .ws import ClientSession, DumpCache
 
 log = get_logger("api")
 
@@ -46,6 +55,55 @@ class DevicesResponse(BaseModel):
     discovered: list[dict[str, Any]]
 
 
+class TargetBody(BaseModel):
+    target: str = Field(description="player id, side id, or 'all'")
+
+
+class SeekBody(TargetBody):
+    position_ms: int = Field(ge=0)
+
+
+class SkipBody(TargetBody):
+    delta_ms: int = Field(default=15_000, description="signed; ±15000 for the transport row")
+
+
+class VolumeBody(BaseModel):
+    target: str | None = None
+    level: int | None = Field(default=None, ge=0, le=100)
+    linked: bool = False
+    delta: int | None = None
+
+    @model_validator(mode="after")
+    def _shape(self) -> VolumeBody:
+        if self.linked:
+            if self.level is None and self.delta is None:
+                raise ValueError("linked volume needs level or delta")
+        elif self.target is None or self.level is None:
+            raise ValueError("volume needs target and level")
+        return self
+
+
+class MuteBody(TargetBody):
+    muted: bool
+
+
+class ZonePowerBody(BaseModel):
+    zone_id: str = Field(description="Denon zone id, or a Sonos player/side id for stop+ungroup")
+    on: bool
+
+
+class GroupBody(BaseModel):
+    vendor: Vendor
+    coordinator_id: str
+    member_ids: list[str]
+
+
+class ScenarioResponse(BaseModel):
+    scenario: str
+    result: dict[str, Any]
+    state_version: int
+
+
 @dataclass
 class HubRuntime:
     """Everything the app owns for its lifetime. Built by :func:`build_runtime`."""
@@ -54,7 +112,9 @@ class HubRuntime:
     store: StateStore
     adapters: list[BaseAdapter]
     discovery: DiscoveryService
+    router: CommandRouter
     fakes: FakeBundle | None = None
+    heos_factory: Callable[..., Any] | None = None
     started_at: float = field(default_factory=time.monotonic)
 
     async def start(self) -> None:
@@ -70,6 +130,7 @@ class HubRuntime:
 
     async def stop(self) -> None:
         await self.discovery.stop()
+        await self.router.aclose()
         if self.fakes:
             await self.fakes.stop()
         else:
@@ -77,39 +138,83 @@ class HubRuntime:
                 await a.disconnect()
         await self.store.aclose()
 
+    async def adopt_discovered(self, devices: list[DiscoveredDevice]) -> None:
+        """Discovery → adapter handoff: the first HEOS device found becomes the HEOS host."""
+        if self.fakes or any(a.name == "heos" for a in self.adapters):
+            return
+        heos = next((d for d in devices if d.vendor == "heos"), None)
+        if heos is None:
+            return
+        from .adapters.heos import PyHeosAdapter, default_heos_factory
+
+        adapter = PyHeosAdapter(
+            self.store, self.settings, heos.ip, factory=self.heos_factory or default_heos_factory
+        )
+        self.adapters.append(adapter)
+        self.router.register(adapter)
+        log.info("heos host adopted from discovery", extra={"extra": {"host": heos.ip}})
+        await adapter.connect()
+
     @property
     def uptime_s(self) -> float:
         return round(time.monotonic() - self.started_at, 1)
 
 
-def build_runtime(settings: Settings) -> HubRuntime:
-    """Wire adapters from settings. Fakes when ``HUB_FAKE_DEVICES=1``, else real adapters."""
+def build_runtime(
+    settings: Settings,
+    *,
+    search: SearchFn | None = None,
+    heos_factory: Callable[..., Any] | None = None,
+    sonos_snapshot: Callable[[], Any] | None = None,
+) -> HubRuntime:
+    """Wire adapters from settings. Fakes when ``HUB_FAKE_DEVICES=1``, else real adapters.
+
+    The keyword arguments exist so tests can inject a fake SSDP search, a fake pyheos client
+    factory, and a fake SoCo snapshot without touching the network.
+    """
     store = StateStore()
     registry = Registry()
     discovery = DiscoveryService(
-        settings, registry, search=_noop_search if settings.fake_devices else None
+        settings, registry, search=search or (_noop_search if settings.fake_devices else None)
     )
     if settings.fake_devices:
         fakes = FakeBundle(store, tick_interval_s=settings.position_poll_s)
-        return HubRuntime(settings, store, list(fakes.adapters), discovery, fakes=fakes)
+        router = CommandRouter(
+            store,
+            playback={"heos": fakes.heos, "sonos": fakes.sonos},
+            denon=fakes.denon,
+            coalescer=Coalescer(settings.command_coalesce_s),
+        )
+        return HubRuntime(settings, store, list(fakes.adapters), discovery, router, fakes=fakes)
 
     from .adapters.denon import HttpDenonAdapter
-    from .adapters.heos import PyHeosAdapter
+    from .adapters.heos import PyHeosAdapter, default_heos_factory
     from .adapters.sonos import SoCoAdapter
 
-    adapters: list[BaseAdapter] = [SoCoAdapter(store, settings)]
-    # TODO(Phase 1): hand HEOS/Denon hosts from the discovery registry to the adapters so the
-    # env vars become optional overrides.
+    router = CommandRouter(store, coalescer=Coalescer(settings.command_coalesce_s))
+    sonos = SoCoAdapter(store, settings, snapshot=sonos_snapshot)
+    adapters: list[BaseAdapter] = [sonos]
+    router.register(sonos)
     heos_host = settings.heos_host or settings.denon_host
     if heos_host:
-        adapters.append(PyHeosAdapter(store, settings, heos_host))
+        heos = PyHeosAdapter(
+            store, settings, heos_host, factory=heos_factory or default_heos_factory
+        )
+        adapters.append(heos)
+        router.register(heos)
     else:
+        # Discovery hands the first HEOS device it finds to HubRuntime.adopt_discovered.
         store.set_connection("heos", "disabled", HEOS_DISABLED_MSG)
     if settings.denon_host:
-        adapters.append(HttpDenonAdapter(store, settings, settings.denon_host))
+        denon = HttpDenonAdapter(store, settings, settings.denon_host)
+        adapters.append(denon)
+        router.register(denon)
     else:
         store.set_connection("denon", "disabled", DENON_DISABLED_MSG)
-    return HubRuntime(settings, store, adapters, discovery)
+    runtime = HubRuntime(settings, store, adapters, discovery, router, heos_factory=heos_factory)
+    if not heos_host:
+        discovery.on_new_devices(runtime.adopt_discovered)
+    return runtime
 
 
 async def _noop_search() -> list[Any]:
@@ -158,9 +263,27 @@ def create_app(
         openapi_tags=[
             {"name": "system", "description": "Health and hub metadata"},
             {"name": "devices", "description": "Discovered players, zones, and sides"},
+            {"name": "commands", "description": "Transport, seek, volume, mute, power, grouping"},
+            {"name": "dev", "description": "Fake-device scenario triggers (HUB_FAKE_DEVICES=1)"},
         ],
     )
     app.state.runtime = runtime
+    router = runtime.router
+
+    @app.exception_handler(CommandError)
+    async def _command_error(_request: Request, exc: CommandError) -> JSONResponse:
+        cid = correlation_id.get() or "-"
+        ack = Ack(
+            correlation_id=cid,
+            ok=False,
+            action="invalid",
+            target=exc.target,
+            state_version=runtime.store.state.version,
+            error=ErrorEnvelope(
+                code=exc.code, message=exc.message, target=exc.target, correlation_id=cid
+            ),
+        )
+        return JSONResponse(status_code=http_status(exc.code), content=ack.model_dump(mode="json"))
 
     @app.middleware("http")
     async def _correlation(request: Request, call_next: Callable[[Request], Any]) -> Any:
@@ -203,6 +326,83 @@ def create_app(
             sides=_sorted(state.sides.values()),
             discovered=runtime.discovery.registry.dump(),
         )
+
+    # -- commands (Phase 1) ---------------------------------------------------------
+
+    def _respond(ack: Ack) -> JSONResponse:
+        status = 200 if ack.ok else http_status(ack.error.code if ack.error else "vendor_error")
+        return JSONResponse(status_code=status, content=ack.model_dump(mode="json"))
+
+    @app.post("/api/transport/{action}", response_model=Ack, tags=["commands"])
+    async def transport(
+        action: Literal["play", "pause", "toggle", "stop", "next", "prev"], body: TargetBody
+    ) -> JSONResponse:
+        return _respond(await router.transport(body.target, action))
+
+    @app.post("/api/seek", response_model=Ack, tags=["commands"])
+    async def seek(body: SeekBody) -> JSONResponse:
+        return _respond(await router.seek(body.target, body.position_ms))
+
+    @app.post("/api/skip", response_model=Ack, tags=["commands"])
+    async def skip(body: SkipBody) -> JSONResponse:
+        return _respond(await router.skip(body.target, body.delta_ms))
+
+    @app.post("/api/volume", response_model=Ack, tags=["commands"])
+    async def volume(body: VolumeBody) -> JSONResponse:
+        if body.linked:
+            return _respond(await router.linked_volume(level=body.level, delta=body.delta))
+        assert body.target is not None and body.level is not None  # validated by the model
+        return _respond(await router.volume(body.target, body.level))
+
+    @app.post("/api/mute", response_model=Ack, tags=["commands"])
+    async def mute(body: MuteBody) -> JSONResponse:
+        return _respond(await router.mute(body.target, body.muted))
+
+    @app.post("/api/zone/power", response_model=Ack, tags=["commands"])
+    async def zone_power(body: ZonePowerBody) -> JSONResponse:
+        return _respond(await router.zone_power(body.zone_id, body.on))
+
+    @app.post("/api/group", response_model=Ack, tags=["commands"])
+    async def group(body: GroupBody) -> JSONResponse:
+        return _respond(await router.group(body.vendor, body.coordinator_id, body.member_ids))
+
+    @app.delete("/api/group/{side_id}", response_model=Ack, tags=["commands"])
+    async def ungroup(side_id: str) -> JSONResponse:
+        return _respond(await router.ungroup(side_id))
+
+    # -- state stream ---------------------------------------------------------------
+
+    dumps = DumpCache()
+
+    @app.websocket("/ws")
+    async def ws(websocket: WebSocket) -> None:
+        await websocket.accept()
+        session = ClientSession(websocket, runtime.store, dumps=dumps)
+        await session.run(router)
+
+    # -- fake scenarios -------------------------------------------------------------
+
+    if runtime.fakes is not None:
+        fakes = runtime.fakes
+
+        @app.post("/api/dev/fake/{scenario}", response_model=ScenarioResponse, tags=["dev"])
+        async def fake_scenario(scenario: str) -> JSONResponse:
+            try:
+                result = fakes.run_scenario(scenario)
+            except KeyError:
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "code": "unknown_scenario",
+                        "message": f"Unknown scenario {scenario!r}.",
+                        "scenarios": list(fakes.SCENARIOS),
+                    },
+                )
+            return JSONResponse(
+                content=ScenarioResponse(
+                    scenario=scenario, result=result, state_version=runtime.store.state.version
+                ).model_dump(mode="json")
+            )
 
     return app
 

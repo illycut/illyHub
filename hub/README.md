@@ -1,8 +1,8 @@
 # illyHub hub service
 
 Python 3.12 / FastAPI service that owns the HEOS socket, Sonos UPnP subscriptions,
-and the Denon control link, and exposes one normalized state model over REST (and,
-from Phase 1, WebSocket). See `../docs/multi-room-audio-PRD.md`.
+and the Denon control link, and exposes one normalized state model over REST and
+WebSocket. See `../docs/multi-room-audio-PRD.md` and `../docs/api.md`.
 
 ## Setup
 
@@ -23,6 +23,32 @@ uv run hub                         # real adapters (needs HUB_HEOS_HOST / HUB_DE
 Then `curl localhost:8080/api/health` and `curl localhost:8080/api/devices`.
 OpenAPI docs at `http://localhost:8080/docs`.
 
+## Endpoints (Phase 1)
+
+```
+GET    /api/health                      hub + connection status (always 200)
+GET    /api/devices                     players, zones, sides, discovered devices
+POST   /api/transport/{action}          {target}   play|pause|toggle|stop|next|prev
+POST   /api/seek                        {target, position_ms}
+POST   /api/skip                        {target, delta_ms=15000}
+POST   /api/volume                      {target, level} | {linked: true, level|delta}
+POST   /api/mute                        {target, muted}
+POST   /api/zone/power                  {zone_id, on}   Denon zone, or Sonos id for stop+ungroup
+POST   /api/group                       {vendor, coordinator_id, member_ids}
+DELETE /api/group/{side_id}
+WS     /ws                              snapshot, deltas, acks, ping/pong, resync
+POST   /api/dev/fake/{scenario}         fakes only: track_change | volume_change |
+                                        disconnect_heos | reconnect_heos | sonos_regroup
+```
+
+`target` is a player id, a side id, or `all`. Every command returns an ack
+`{correlation_id, ok, action, target, state_version, error}`; the same ack is broadcast on
+`/ws`. Error codes and the WebSocket protocol are documented in `../docs/api.md`.
+
+Known protocol limit: the HEOS CLI has no seek command, so HEOS sides report
+`capabilities.supports_seek=false` and `/api/seek` / `/api/skip` on them return
+`unsupported_action`.
+
 ## Test and coverage
 
 ```
@@ -37,10 +63,14 @@ src/illyhub_hub/
   config.py        pydantic-settings (HUB_* env, .env)
   logsetup.py      JSON log formatter with correlation_id contextvar, optional rotating file
   state.py         HubState + sub-models, StateStore, diff()
-  discovery.py     SSDP + static device registry
-  adapters/        base interfaces, heos (pyheos), sonos (SoCo), denon (HTTP/telnet), fake
+  discovery.py     SSDP + static device registry, new-device callbacks (HEOS host handoff)
+  adapters/        base interfaces + command ABCs, heos (pyheos), sonos (SoCo), denon, fake
+  commands.py      CommandRouter: target resolution, error catalogue, acks, latency logging
+  coalesce.py      per-target write coalescing for volume/seek bursts
+  positions.py     sub-second position estimation from whole-second device reports
+  ws.py            WebSocket sessions: snapshot/delta/ack stream, heartbeat, bounded queues
   tasks.py         tracked fire-and-forget tasks, cancellation-safe stop_task()
-  api.py           FastAPI app factory: /api/health, /api/devices
+  api.py           FastAPI app factory: read, command, ws, and dev routes
   main.py          uvicorn entrypoint
 ```
 

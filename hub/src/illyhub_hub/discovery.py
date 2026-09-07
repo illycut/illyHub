@@ -10,7 +10,7 @@ import asyncio
 import hashlib
 import re
 import socket
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
 
@@ -176,7 +176,14 @@ class DiscoveryService:
         self._task: asyncio.Task[None] | None = None
         self.last_run: datetime | None = None
         self.last_error: str | None = None
+        self._on_new: list[Callable[[list[DiscoveredDevice]], Awaitable[None] | None]] = []
         self.registry.merge(static_devices(settings.static_devices))
+
+    def on_new_devices(
+        self, callback: Callable[[list[DiscoveredDevice]], Awaitable[None] | None]
+    ) -> None:
+        """Called after each run with the devices that were not in the registry before."""
+        self._on_new.append(callback)
 
     async def discover_once(self) -> list[str]:
         found = static_devices(self.settings.static_devices)
@@ -190,6 +197,14 @@ class DiscoveryService:
         new = self.registry.merge(found)
         if new:
             log.info("discovered devices", extra={"extra": {"new": new}})
+            devices = [d for d in (self.registry.get(i) for i in new) if d is not None]
+            for cb in list(self._on_new):
+                try:
+                    result = cb(devices)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception:  # noqa: BLE001 - a handoff failure must not stop discovery
+                    log.exception("discovery callback failed")
         return new
 
     async def start(self) -> None:

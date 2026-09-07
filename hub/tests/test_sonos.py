@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from illyhub_hub.adapters import sonos as sonos_mod
 from illyhub_hub.adapters.sonos import (
     GroupSnapshot,
     SoCoAdapter,
@@ -70,6 +71,53 @@ class LazyZone:
     def get_current_transport_info(self):
         self._guard()
         return {"current_transport_state": "PLAYING"}
+
+    # -- SoCo command surface: every call must run off the loop thread -------------------
+    calls: list[tuple[str, Any]]
+    position: str = "0:00:00"
+
+    def _rec(self, name: str, arg: Any = None) -> None:
+        self._guard()
+        self.__dict__.setdefault("calls", []).append((name, arg))
+
+    def play(self):
+        self._rec("play")
+
+    def pause(self):
+        self._rec("pause")
+
+    def stop(self):
+        self._rec("stop")
+
+    def next(self):
+        self._rec("next")
+
+    def previous(self):
+        self._rec("previous")
+
+    def seek(self, position):
+        self._rec("seek", position)
+        self.position = position
+
+    @volume.setter
+    def volume(self, level):
+        self._rec("volume", level)
+
+    @mute.setter
+    def mute(self, muted):
+        self._rec("mute", muted)
+
+    def join(self, master):
+        self._rec("join", master._uid)
+
+    def unjoin(self):
+        self._rec("unjoin")
+
+    def get_current_track_info(self):
+        self._guard()
+        self.__dict__.setdefault("track_info_calls", 0)
+        self.__dict__["track_info_calls"] += 1
+        return {"position": self.position, "duration": "0:03:33"}
 
     @property
     def group(self):
@@ -330,3 +378,178 @@ def test_helpers() -> None:
     assert absolutize(None, "1.2.3.4") is None and absolutize("/x", None) == "/x"
     assert source_from_uri("x-sonos-http:a?sid=236&sn=1") == "pandora"
     assert source_from_uri("x-sonos-http:a?sid=999") is None and source_from_uri(None) is None
+
+
+async def test_commands_run_soco_methods_in_a_thread(store: StateStore, settings: Settings) -> None:
+    h = Harness()
+    a = h.adapter(store, settings)
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+    k, p = "sonos-RINCON_K", "sonos-RINCON_P"
+    await a.play(k)
+    await a.pause(k)
+    await a.stop(k)
+    await a.next(k)
+    await a.previous(k)
+    await a.seek(k, 95_500)
+    assert store.state.positions["sonos:sonos-gG1"].position_ms == 95_500  # optimistic write
+    assert store.state.positions["sonos:sonos-gG1"].confidence == 0.5
+    await a.set_volume(p, 41)
+    await a.set_mute(p, True)
+    kz = next(z for z in h.zones if z._uid == "RINCON_K")
+    pz = next(z for z in h.zones if z._uid == "RINCON_P")
+    # Reconcile against the current topology (K+P already grouped): nothing to do ...
+    await a.set_group([k, p])
+    assert not [c for c in pz.calls if c[0] in ("join", "unjoin")]
+    # ... a single id removes that player from its group ...
+    await a.set_group([k])
+    assert kz.calls[-1] == ("unjoin", None)
+    # ... a desired list without P makes P (the leaver) unjoin, K stays ...
+    kz_before = len(kz.calls)
+    await a.set_group([k, k])
+    assert pz.calls[-1] == ("unjoin", None) and len(kz.calls) == kz_before
+    store.set_groups("sonos", [])  # the topology event would do this; simulate it
+    # ... a newcomer joins the coordinator; dissolve unjoins non-coordinators only.
+    await a.set_group([k, p])
+    assert pz.calls[-1] == ("join", "RINCON_K")
+    kz_before = len(kz.calls)
+    await a.dissolve(k, [k, p])
+    assert pz.calls[-1] == ("unjoin", None) and len(kz.calls) == kz_before
+    assert kz.calls[:6] == [
+        ("play", None),
+        ("pause", None),
+        ("stop", None),
+        ("next", None),
+        ("previous", None),
+        ("seek", "0:01:35"),
+    ]
+    with pytest.raises(ConnectionError):
+        await a.play("sonos-RINCON_NOPE")
+    with pytest.raises(ValueError):
+        await a.set_group([])
+    assert sonos_mod.ms_to_hms(3_725_000) == "1:02:05" and sonos_mod.ms_to_hms(-5) == "0:00:00"
+    await a.disconnect()
+
+
+async def test_position_poller_runs_only_while_playing_and_converges(
+    store: StateStore, settings: Settings
+) -> None:
+    class Clock:
+        t = 1000.0
+
+        def __call__(self) -> float:
+            return self.t
+
+    clock = Clock()
+    h = Harness()
+    a = SoCoAdapter(
+        store,
+        settings,
+        snapshot=h.snapshot,
+        groups=h.groups,
+        subscribe=h.subscribe,
+        clock=clock,
+    )
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+    side = "sonos:sonos-gG1"
+    kz = next(z for z in h.zones if z._uid == "RINCON_K")
+    assert side in a._pollers  # coordinator seeded as PLAYING -> poller started
+    # Drive polls by hand on the fake clock: the device counter ticks at anchor 999.6 and
+    # reports floor seconds; the tracker's bisection schedule must converge.
+    anchor = 999.6
+    for _ in range(6):
+        kz.position = sonos_mod.ms_to_hms(int((clock.t - anchor) * 1000))
+        await a._poll_once(side, "sonos-RINCON_K")
+        clock.t += a._trackers[side].next_poll_in(clock.t, 1.0)
+    kz.position = sonos_mod.ms_to_hms(int((clock.t - anchor) * 1000))
+    await a._poll_once(side, "sonos-RINCON_K")
+    pos = store.state.positions[side]
+    assert pos.confidence == 0.9
+    assert abs(pos.position_ms - (clock.t - anchor) * 1000) < 150
+    # Pause the coordinator: poller stops, estimate frozen.
+    h.sub("RINCON_K", "avTransport").callback(Event({"transport_state": "PAUSED_PLAYBACK"}))
+    await wait_for(lambda: side not in a._pollers)
+    frozen = store.state.positions[side].position_ms
+    calls = kz.__dict__.get("track_info_calls", 0)
+    await asyncio.sleep(settings.position_poll_s * 3)
+    assert kz.__dict__.get("track_info_calls", 0) == calls  # no polling while paused
+    assert store.state.positions[side].position_ms == frozen
+    # Track change resets the tracker; seek from the hub does too.
+    h.sub("RINCON_K", "avTransport").callback(
+        Event({"current_track_meta_data": {"title": "New", "uri": "x-sonos:2"}})
+    )
+    assert a._trackers[side].observations == 0
+    h.sub("RINCON_K", "avTransport").callback(Event({"transport_state": "PLAYING"}))
+    await wait_for(lambda: side in a._pollers)
+    await a.seek("sonos-RINCON_K", 5000)
+    assert a._trackers[side].observations == 0
+    await a.disconnect()
+    assert not a._pollers
+
+
+async def test_poll_errors_are_swallowed(store: StateStore, settings: Settings) -> None:
+    h = Harness()
+    a = h.adapter(store, settings)
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+    kz = next(z for z in h.zones if z._uid == "RINCON_K")
+
+    def boom():
+        raise OSError("timeout")
+
+    kz.get_current_track_info = boom  # type: ignore[method-assign]
+    await asyncio.sleep(settings.position_poll_s * 3)
+    assert "sonos:sonos-gG1" in a._pollers  # still polling
+    await a.disconnect()
+
+
+async def test_topology_event_resnapshots_with_throttle(
+    store: StateStore, settings: Settings
+) -> None:
+    class Clock:
+        t = 0.0
+
+        def __call__(self) -> float:
+            return self.t
+
+    clock = Clock()
+    h = Harness()
+    a = SoCoAdapter(
+        store, settings, snapshot=h.snapshot, groups=h.groups, subscribe=h.subscribe, clock=clock
+    )
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+    assert h.snapshot_calls == 1
+    # A new player appears; the topology event arrives 3 s later -> full re-snapshot.
+    h.zones.append(LazyZone("RINCON_D", "Den", "192.168.1.40"))
+    clock.t = 3.0
+    h.sub("RINCON_K", "zoneGroupTopology").callback(Event({}))
+    await wait_for(lambda: "sonos-RINCON_D" in store.state.players)
+    assert h.snapshot_calls == 2
+    assert {s.service for s in h.subs if s.zone._uid == "RINCON_D"} == {
+        "avTransport",
+        "renderingControl",
+    }
+    # Another event right away is throttled to the cheap group re-read.
+    h.groups_override = []
+    h.sub("RINCON_K", "zoneGroupTopology").callback(Event({}))
+    await wait_for(lambda: store.state.players["sonos-RINCON_P"].group_id is None)
+    assert h.snapshot_calls == 2
+    # Track change writes an optimistic zero position.
+    h.sub("RINCON_K", "avTransport").callback(
+        Event(
+            {
+                "current_track_meta_data": {
+                    "title": "New",
+                    "uri": "x-sonos:9",
+                    "item_class": "object.item.audioItem.audioBroadcast",
+                }
+            }
+        )
+    )
+    pos = store.state.positions["sonos:sonos-RINCON_K"]
+    assert pos.position_ms == 0 and pos.confidence == 0.5
+    np = store.state.now_playing["sonos:sonos-RINCON_K"]
+    assert np.supports_next is False and np.seekable is False
+    await a.disconnect()

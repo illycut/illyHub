@@ -4,6 +4,8 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
+
 from illyhub_hub.adapters import heos as heos_mod
 from illyhub_hub.adapters.heos import PyHeosAdapter, group_id, player_id
 from illyhub_hub.config import Settings
@@ -12,6 +14,7 @@ from illyhub_hub.state import StateStore
 
 @dataclass
 class Media:
+    supported_controls: list[str] | None = None
     song: str = "Signal"
     artist: str = "Analog Heart"
     album: str = "Warm Glow"
@@ -36,9 +39,33 @@ class RawPlayer:
     now_playing_media: Media = field(default_factory=Media)
     callbacks: list[Any] = field(default_factory=list)
 
+    calls: list[tuple[str, Any]] = field(default_factory=list)
+
     def add_on_player_event(self, cb):
         self.callbacks.append(cb)
         return lambda: self.callbacks.remove(cb)
+
+    # pyheos.HeosPlayer command surface (recorded, not executed)
+    async def play(self) -> None:
+        self.calls.append(("play", None))
+
+    async def pause(self) -> None:
+        self.calls.append(("pause", None))
+
+    async def stop(self) -> None:
+        self.calls.append(("stop", None))
+
+    async def play_next(self) -> None:
+        self.calls.append(("play_next", None))
+
+    async def play_previous(self) -> None:
+        self.calls.append(("play_previous", None))
+
+    async def set_volume(self, level: int) -> None:
+        self.calls.append(("set_volume", level))
+
+    async def set_mute(self, state: bool) -> None:
+        self.calls.append(("set_mute", state))
 
     def fire(self, event: str) -> None:
         for cb in list(self.callbacks):
@@ -64,6 +91,7 @@ class FakeHeosClient:
         self.disconnected_cbs: list[Any] = []
         self.controller_cbs: list[Any] = []
         self.disconnect_calls = 0
+        self.group_calls: list[list[int]] = []
 
     async def connect(self) -> None:
         if self.fail:
@@ -80,6 +108,9 @@ class FakeHeosClient:
 
     def add_on_connected(self, cb):
         return lambda: None
+
+    async def set_group(self, player_ids) -> None:
+        self.group_calls.append(list(player_ids))
 
     def add_on_disconnected(self, cb):
         self.disconnected_cbs.append(cb)
@@ -191,7 +222,8 @@ async def test_player_events_update_state_and_bad_event_is_contained(
     assert store.state.now_playing["heos:heos-1"].title == "Next"
     assert store.state.now_playing["heos:heos-1"].seekable is False
     assert store.state.sides["heos:heos-1"].capabilities.supports_seek is False
-    assert store.state.positions["heos:heos-1"].position_ms == 5000
+    # Progress events are edge observations: estimate sits just past the reported second.
+    assert 5000 <= store.state.positions["heos:heos-1"].position_ms <= 5100
     assert {"connected", "play_state", "volume", "now_playing"} <= set(kinds)
     raw.volume = "not-a-number"
     raw.fire(heos_mod.EVENT_PLAYER_VOLUME_CHANGED)  # logged, not raised
@@ -271,3 +303,127 @@ def test_helpers() -> None:
         value = "pause"
 
     assert heos_mod._play_state(E()) == "pause" and heos_mod._play_state("weird") == "unknown"
+
+
+async def test_commands_map_to_pyheos_player_methods_and_seek_is_unsupported(
+    store: StateStore, settings: Settings
+) -> None:
+    from illyhub_hub.adapters.base import UnsupportedCommandError
+
+    gen = Generations()
+    a = make(store, settings, gen)
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+    raw = gen.players[1]
+    await a.play("heos-1")
+    await a.pause("heos-1")
+    await a.stop("heos-1")
+    await a.next("heos-1")
+    await a.previous("heos-1")
+    await a.set_volume("heos-1", 33)
+    await a.set_mute("heos-1", True)
+    assert [c[0] for c in raw.calls] == [
+        "play",
+        "pause",
+        "stop",
+        "play_next",
+        "play_previous",
+        "set_volume",
+        "set_mute",
+    ]
+    assert raw.calls[-2] == ("set_volume", 33) and raw.calls[-1] == ("set_mute", True)
+    with pytest.raises(UnsupportedCommandError):
+        await a.seek("heos-1", 1000)
+    assert store.state.players["heos-1"].capabilities.supports_seek is False
+    with pytest.raises(ConnectionError):
+        await a.play("heos-9")
+    await a.set_group(["heos-1", "heos-2"])
+    await a.set_group(["heos-2"])
+    assert gen.current.group_calls == [[1, 2], [2]]
+    with pytest.raises(ValueError):
+        heos_mod.raw_pid("heos-g7")
+    await a.disconnect()
+    with pytest.raises(ConnectionError):
+        await a.set_group(["heos-1"])
+    with pytest.raises(ConnectionError):
+        await a.play("heos-1")
+
+
+async def test_progress_events_drive_the_position_tracker(
+    store: StateStore, settings: Settings
+) -> None:
+    class Clock:
+        t = 500.0
+
+        def __call__(self) -> float:
+            return self.t
+
+    clock = Clock()
+    gen = Generations()
+    a = PyHeosAdapter(store, settings, "192.168.1.20", factory=gen.factory, clock=clock)
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+    raw = gen.players[1]
+    raw.state = "play"
+    raw.fire(heos_mod.EVENT_PLAYER_STATE_CHANGED)
+    side = "heos:heos-1"
+    # One edge event alone is low confidence; consistent ~1 s spaced events converge.
+    raw.now_playing_media = Media(current_position=1000)
+    raw.fire(heos_mod.EVENT_NOW_PLAYING_PROGRESS)
+    assert store.state.positions[side].confidence == 0.5
+    for pos in (2000, 3000):
+        clock.t += 1.0 + 0.03  # event arrives ~30 ms after the device tick
+        raw.now_playing_media = Media(current_position=pos)
+        raw.fire(heos_mod.EVENT_NOW_PLAYING_PROGRESS)
+    p = store.state.positions[side]
+    assert p.confidence == 0.9 and abs(p.position_ms - 3030) < 120
+    # A seek from the vendor app contradicts the anchor: back to a single observation.
+    clock.t += 1.0
+    raw.now_playing_media = Media(current_position=60_000)
+    raw.fire(heos_mod.EVENT_NOW_PLAYING_PROGRESS)
+    assert store.state.positions[side].confidence == 0.5
+    assert a._trackers[side].observations == 1
+    raw.state = "pause"
+    raw.fire(heos_mod.EVENT_PLAYER_STATE_CHANGED)
+    raw.now_playing_media = Media(current_position=60_000)
+    raw.fire(heos_mod.EVENT_NOW_PLAYING_PROGRESS)
+    assert store.state.positions[side].position_ms == 60_000  # paused: raw value
+    await a.disconnect()
+
+
+async def test_dissolve_uses_the_leader_and_controls_set_capabilities(
+    store: StateStore, settings: Settings
+) -> None:
+    gen = Generations()
+    a = make(store, settings, gen)
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+    await a.dissolve("heos-1", ["heos-1", "heos-2"])
+    assert gen.current.group_calls == [[1]]  # leader pid only, never the followers
+    raw = gen.players[1]
+    raw.now_playing_media = Media(type="station", supported_controls=["play", "play_next"])
+    raw.fire(heos_mod.EVENT_NOW_PLAYING_CHANGED)
+    np = store.state.now_playing["heos:heos-1"]
+    assert np.supports_next is True and np.supports_prev is False and np.seekable is False
+    side = store.state.sides["heos:heos-1"]
+    assert side.capabilities.supports_prev is False and side.capabilities.supports_next is True
+    raw.now_playing_media = Media(type="station")  # no supported_controls attribute -> by type
+    raw.fire(heos_mod.EVENT_NOW_PLAYING_CHANGED)
+    assert store.state.now_playing["heos:heos-1"].supports_prev is False
+    assert heos_mod._enum_value(None) == ""
+    await a.disconnect()
+
+
+async def test_missing_player_event_hook_is_logged(
+    store: StateStore, settings: Settings, caplog
+) -> None:
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="adapter.heos")
+    gen = Generations()
+    gen.players[1].add_on_player_event = None  # type: ignore[assignment]  # hook missing
+    a = make(store, settings, gen)
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+    assert "no add_on_player_event" in caplog.text
+    await a.disconnect()

@@ -42,11 +42,17 @@ class Art(BaseModel):
 
 
 class Capabilities(BaseModel):
-    """What a player or side can do, so Phase 1 does not hard-code vendor checks."""
+    """What a player or side can do, so Phase 1 does not hard-code vendor checks.
+
+    ``supports_next`` / ``supports_prev`` follow the current source (HEOS ``supported_controls``,
+    Sonos DIDL item class): a radio station has no next track.
+    """
 
     supports_seek: bool = True
     supports_power: bool = False
     can_group: bool = True
+    supports_next: bool = True
+    supports_prev: bool = True
 
 
 class Player(BaseModel):
@@ -93,7 +99,8 @@ class Side(BaseModel):
     member_ids: list[str]
     name: str
     play_state: PlayState = "stop"
-    volume: int = 0
+    volume: int = 0  # coordinator volume for solo sides; member average for groups (Sonos style)
+    muted: bool = False  # every member muted
     capabilities: Capabilities = Field(default_factory=Capabilities)
 
 
@@ -104,6 +111,8 @@ class NowPlaying(BaseModel):
     art: Art = Field(default_factory=Art)
     source: str | None = None
     seekable: bool = True
+    supports_next: bool = True
+    supports_prev: bool = True
     duration_ms: int | None = None
     track_id: str | None = None
 
@@ -112,6 +121,12 @@ class Position(BaseModel):
     position_ms: int = 0
     reported_at: datetime = Field(default_factory=now)
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+def optimistic_position(position_ms: int) -> Position:
+    """A low-confidence position adapters write right after a seek or track change, so the UI
+    lands where the user put it until the next device report confirms."""
+    return Position(position_ms=position_ms, confidence=0.5)
 
 
 class SyncState(BaseModel):
@@ -160,6 +175,7 @@ def compute_sides(
 
     def build(sid: str, vendor: Vendor, coordinator: Player, members: list[str], name: str) -> Side:
         np = now_playing.get(sid)
+        member_players = [players[m] for m in members]
         return Side(
             id=sid,
             vendor=vendor,
@@ -167,13 +183,20 @@ def compute_sides(
             member_ids=members,
             name=name,
             play_state=coordinator.play_state,
-            volume=coordinator.volume,
+            volume=round(sum(p.volume for p in member_players) / len(member_players)),
+            muted=all(p.muted for p in member_players),
             capabilities=Capabilities(
-                supports_seek=(np.seekable if np else coordinator.capabilities.supports_seek),
+                # The protocol must support it *and* the current source must allow it.
+                supports_seek=coordinator.capabilities.supports_seek
+                and (np.seekable if np else True),
                 supports_power=any(
                     m in powered or players[m].capabilities.supports_power for m in members
                 ),
                 can_group=coordinator.capabilities.can_group,
+                supports_next=coordinator.capabilities.supports_next
+                and (np.supports_next if np else True),
+                supports_prev=coordinator.capabilities.supports_prev
+                and (np.supports_prev if np else True),
             ),
         )
 

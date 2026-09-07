@@ -43,7 +43,12 @@ def test_group_becomes_one_side_with_coordinator_and_derived_state() -> None:
     assert set(sides) == {"sonos:g1", "sonos:solo"}
     side = sides["sonos:g1"]
     assert side.member_ids == ["k", "pt"] and side.name == "K + Pt"
-    assert side.play_state == "play" and side.volume == 40  # from the coordinator
+    assert side.play_state == "play"  # from the coordinator
+    assert side.volume == 25 and side.muted is False  # group volume is the member average
+    players["k"] = players["k"].model_copy(update={"muted": True})
+    players["pt"] = players["pt"].model_copy(update={"muted": True})
+    sides = compute_sides(players, {"g1": grp("g1", "k", ["k", "pt"])})
+    assert sides["sonos:g1"].muted is True and sides["sonos:solo"].volume == 0
 
 
 def test_capabilities_flow_from_players_zones_and_now_playing() -> None:
