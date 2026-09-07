@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+
+# Python / uv
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Node
+node_modules/
+.next/
+out/
+coverage/
+
+# Secrets and local state
+.env
+.env.*
+!.env.example
+hub/data/
+*.sqlite
+*.sqlite3
+ops/*.local.*
