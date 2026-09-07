@@ -73,10 +73,35 @@ curl -s http://127.0.0.1:8080/api/devices | python3 -m json.tool
 This is the first time the HEOS, Sonos, and Denon adapters touch real devices. Everything
 up to here was verified only against mocks and protocol fakes, so findings are expected.
 
-## 6. Any time, not blocking
+## 6. Network: Wi-Fi is fine to start, Ethernet is the upgrade
 
-`ops/RUNBOOK.md` sections 1 and 2: wired Ethernet, energy settings, DHCP reservations for
-the hub and every device, SSH and Screen Sharing, Tailscale, auto-login.
+The hub Mac currently runs on Wi-Fi. That works. Ethernet is not required; it is the
+recommended end state because two things the hub depends on are less reliable over Wi-Fi:
+
+- **SSDP discovery** is UDP multicast. Wi-Fi drops multicast more often than wired.
+  Mitigation: fill in `HUB_STATIC_DEVICES` (step 3) so the hub never depends on discovery.
+- **Sonos UPnP event callbacks** are HTTP requests from each player back to the hub. If the
+  Mac's Wi-Fi sleeps, roams, or changes IP, events stop until resubscribe (the hub does this
+  automatically with backoff, but you will see a gap).
+
+Do these on Wi-Fi:
+
+- Same SSID and VLAN as the speakers and receiver. No guest network, no client isolation.
+- DHCP reservation for the hub Mac so its IP never changes (`ops/RUNBOOK.md` section 2).
+- Prefer 5 GHz; disable any "band steering" oddities for this client if the router allows.
+- Keep the energy settings from section 2 ("Wake for network access" on). The LaunchAgent
+  already wraps the hub in `caffeinate -s`.
+- Watch `/api/health` for `sonos` flipping to `reconnecting`. Occasional is fine; constant
+  means Wi-Fi power saving or roaming is the problem.
+
+If discovery is flaky or Sonos events keep dropping, a USB-C to Ethernet adapter is the
+fix. Plug it in, set the DHCP reservation for the wired MAC, and optionally turn Wi-Fi off.
+No hub configuration changes are needed.
+
+## 7. Any time, not blocking
+
+`ops/RUNBOOK.md` sections 1 and 2: energy settings, DHCP reservations for the hub and
+every device, SSH and Screen Sharing, Tailscale, auto-login.
 
 ## Later phases
 

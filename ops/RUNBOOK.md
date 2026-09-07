@@ -58,7 +58,7 @@ Also note, in words:
 
 ## 1. Hardware
 
-- [ ] Wired Ethernet via USB-C adapter. Wi-Fi off: `networksetup -setairportpower en0 off` (check which `enX` is Wi-Fi first with `networksetup -listallhardwareports`).
+- [ ] Network. Wi-Fi works and is the current setup; see `docs/mac-hub-kickoff.md` section 6 for the Wi-Fi settings that matter (same SSID/VLAN as the speakers, DHCP reservation, static device list). Wired Ethernet via a USB-C adapter is the upgrade if SSDP or Sonos events prove flaky. With Ethernet in place: `networksetup -setairportpower <wifi-en> off` (find it with `networksetup -listallhardwareports`).
 - [ ] Power connected permanently.
 - [ ] Shelf placement with airflow, lid closed.
 - [ ] Battery check monthly: `system_profiler SPPowerDataType | grep -E 'Condition|Cycle Count'`. Any swelling: stop using the battery, consult a repair shop.
