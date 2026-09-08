@@ -20,7 +20,10 @@ HUB_FAKE_DEVICES=1 uv run hub      # boots with protocol fakes, no hardware need
 uv run hub                         # real adapters (needs HUB_HEOS_HOST / HUB_DENON_HOST or SSDP)
 ```
 
-Then `curl localhost:8080/api/health` and `curl localhost:8080/api/devices`.
+Then `curl -s 'http://localhost:8080/api/health'` and `curl -s 'http://localhost:8080/api/devices'`.
+Quote the URL: a copy that carries a non-breaking space returns
+`{"code": "not_found", "message": "No route for /api/health\u00a0"}`, which looks like a broken
+hub but is the request asking for a path that does not exist (RUNBOOK section 4 item 7).
 OpenAPI docs at `http://localhost:8080/docs`.
 
 ## Endpoints (Phases 1–2)
