@@ -15,6 +15,7 @@ for (const c of cases) {
   test(`transport row is within the viewport on ${c.name}`, async ({ page }) => {
     await page.setViewportSize(c.viewport);
     await page.goto("/");
+    await page.getByRole("button", { name: "Open Now Playing" }).click();
     await expect(page.getByTestId("now-playing")).toBeVisible();
     const toggle = page.getByTestId("play-toggle");
     await expect(toggle).toBeVisible();

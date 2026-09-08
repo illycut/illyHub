@@ -124,3 +124,62 @@ async def test_fake_groups_follow_device_semantics(store: StateStore) -> None:
     b.ticker.tick()
     assert store.state.positions[side].position_ms > 42_000
     await b.stop()
+
+
+# -- Phase 3: fake queue ------------------------------------------------------------------
+
+
+async def test_fake_play_content_loads_queue_and_walks_it(store) -> None:
+    from illyhub_hub.adapters.base import ContentUnavailableError, PlayableTrack
+    from illyhub_hub.adapters.fake import HEOS_PLAYER, FakeBundle
+    from illyhub_hub.content import ContentRef
+
+    bundle = FakeBundle(store, tick_interval_s=0.02)
+    await bundle.start()
+    tracks = [
+        PlayableTrack(service="tidal", track_id=f"1{i}", title=f"T{i}", album="A", album_id="1")
+        for i in range(3)
+    ]
+    ref = ContentRef(service="tidal", kind="album", id="1")
+    await bundle.heos.play_content(HEOS_PLAYER, ref, tracks, start_index=1)
+    side = "heos:heos-1"
+    assert store.state.now_playing[side].title == "T1"
+    assert store.state.sides[side].play_state == "play"
+    await bundle.heos.next(HEOS_PLAYER)
+    assert store.state.now_playing[side].title == "T2"
+    await bundle.heos.next(HEOS_PLAYER)  # end of queue: stops, does not wrap
+    assert store.state.now_playing[side].title == "T2"
+    assert store.state.sides[side].play_state == "stop"
+    await bundle.heos.previous(HEOS_PLAYER)
+    assert store.state.now_playing[side].title == "T1"
+    await bundle.heos.previous(HEOS_PLAYER)
+    await bundle.heos.previous(HEOS_PLAYER)  # first track: restarts, stays on T0
+    assert store.state.now_playing[side].title == "T0"
+    with pytest.raises(IndexError):
+        await bundle.heos.play_content(HEOS_PLAYER, ref, tracks, start_index=7)
+    bundle.set_tidal_linked(False)
+    with pytest.raises(ContentUnavailableError):
+        await bundle.heos.play_content(HEOS_PLAYER, ref, tracks, 0)
+    assert bundle.run_scenario("link_tidal") == {"tidal_linked": True}
+    assert bundle.heos.service_linked("tidal") is True
+    await bundle.stop()
+
+
+async def test_fake_link_flow_is_pending_then_linked_and_approve_completes_it(store) -> None:
+    from illyhub_hub.adapters.fake import FakeBundle
+
+    bundle = FakeBundle(store, tick_interval_s=0.02)
+    await bundle.start()
+    flips: list[bool] = []
+    bundle.on_tidal_link = flips.append
+    bundle.fake_link_delay_s = 0.05
+    bundle.set_tidal_linked(False)
+    bundle.start_fake_link()
+    assert bundle.tidal_state == "pending" and bundle.tidal_linked is False
+    await asyncio.sleep(0.1)
+    assert bundle.tidal_state == "linked" and flips[-1] is True
+    bundle.set_tidal_linked(False)
+    bundle.start_fake_link()
+    assert bundle.run_scenario("approve_tidal") == {"tidal_linked": True, "approved": True}
+    assert bundle.run_scenario("approve_tidal") == {"tidal_linked": True, "approved": False}
+    await bundle.stop()

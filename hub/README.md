@@ -92,3 +92,19 @@ src/illyhub_hub/
 Real adapters (`heos.py`, `sonos.py`, `denon.py`) are unit-tested against mocks only.
 Nothing in this package has been run against physical hardware yet; see
 `../ops/RUNBOOK.md` for the LAN verification checklist.
+
+## Phase 3: accounts, Tidal browse, play by id, history, home, settings
+
+- `auth/vault.py` — Fernet-encrypted JSON vault under `HUB_DATA_DIR` (`vault.json`); key from
+  `HUB_VAULT_KEY` or generated once into `vault.key` (0600). Never copy that file off the Mac.
+- `auth/tidal.py` — Tidal device-code link flow (`tidalapi`), transparent refresh, status.
+- `services/tidal.py` — browse through Tidal's API (favorites, playlists, album/playlist tracks),
+  5-minute cache, per-side availability; `FakeTidalCatalog` for `HUB_FAKE_TIDAL=1`.
+- `content.py` — `ContentRef` / `BrowseItem` / `Container` shapes; `history.py` — SQLite play log.
+- Adapters gained `play_content()` (Sonos: Tidal URIs + DIDL; HEOS: `browse/add_to_queue`) and
+  `service_linked()`. Ref formats: `docs/spikes/tidal-refs.md` (unverified on hardware).
+- Endpoints: `/api/auth/tidal/*`, `/api/browse/tidal/*`, `/api/browse/refresh`, `POST /api/play`,
+  `/api/history`, `/api/home`, `/api/settings`, `POST /api/hub/restart`. Contract: `docs/api.md`.
+
+Offline dev with a canned library: `HUB_FAKE_DEVICES=1 HUB_FAKE_TIDAL=1 uv run hub`, then
+`POST /api/dev/fake/unlink_tidal` / `link_tidal` to exercise the not-linked paths.

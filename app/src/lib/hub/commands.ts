@@ -25,7 +25,8 @@ export async function sendCommand(req: CommandRequest, fetcher: Fetcher = fetch,
   try {
     res = await fetcher(hubHttpBase() + req.path, {
       method: req.method ?? "POST",
-      headers: { "content-type": "application/json", "x-correlation-id": correlationId },
+      // X-Illyhub forces a CORS preflight; the hub requires it on state-changing requests.
+      headers: { "content-type": "application/json", "x-correlation-id": correlationId, "X-Illyhub": "1" },
       body: req.body === undefined ? undefined : JSON.stringify(req.body),
       signal: controller?.signal,
     });
@@ -38,6 +39,19 @@ export async function sendCommand(req: CommandRequest, fetcher: Fetcher = fetch,
     ack = text ? (JSON.parse(text) as Ack) : null;
   } catch {
     ack = null;
+  }
+  if (ack && typeof ack === "object" && !("correlation_id" in ack) && "code" in ack) {
+    // A bare error envelope (e.g. needs_link on /api/play): surface the hub's own message.
+    const env = ack as unknown as { code: string; message?: string };
+    return {
+      correlation_id: correlationId,
+      ok: false,
+      action: req.path,
+      target: null,
+      state_version: 0,
+      error: { code: env.code, message: env.message ?? `The hub answered ${res.status}.`, target: null, correlation_id: correlationId },
+      partial: [],
+    } as Ack;
   }
   if (!ack || typeof ack !== "object" || !("correlation_id" in ack)) {
     return {
@@ -106,6 +120,12 @@ export const commands = {
   ungroup: (side_id: string, correlationId?: string): CommandRequest => ({
     path: `/api/group/${encodeURIComponent(side_id)}`,
     method: "DELETE",
+    correlationId,
+  }),
+  /** Play library content on one target (Phase 3, docs/api.md "Play"). */
+  play: (target: string, content_ref: { service: string; kind: string; id: string }, start_index?: number, correlationId?: string): CommandRequest => ({
+    path: "/api/play",
+    body: { target, content_ref, ...(start_index !== undefined ? { start_index } : {}) },
     correlationId,
   }),
 };

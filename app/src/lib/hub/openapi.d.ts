@@ -174,6 +174,267 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/art/{cache_key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Art
+         * @description Serve a cached variant.
+         *
+         *     404 for an unknown key. Upstream failure (or a disabled proxy) returns **200** with a
+         *     neutral placeholder PNG and ``X-Art-Fallback`` so an ``<img>`` never breaks.
+         */
+        get: operations["art_api_art__cache_key__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/tidal/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Tidal Link Start */
+        post: operations["tidal_link_start_api_auth_tidal_start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/tidal/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Tidal Link Status */
+        get: operations["tidal_link_status_api_auth_tidal_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/tidal/unlink": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Tidal Unlink */
+        post: operations["tidal_unlink_api_auth_tidal_unlink_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/browse/tidal/favorites/albums": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Tidal Favorite Albums */
+        get: operations["tidal_favorite_albums_api_browse_tidal_favorites_albums_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/browse/tidal/favorites/playlists": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Tidal Favorite Playlists */
+        get: operations["tidal_favorite_playlists_api_browse_tidal_favorites_playlists_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/browse/tidal/playlists": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Tidal User Playlists */
+        get: operations["tidal_user_playlists_api_browse_tidal_playlists_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/browse/tidal/album/{album_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Tidal Album */
+        get: operations["tidal_album_api_browse_tidal_album__album_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/browse/tidal/playlist/{playlist_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Tidal Playlist */
+        get: operations["tidal_playlist_api_browse_tidal_playlist__playlist_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/browse/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Browse Refresh */
+        post: operations["browse_refresh_api_browse_refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/play": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Play Content */
+        post: operations["play_content_api_play_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** History */
+        get: operations["history_api_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/home": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Home */
+        get: operations["home_api_home_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Settings View */
+        get: operations["settings_view_api_settings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/hub/restart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Hub Restart */
+        post: operations["hub_restart_api_hub_restart_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dev/fake/{scenario}": {
         parameters: {
             query?: never;
@@ -195,6 +456,29 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AccountStatus */
+        AccountStatus: {
+            /** Service */
+            service: string;
+            /** Linked */
+            linked: boolean;
+            /**
+             * State
+             * @default unlinked
+             * @enum {string}
+             */
+            state: "linked" | "unlinked" | "pending" | "restoring";
+            /** Account Name */
+            account_name?: string | null;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Pending */
+            pending?: {
+                [key: string]: unknown;
+            } | null;
+            /** Last Error */
+            last_error?: string | null;
+        };
         /** Ack */
         Ack: {
             /** Correlation Id */
@@ -210,6 +494,89 @@ export interface components {
             error?: components["schemas"]["ErrorEnvelope"] | null;
             /** Partial */
             partial?: components["schemas"]["PartialFailure"][];
+            /**
+             * Applied
+             * @description targets (side or player ids) the command reached
+             */
+            applied?: string[];
+        };
+        /**
+         * ArtRef
+         * @description Artwork as served by the hub art proxy (design system §2.2, §11).
+         *
+         *     ``url`` is hub-relative (``/api/art/{cache_key}``); append ``?size=96|320|1080|backdrop``.
+         *     ``accent`` is the clamped art-derived colour, ``None`` until the proxy has analysed the image.
+         *     ``accent_is_safe`` is the hub-side contrast check; when false the client uses ``bg-raised``.
+         */
+        ArtRef: {
+            /** Url */
+            url?: string | null;
+            /** Accent */
+            accent?: string | null;
+            /**
+             * Accent Is Safe
+             * @default false
+             */
+            accent_is_safe: boolean;
+            /** Cache Key */
+            cache_key?: string | null;
+        };
+        /**
+         * Availability
+         * @description Which ecosystems can play a service's content (the service is linked on that side).
+         */
+        Availability: {
+            /**
+             * Heos
+             * @default false
+             */
+            heos: boolean;
+            /**
+             * Sonos
+             * @default false
+             */
+            sonos: boolean;
+        };
+        /** BrowseItem */
+        BrowseItem: {
+            content_ref: components["schemas"]["ContentRef"];
+            /** Title */
+            title: string;
+            /** Subtitle */
+            subtitle?: string | null;
+            art?: components["schemas"]["ArtRef"];
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** Track Count */
+            track_count?: number | null;
+            availability?: components["schemas"]["Availability"];
+            /** Index */
+            index?: number | null;
+            /** Album Id */
+            album_id?: string | null;
+            /** Artist */
+            artist?: string | null;
+            /** Album */
+            album?: string | null;
+        };
+        /** BrowsePage */
+        BrowsePage: {
+            /** Items */
+            items: components["schemas"]["BrowseItem"][];
+            /**
+             * Offset
+             * @default 0
+             */
+            offset: number;
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+            /** Total */
+            total?: number | null;
+            /** Next Offset */
+            next_offset?: number | null;
         };
         /**
          * Capabilities
@@ -261,6 +628,30 @@ export interface components {
              */
             since?: string;
         };
+        /**
+         * Container
+         * @description An album or playlist with its tracks.
+         */
+        Container: {
+            item: components["schemas"]["BrowseItem"];
+            /** Tracks */
+            tracks: components["schemas"]["BrowseItem"][];
+        };
+        /** ContentRef */
+        ContentRef: {
+            /**
+             * Service
+             * @enum {string}
+             */
+            service: "tidal" | "ytmusic" | "pandora";
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "album" | "playlist" | "track" | "station";
+            /** Id */
+            id: string;
+        };
         /** DevicesResponse */
         DevicesResponse: {
             /** Players */
@@ -280,7 +671,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "unknown_target" | "unsupported_action" | "not_seekable" | "adapter_disconnected" | "device_offline" | "invalid_argument" | "vendor_error";
+            code: "unknown_target" | "unsupported_action" | "not_seekable" | "adapter_disconnected" | "device_offline" | "invalid_argument" | "vendor_error" | "needs_link" | "not_available_on_side";
             /** Message */
             message: string;
             /** Target */
@@ -304,6 +695,29 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** HardwareItem */
+        HardwareItem: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Vendor */
+            vendor: string;
+            /**
+             * Kind
+             * @description player | zone
+             */
+            kind: string;
+            /** Model */
+            model?: string | null;
+            /** Ip */
+            ip?: string | null;
+            /**
+             * Online
+             * @default true
+             */
+            online: boolean;
         };
         /** HealthResponse */
         HealthResponse: {
@@ -330,6 +744,119 @@ export interface components {
             discovery_last_run?: string | null;
             /** State Version */
             state_version: number;
+            /**
+             * Static
+             * @description fonts / app export served
+             */
+            static?: {
+                [key: string]: boolean;
+            };
+            /**
+             * Art Cache
+             * @description entries, bytes, hits, misses; null when the proxy is off
+             */
+            art_cache?: {
+                [key: string]: number;
+            } | null;
+            /**
+             * History
+             * @description {ok, last_error}
+             */
+            history?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Vault
+             * @description {ok, last_error}
+             */
+            vault?: {
+                [key: string]: unknown;
+            };
+        };
+        /** HistoryItem */
+        HistoryItem: {
+            content_ref: components["schemas"]["ContentRef"];
+            /** Title */
+            title: string;
+            /** Subtitle */
+            subtitle?: string | null;
+            art?: components["schemas"]["ArtRef"];
+            /**
+             * Last Played At
+             * Format: date-time
+             */
+            last_played_at: string;
+            /**
+             * Last Targets
+             * @description side ids of the last play
+             */
+            last_targets?: string[];
+            /**
+             * Play Count
+             * @default 1
+             */
+            play_count: number;
+            /**
+             * Sync
+             * @default false
+             */
+            sync: boolean;
+        };
+        /** HistoryResponse */
+        HistoryResponse: {
+            /** Items */
+            items: components["schemas"]["HistoryItem"][];
+        };
+        /** HomeResponse */
+        HomeResponse: {
+            /** Recents */
+            recents: components["schemas"]["HistoryItem"][];
+            playlists: components["schemas"]["HomeSection"];
+            favorite_albums: components["schemas"]["HomeSection"];
+            stations: components["schemas"]["HomeSection"];
+        };
+        /** HomeSection */
+        HomeSection: {
+            /** Items */
+            items?: components["schemas"]["BrowseItem"][];
+            /**
+             * Needs Link
+             * @description service to link, e.g. 'tidal'
+             */
+            needs_link?: string | null;
+            /**
+             * Error
+             * @description section failed; others still render
+             */
+            error?: string | null;
+        };
+        /** HubInfo */
+        HubInfo: {
+            /** Address */
+            address: string;
+            /** Port */
+            port: number;
+            /** Https */
+            https: boolean;
+            /** Version */
+            version: string;
+            /** Uptime S */
+            uptime_s: number;
+            /** Fake Devices */
+            fake_devices: boolean;
+        };
+        /** LinkStartResponse */
+        LinkStartResponse: {
+            /** Service */
+            service: string;
+            /** User Code */
+            user_code: string;
+            /** Verification Url */
+            verification_url: string;
+            /** Expires In S */
+            expires_in_s: number;
+            /** Interval S */
+            interval_s: number;
         };
         /** MuteBody */
         MuteBody: {
@@ -349,9 +876,23 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "unknown_target" | "unsupported_action" | "not_seekable" | "adapter_disconnected" | "device_offline" | "invalid_argument" | "vendor_error";
+            code: "unknown_target" | "unsupported_action" | "not_seekable" | "adapter_disconnected" | "device_offline" | "invalid_argument" | "vendor_error" | "needs_link" | "not_available_on_side";
             /** Message */
             message: string;
+        };
+        /** PlayBody */
+        PlayBody: {
+            /**
+             * Target
+             * @description player id, side id, or 'all'
+             */
+            target: string;
+            content_ref: components["schemas"]["ContentRef"];
+            /**
+             * Start Index
+             * @default 0
+             */
+            start_index: number;
         };
         /** Player */
         Player: {
@@ -393,6 +934,11 @@ export interface components {
             group_id?: string | null;
             capabilities?: components["schemas"]["Capabilities"];
         };
+        /** RefreshResponse */
+        RefreshResponse: {
+            /** Cleared */
+            cleared: number;
+        };
         /** ScenarioResponse */
         ScenarioResponse: {
             /** Scenario */
@@ -413,6 +959,14 @@ export interface components {
             target: string;
             /** Position Ms */
             position_ms: number;
+        };
+        /** SettingsResponse */
+        SettingsResponse: {
+            /** Accounts */
+            accounts: components["schemas"]["AccountStatus"][];
+            hub: components["schemas"]["HubInfo"];
+            /** Hardware */
+            hardware: components["schemas"]["HardwareItem"][];
         };
         /** Side */
         Side: {
@@ -843,6 +1397,399 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    art_api_art__cache_key__get: {
+        parameters: {
+            query?: {
+                size?: string;
+            };
+            header?: never;
+            path: {
+                cache_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    tidal_link_start_api_auth_tidal_start_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LinkStartResponse"];
+                };
+            };
+        };
+    };
+    tidal_link_status_api_auth_tidal_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountStatus"];
+                };
+            };
+        };
+    };
+    tidal_unlink_api_auth_tidal_unlink_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountStatus"];
+                };
+            };
+        };
+    };
+    tidal_favorite_albums_api_browse_tidal_favorites_albums_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrowsePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    tidal_favorite_playlists_api_browse_tidal_favorites_playlists_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrowsePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    tidal_user_playlists_api_browse_tidal_playlists_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrowsePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    tidal_album_api_browse_tidal_album__album_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                album_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Container"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    tidal_playlist_api_browse_tidal_playlist__playlist_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Container"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    browse_refresh_api_browse_refresh_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RefreshResponse"];
+                };
+            };
+        };
+    };
+    play_content_api_play_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlayBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Ack"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    history_api_history_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HistoryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    home_api_home_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HomeResponse"];
+                };
+            };
+        };
+    };
+    settings_view_api_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsResponse"];
+                };
+            };
+        };
+    };
+    hub_restart_api_hub_restart_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };

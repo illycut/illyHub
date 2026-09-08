@@ -16,6 +16,8 @@ dependencies = [
     # aiohttp is required by soco.events_asyncio (not pulled in by soco itself).
     "aiohttp>=3.14.3",
     "pillow>=10.4",
+    "tidalapi>=0.8,<1",
+    "cryptography>=42",
 ]
 
 [project.scripts]

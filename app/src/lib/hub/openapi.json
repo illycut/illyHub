@@ -395,6 +395,524 @@
     }
    }
   },
+  "/api/art/{cache_key}": {
+   "get": {
+    "tags": [
+     "art"
+    ],
+    "summary": "Art",
+    "description": "Serve a cached variant.\n\n404 for an unknown key. Upstream failure (or a disabled proxy) returns **200** with a\nneutral placeholder PNG and ``X-Art-Fallback`` so an ``<img>`` never breaks.",
+    "operationId": "art_api_art__cache_key__get",
+    "parameters": [
+     {
+      "name": "cache_key",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Cache Key"
+      }
+     },
+     {
+      "name": "size",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "320",
+       "title": "Size"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/auth/tidal/start": {
+   "post": {
+    "tags": [
+     "auth"
+    ],
+    "summary": "Tidal Link Start",
+    "operationId": "tidal_link_start_api_auth_tidal_start_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/LinkStartResponse"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/auth/tidal/status": {
+   "get": {
+    "tags": [
+     "auth"
+    ],
+    "summary": "Tidal Link Status",
+    "operationId": "tidal_link_status_api_auth_tidal_status_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AccountStatus"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/auth/tidal/unlink": {
+   "post": {
+    "tags": [
+     "auth"
+    ],
+    "summary": "Tidal Unlink",
+    "operationId": "tidal_unlink_api_auth_tidal_unlink_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AccountStatus"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/browse/tidal/favorites/albums": {
+   "get": {
+    "tags": [
+     "browse"
+    ],
+    "summary": "Tidal Favorite Albums",
+    "operationId": "tidal_favorite_albums_api_browse_tidal_favorites_albums_get",
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 50,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0,
+       "title": "Offset"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BrowsePage"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/browse/tidal/favorites/playlists": {
+   "get": {
+    "tags": [
+     "browse"
+    ],
+    "summary": "Tidal Favorite Playlists",
+    "operationId": "tidal_favorite_playlists_api_browse_tidal_favorites_playlists_get",
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 50,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0,
+       "title": "Offset"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BrowsePage"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/browse/tidal/playlists": {
+   "get": {
+    "tags": [
+     "browse"
+    ],
+    "summary": "Tidal User Playlists",
+    "operationId": "tidal_user_playlists_api_browse_tidal_playlists_get",
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 50,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0,
+       "title": "Offset"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BrowsePage"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/browse/tidal/album/{album_id}": {
+   "get": {
+    "tags": [
+     "browse"
+    ],
+    "summary": "Tidal Album",
+    "operationId": "tidal_album_api_browse_tidal_album__album_id__get",
+    "parameters": [
+     {
+      "name": "album_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Album Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Container"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/browse/tidal/playlist/{playlist_id}": {
+   "get": {
+    "tags": [
+     "browse"
+    ],
+    "summary": "Tidal Playlist",
+    "operationId": "tidal_playlist_api_browse_tidal_playlist__playlist_id__get",
+    "parameters": [
+     {
+      "name": "playlist_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Playlist Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Container"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/browse/refresh": {
+   "post": {
+    "tags": [
+     "browse"
+    ],
+    "summary": "Browse Refresh",
+    "operationId": "browse_refresh_api_browse_refresh_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RefreshResponse"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/play": {
+   "post": {
+    "tags": [
+     "play"
+    ],
+    "summary": "Play Content",
+    "operationId": "play_content_api_play_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PlayBody"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Ack"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/history": {
+   "get": {
+    "tags": [
+     "home"
+    ],
+    "summary": "History",
+    "operationId": "history_api_history_get",
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 20,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HistoryResponse"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/home": {
+   "get": {
+    "tags": [
+     "home"
+    ],
+    "summary": "Home",
+    "operationId": "home_api_home_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HomeResponse"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/settings": {
+   "get": {
+    "tags": [
+     "settings"
+    ],
+    "summary": "Settings View",
+    "operationId": "settings_view_api_settings_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SettingsResponse"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/restart": {
+   "post": {
+    "tags": [
+     "settings"
+    ],
+    "summary": "Hub Restart",
+    "operationId": "hub_restart_api_hub_restart_post",
+    "responses": {
+     "202": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/dev/fake/{scenario}": {
    "post": {
     "tags": [
@@ -440,6 +958,80 @@
  },
  "components": {
   "schemas": {
+   "AccountStatus": {
+    "properties": {
+     "service": {
+      "type": "string",
+      "title": "Service"
+     },
+     "linked": {
+      "type": "boolean",
+      "title": "Linked"
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "linked",
+       "unlinked",
+       "pending",
+       "restoring"
+      ],
+      "title": "State",
+      "default": "unlinked"
+     },
+     "account_name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Account Name"
+     },
+     "expires_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Expires At"
+     },
+     "pending": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Pending"
+     },
+     "last_error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Error"
+     }
+    },
+    "type": "object",
+    "required": [
+     "service",
+     "linked"
+    ],
+    "title": "AccountStatus"
+   },
    "Ack": {
     "properties": {
      "correlation_id": {
@@ -485,6 +1077,14 @@
       },
       "type": "array",
       "title": "Partial"
+     },
+     "applied": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Applied",
+      "description": "targets (side or player ids) the command reached"
      }
     },
     "type": "object",
@@ -495,6 +1095,216 @@
      "state_version"
     ],
     "title": "Ack"
+   },
+   "ArtRef": {
+    "properties": {
+     "url": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Url"
+     },
+     "accent": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Accent"
+     },
+     "accent_is_safe": {
+      "type": "boolean",
+      "title": "Accent Is Safe",
+      "default": false
+     },
+     "cache_key": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Cache Key"
+     }
+    },
+    "type": "object",
+    "title": "ArtRef",
+    "description": "Artwork as served by the hub art proxy (design system \u00a72.2, \u00a711).\n\n``url`` is hub-relative (``/api/art/{cache_key}``); append ``?size=96|320|1080|backdrop``.\n``accent`` is the clamped art-derived colour, ``None`` until the proxy has analysed the image.\n``accent_is_safe`` is the hub-side contrast check; when false the client uses ``bg-raised``."
+   },
+   "Availability": {
+    "properties": {
+     "heos": {
+      "type": "boolean",
+      "title": "Heos",
+      "default": false
+     },
+     "sonos": {
+      "type": "boolean",
+      "title": "Sonos",
+      "default": false
+     }
+    },
+    "type": "object",
+    "title": "Availability",
+    "description": "Which ecosystems can play a service's content (the service is linked on that side)."
+   },
+   "BrowseItem": {
+    "properties": {
+     "content_ref": {
+      "$ref": "#/components/schemas/ContentRef"
+     },
+     "title": {
+      "type": "string",
+      "title": "Title"
+     },
+     "subtitle": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Subtitle"
+     },
+     "art": {
+      "$ref": "#/components/schemas/ArtRef"
+     },
+     "duration_ms": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Duration Ms"
+     },
+     "track_count": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Track Count"
+     },
+     "availability": {
+      "$ref": "#/components/schemas/Availability"
+     },
+     "index": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Index"
+     },
+     "album_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Album Id"
+     },
+     "artist": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Artist"
+     },
+     "album": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Album"
+     }
+    },
+    "type": "object",
+    "required": [
+     "content_ref",
+     "title"
+    ],
+    "title": "BrowseItem"
+   },
+   "BrowsePage": {
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/BrowseItem"
+      },
+      "type": "array",
+      "title": "Items"
+     },
+     "offset": {
+      "type": "integer",
+      "title": "Offset",
+      "default": 0
+     },
+     "limit": {
+      "type": "integer",
+      "title": "Limit",
+      "default": 50
+     },
+     "total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Total"
+     },
+     "next_offset": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Next Offset"
+     }
+    },
+    "type": "object",
+    "required": [
+     "items"
+    ],
+    "title": "BrowsePage"
    },
    "Capabilities": {
     "properties": {
@@ -561,6 +1371,63 @@
     "type": "object",
     "title": "ConnectionStatus"
    },
+   "Container": {
+    "properties": {
+     "item": {
+      "$ref": "#/components/schemas/BrowseItem"
+     },
+     "tracks": {
+      "items": {
+       "$ref": "#/components/schemas/BrowseItem"
+      },
+      "type": "array",
+      "title": "Tracks"
+     }
+    },
+    "type": "object",
+    "required": [
+     "item",
+     "tracks"
+    ],
+    "title": "Container",
+    "description": "An album or playlist with its tracks."
+   },
+   "ContentRef": {
+    "properties": {
+     "service": {
+      "type": "string",
+      "enum": [
+       "tidal",
+       "ytmusic",
+       "pandora"
+      ],
+      "title": "Service"
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "album",
+       "playlist",
+       "track",
+       "station"
+      ],
+      "title": "Kind"
+     },
+     "id": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "title": "Id"
+     }
+    },
+    "type": "object",
+    "required": [
+     "service",
+     "kind",
+     "id"
+    ],
+    "title": "ContentRef"
+   },
    "DevicesResponse": {
     "properties": {
      "players": {
@@ -613,7 +1480,9 @@
        "adapter_disconnected",
        "device_offline",
        "invalid_argument",
-       "vendor_error"
+       "vendor_error",
+       "needs_link",
+       "not_available_on_side"
       ],
       "title": "Code"
      },
@@ -688,6 +1557,62 @@
     "type": "object",
     "title": "HTTPValidationError"
    },
+   "HardwareItem": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "name": {
+      "type": "string",
+      "title": "Name"
+     },
+     "vendor": {
+      "type": "string",
+      "title": "Vendor"
+     },
+     "kind": {
+      "type": "string",
+      "title": "Kind",
+      "description": "player | zone"
+     },
+     "model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Model"
+     },
+     "ip": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ip"
+     },
+     "online": {
+      "type": "boolean",
+      "title": "Online",
+      "default": true
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "name",
+     "vendor",
+     "kind"
+    ],
+    "title": "HardwareItem"
+   },
    "HealthResponse": {
     "properties": {
      "status": {
@@ -743,6 +1668,41 @@
      "state_version": {
       "type": "integer",
       "title": "State Version"
+     },
+     "static": {
+      "additionalProperties": {
+       "type": "boolean"
+      },
+      "type": "object",
+      "title": "Static",
+      "description": "fonts / app export served"
+     },
+     "art_cache": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "type": "integer"
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Art Cache",
+      "description": "entries, bytes, hits, misses; null when the proxy is off"
+     },
+     "history": {
+      "additionalProperties": true,
+      "type": "object",
+      "title": "History",
+      "description": "{ok, last_error}"
+     },
+     "vault": {
+      "additionalProperties": true,
+      "type": "object",
+      "title": "Vault",
+      "description": "{ok, last_error}"
      }
     },
     "type": "object",
@@ -756,6 +1716,213 @@
      "state_version"
     ],
     "title": "HealthResponse"
+   },
+   "HistoryItem": {
+    "properties": {
+     "content_ref": {
+      "$ref": "#/components/schemas/ContentRef"
+     },
+     "title": {
+      "type": "string",
+      "title": "Title"
+     },
+     "subtitle": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Subtitle"
+     },
+     "art": {
+      "$ref": "#/components/schemas/ArtRef"
+     },
+     "last_played_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Last Played At"
+     },
+     "last_targets": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Last Targets",
+      "description": "side ids of the last play"
+     },
+     "play_count": {
+      "type": "integer",
+      "title": "Play Count",
+      "default": 1
+     },
+     "sync": {
+      "type": "boolean",
+      "title": "Sync",
+      "default": false
+     }
+    },
+    "type": "object",
+    "required": [
+     "content_ref",
+     "title",
+     "last_played_at"
+    ],
+    "title": "HistoryItem"
+   },
+   "HistoryResponse": {
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/HistoryItem"
+      },
+      "type": "array",
+      "title": "Items"
+     }
+    },
+    "type": "object",
+    "required": [
+     "items"
+    ],
+    "title": "HistoryResponse"
+   },
+   "HomeResponse": {
+    "properties": {
+     "recents": {
+      "items": {
+       "$ref": "#/components/schemas/HistoryItem"
+      },
+      "type": "array",
+      "title": "Recents"
+     },
+     "playlists": {
+      "$ref": "#/components/schemas/HomeSection"
+     },
+     "favorite_albums": {
+      "$ref": "#/components/schemas/HomeSection"
+     },
+     "stations": {
+      "$ref": "#/components/schemas/HomeSection"
+     }
+    },
+    "type": "object",
+    "required": [
+     "recents",
+     "playlists",
+     "favorite_albums",
+     "stations"
+    ],
+    "title": "HomeResponse"
+   },
+   "HomeSection": {
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/BrowseItem"
+      },
+      "type": "array",
+      "title": "Items"
+     },
+     "needs_link": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Needs Link",
+      "description": "service to link, e.g. 'tidal'"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Error",
+      "description": "section failed; others still render"
+     }
+    },
+    "type": "object",
+    "title": "HomeSection"
+   },
+   "HubInfo": {
+    "properties": {
+     "address": {
+      "type": "string",
+      "title": "Address"
+     },
+     "port": {
+      "type": "integer",
+      "title": "Port"
+     },
+     "https": {
+      "type": "boolean",
+      "title": "Https"
+     },
+     "version": {
+      "type": "string",
+      "title": "Version"
+     },
+     "uptime_s": {
+      "type": "number",
+      "title": "Uptime S"
+     },
+     "fake_devices": {
+      "type": "boolean",
+      "title": "Fake Devices"
+     }
+    },
+    "type": "object",
+    "required": [
+     "address",
+     "port",
+     "https",
+     "version",
+     "uptime_s",
+     "fake_devices"
+    ],
+    "title": "HubInfo"
+   },
+   "LinkStartResponse": {
+    "properties": {
+     "service": {
+      "type": "string",
+      "title": "Service"
+     },
+     "user_code": {
+      "type": "string",
+      "title": "User Code"
+     },
+     "verification_url": {
+      "type": "string",
+      "title": "Verification Url"
+     },
+     "expires_in_s": {
+      "type": "integer",
+      "title": "Expires In S"
+     },
+     "interval_s": {
+      "type": "number",
+      "title": "Interval S"
+     }
+    },
+    "type": "object",
+    "required": [
+     "service",
+     "user_code",
+     "verification_url",
+     "expires_in_s",
+     "interval_s"
+    ],
+    "title": "LinkStartResponse"
    },
    "MuteBody": {
     "properties": {
@@ -791,7 +1958,9 @@
        "adapter_disconnected",
        "device_offline",
        "invalid_argument",
-       "vendor_error"
+       "vendor_error",
+       "needs_link",
+       "not_available_on_side"
       ],
       "title": "Code"
      },
@@ -807,6 +1976,30 @@
      "message"
     ],
     "title": "PartialFailure"
+   },
+   "PlayBody": {
+    "properties": {
+     "target": {
+      "type": "string",
+      "title": "Target",
+      "description": "player id, side id, or 'all'"
+     },
+     "content_ref": {
+      "$ref": "#/components/schemas/ContentRef"
+     },
+     "start_index": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Start Index",
+      "default": 0
+     }
+    },
+    "type": "object",
+    "required": [
+     "target",
+     "content_ref"
+    ],
+    "title": "PlayBody"
    },
    "Player": {
     "properties": {
@@ -899,6 +2092,19 @@
     ],
     "title": "Player"
    },
+   "RefreshResponse": {
+    "properties": {
+     "cleared": {
+      "type": "integer",
+      "title": "Cleared"
+     }
+    },
+    "type": "object",
+    "required": [
+     "cleared"
+    ],
+    "title": "RefreshResponse"
+   },
    "ScenarioResponse": {
     "properties": {
      "scenario": {
@@ -942,6 +2148,34 @@
      "position_ms"
     ],
     "title": "SeekBody"
+   },
+   "SettingsResponse": {
+    "properties": {
+     "accounts": {
+      "items": {
+       "$ref": "#/components/schemas/AccountStatus"
+      },
+      "type": "array",
+      "title": "Accounts"
+     },
+     "hub": {
+      "$ref": "#/components/schemas/HubInfo"
+     },
+     "hardware": {
+      "items": {
+       "$ref": "#/components/schemas/HardwareItem"
+      },
+      "type": "array",
+      "title": "Hardware"
+     }
+    },
+    "type": "object",
+    "required": [
+     "accounts",
+     "hub",
+     "hardware"
+    ],
+    "title": "SettingsResponse"
    },
    "Side": {
     "properties": {
@@ -1223,6 +2457,30 @@
   {
    "name": "commands",
    "description": "Transport, seek, volume, mute, power, grouping"
+  },
+  {
+   "name": "art",
+   "description": "Proxied, cached, resized artwork with accent colour"
+  },
+  {
+   "name": "auth",
+   "description": "Link and unlink streaming accounts"
+  },
+  {
+   "name": "browse",
+   "description": "Library browsing through the services' own APIs"
+  },
+  {
+   "name": "play",
+   "description": "Play content by canonical id on any target"
+  },
+  {
+   "name": "home",
+   "description": "Home screen aggregate and play history"
+  },
+  {
+   "name": "settings",
+   "description": "Accounts, hub info, hardware, restart"
   },
   {
    "name": "dev",

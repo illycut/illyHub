@@ -4,6 +4,7 @@ import { HubProvider } from "@/components/HubProvider";
 import { Toasts } from "@/components/Toasts";
 import { HubBanner } from "@/components/Banner";
 import { ServiceWorker } from "@/components/ServiceWorker";
+import { PlayerChrome } from "@/components/PlayerChrome";
 
 const THEME = "#101014"; // --bg-base; Next metadata cannot read CSS variables
 const BUILD_ID = process.env.NEXT_PUBLIC_BUILD_ID ?? new Date().toISOString().slice(0, 16);
@@ -38,7 +39,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <div className="fixed inset-x-0 top-0 z-50 pt-safe">
             <HubBanner />
           </div>
-          {children}
+          <PlayerChrome>{children}</PlayerChrome>
           <Toasts />
         </HubProvider>
         <ServiceWorker version={BUILD_ID} />

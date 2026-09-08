@@ -128,7 +128,7 @@ describe("Toasts", () => {
     vi.useFakeTimers();
     render(<Toasts />);
     act(() => {
-      useToasts.getState().push("Volume didn't change on Kitchen", Date.now());
+      useToasts.getState().push("Volume didn't change on Kitchen", { now: Date.now() });
     });
     expect(screen.getByRole("status")).toHaveTextContent("Volume didn't change on Kitchen");
     expect(screen.getByRole("status").parentElement).toHaveAttribute("aria-live", "polite");

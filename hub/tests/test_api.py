@@ -26,7 +26,7 @@ async def client(settings: Settings) -> AsyncIterator[tuple[httpx.AsyncClient, H
     app = create_app(settings)
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://hub") as c:
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
             yield c, app.state.runtime
 
 
@@ -71,7 +71,18 @@ async def test_devices_lists_players_zones_sides(client) -> None:
 async def test_openapi_has_tags(client) -> None:
     c, _rt = client
     spec = (await c.get("/openapi.json")).json()
-    assert {t["name"] for t in spec["tags"]} == {"system", "devices", "commands", "art", "dev"}
+    assert {t["name"] for t in spec["tags"]} >= {
+        "system",
+        "devices",
+        "commands",
+        "art",
+        "dev",
+        "auth",
+        "browse",
+        "play",
+        "home",
+        "settings",
+    }
     assert "/api/health" in spec["paths"] and "/api/devices" in spec["paths"]
 
 
@@ -307,9 +318,9 @@ async def test_websocket_endpoint_streams_snapshot_delta_and_ack(client) -> None
         "root_path": "",
         "scheme": "ws",
         "query_string": b"",
-        "headers": [],
+        "headers": [(b"host", b"localhost")],
         "client": ("test", 1),
-        "server": ("hub", 80),
+        "server": ("localhost", 80),
         "subprotocols": [],
         "state": {},
     }

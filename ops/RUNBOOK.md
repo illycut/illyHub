@@ -93,7 +93,14 @@ curl -s http://127.0.0.1:8080/api/health | python3 -m json.tool   # with mkcert 
   `launchctl kickstart -k gui/$(id -u)/com.illyhub.hub`. Confirm the entry is enabled in that settings pane.
 - Logs: `~/Library/Logs/illyhub/hub.log` (JSON, rotated by the hub: 7 files x 10 MB). `launchd.out.log` /
   `launchd.err.log` catch only startup failures before logging is configured.
-- Restart: `launchctl kickstart -k gui/$(id -u)/com.illyhub.hub`
+- Restart: `launchctl kickstart -k gui/$(id -u)/com.illyhub.hub`, or from the app's Settings
+  (`POST /api/hub/restart`): the hub exits with code 0 and `KeepAlive=true` relaunches it
+  regardless of exit code. `HUB_ALLOW_RESTART=0` disables the endpoint.
+- Request-origin policy: the hub refuses unknown `Host` headers and cross-origin POSTs. Add the
+  names phones will use to `hub/.env`: `HUB_ALLOWED_HOSTS=["hub-mac.<tailnet>.ts.net"]` and, for
+  HTTPS via Tailscale or mkcert, `HUB_ALLOWED_ORIGINS=["https://hub-mac.<tailnet>.ts.net"]`.
+  `localhost`, `127.0.0.1`, the LAN IP and `*.local` are always allowed. A 400 "Invalid host
+  header" or a 403 `forbidden_origin` in the app means a name is missing here.
 - Stop: `launchctl bootout gui/$(id -u)/com.illyhub.hub`
 - Update: `git pull && ./ops/install.sh`
 - Uninstall: `./ops/install.sh --uninstall`

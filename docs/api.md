@@ -5,8 +5,22 @@ response carries an `x-correlation-id` header (echoed from the request or genera
 appears in the command's ack so a client can match an optimistic UI update to its outcome.
 The live OpenAPI document is at `/docs` and `/openapi.json` on the running hub.
 
-Status: Phase 1 (core control). Browse, play-by-content, history, art, sync, auth, and settings
-endpoints from PRD §4.5 land in later phases.
+**Request-origin policy (CSRF and DNS rebinding).** The hub has no user auth (trusted LAN), so
+it protects state-changing requests structurally:
+
+- **Host allow-list.** Requests whose `Host` is not one of the hub's own names get **400**.
+  Defaults: `localhost`, `127.0.0.1`, the hub's LAN IP, `*.local`, plus `HUB_ALLOWED_HOSTS` and the
+  hostnames of `HUB_ALLOWED_ORIGINS` (add the tailnet MagicDNS name and any mkcert name).
+- **Origin check.** Any non-GET/HEAD request that carries an `Origin` header must be same-origin
+  (Origin host:port equals the request `Host`), or have a hostname on the host allow-list, or be
+  listed verbatim in `HUB_ALLOWED_ORIGINS`; otherwise **403** `{code: "forbidden_origin"}`.
+  Requests without `Origin` (curl, scripts) pass. Reads are never blocked.
+- **Restart.** `POST /api/hub/restart` additionally requires the custom header `X-Illyhub: 1`
+  (403 `{code: "missing_header"}` without it), so browsers always preflight it. Clients should
+  send `X-Illyhub: 1` on every POST; the hub only enforces it on restart today.
+
+Status: Phase 3 (Tidal browse + home). Sync endpoints (Phase 4), Pandora (Phase 5) and
+YouTube Music (Phase 6) land later.
 
 ## Concepts
 
@@ -27,9 +41,12 @@ endpoints from PRD §4.5 land in later phases.
 
 | Method | Path | Returns |
 |---|---|---|
-| GET | `/api/health` | `{status, degraded, fake_devices, version, uptime_s, connections, last_error, discovery_last_run, state_version, static: {fonts, app}, art_cache: {entries, bytes, hits, misses} \| null}` — always 200 |
+| GET | `/api/health` | `{status, degraded, fake_devices, version, uptime_s, connections, last_error, discovery_last_run, state_version, static: {fonts, app}, art_cache: {entries, bytes, hits, misses} \| null, history: {ok, last_error}, vault: {ok, last_error}}` — always 200. `history.ok` false means plays are not being logged; `vault.ok` false means the vault file could not be opened (bad `HUB_VAULT_KEY` or undecryptable file) and accounts cannot persist across restarts |
 | GET | `/api/devices` | `{players[], zones[], sides[], discovered[]}` |
 | GET | `/api/art/{cache_key}?size=` | artwork bytes (see **Art proxy**) |
+| GET | `/api/history?limit=` | `{items: HistoryItem[]}` (see **History and home**) |
+| GET | `/api/home` | home-screen aggregate (see **History and home**) |
+| GET | `/api/settings` | accounts, hub info, hardware (see **Settings**) |
 
 ## Art proxy
 
@@ -137,9 +154,12 @@ failure there is logged (the next state delta will show the true value).
   "error": null,
   "partial": [
     {"target": "heos:heos-1", "code": "device_offline", "message": "Living Room Amp is offline."}
-  ]
+  ],
+  "applied": ["sonos:sonos-gRINCON_…"]
 }
 ```
+
+`applied` lists the targets (side or player ids) the command actually reached.
 
 Exactly one ack is emitted per correlation id, whatever happens inside the hub (an unexpected
 exception becomes `vendor_error`). `state_version` is the state version the router observed
@@ -168,10 +188,167 @@ Messages are plain statements of what did not happen, suitable for a toast as-is
 | `invalid_argument` | 400 | A parameter the schema cannot check: volume level outside 0–100 via the router, negative seek, linked volume with neither `level` nor `delta`, or a group list that crosses vendors. (Shape/type violations return FastAPI's 422 before the router runs.) |
 | `vendor_error` | 502 | The device rejected the command or returned an error. |
 
+## Accounts (auth)
+
+Streaming accounts are linked to the **hub**, not to the client. Tokens live in an encrypted
+vault under `HUB_DATA_DIR` (`vault.json`, Fernet key from `HUB_VAULT_KEY` or the generated
+`vault.key`, mode 0600 — that file must never leave the hub Mac). Nothing about tokens is ever
+returned by the API or written to logs.
+
+Tidal uses the device-code ("link") flow: the hub shows a code, the user approves it at
+`link.tidal.com` on any device, the hub notices in the background.
+
+| Method | Path | Returns |
+|---|---|---|
+| POST | `/api/auth/tidal/start` | `{service: "tidal", user_code, verification_url, expires_in_s, interval_s}`. The hub polls Tidal until approval or expiry. Calling again starts a fresh code |
+| GET | `/api/auth/tidal/status` | **AccountStatus** `{service, linked, state, account_name, expires_at, pending: {user_code, verification_url, expires_at} \| null, last_error}` |
+| POST | `/api/auth/tidal/unlink` | AccountStatus with `linked: false`; tokens deleted, browse cache cleared |
+
+`state` is what the client renders: `linked` (account usable), `pending` (a device code is
+waiting for approval; show the code), `restoring` (the hub found stored tokens at startup and is
+validating them; render a skeleton, not "Connect Tidal"), `unlinked`. `linked` stays a boolean
+for convenience and equals `state == "linked"`.
+
+Access tokens refresh transparently before browse calls. A refresh failure unlinks the account
+and the next browse returns `needs_link`. Unlinking during a pending flow cancels it; a late
+approval of a cancelled flow is ignored. Starting a new flow cancels the previous one.
+
+**`needs_link` envelope** — returned as HTTP 409 by every browse/play endpoint when the hub has
+no account for the service:
+
+```json
+{"code": "needs_link", "message": "Tidal is not connected. Link it in Settings.", "service": "tidal"}
+```
+
+## Browse (Tidal)
+
+"Browse once, play anywhere": the hub reads the library through Tidal's own API and every item
+carries the canonical Tidal id. Playback on each ecosystem is built from that id (see **Play**).
+
+| Method | Path | Returns |
+|---|---|---|
+| GET | `/api/browse/tidal/favorites/albums?limit=50&offset=0` | **BrowsePage** of albums |
+| GET | `/api/browse/tidal/favorites/playlists?limit=&offset=` | BrowsePage of saved (other people's) playlists |
+| GET | `/api/browse/tidal/playlists?limit=&offset=` | BrowsePage of the user's own playlists |
+| GET | `/api/browse/tidal/album/{id}` | **Container** `{item, tracks[]}` |
+| GET | `/api/browse/tidal/playlist/{id}` | Container |
+| POST | `/api/browse/refresh` | `{cleared}` — drops the browse cache (5 min TTL, `HUB_BROWSE_CACHE_S`) |
+
+```json
+// BrowsePage
+{"items": [BrowseItem], "offset": 0, "limit": 50, "total": 6, "next_offset": null}
+
+// BrowseItem
+{"content_ref": {"service": "tidal", "kind": "album", "id": "101"},
+ "title": "Warm Glow", "subtitle": "Analog Heart",
+ "art": {"url": "/api/art/…", "cache_key": "…", "accent": null, "accent_is_safe": false},
+ "duration_ms": 1926000, "track_count": 9,
+ "availability": {"heos": true, "sonos": true},
+ "index": null, "album_id": null, "artist": "Analog Heart", "album": null}
+```
+
+- `content_ref` is the canonical id: `service` ∈ `tidal | ytmusic | pandora`, `kind` ∈
+  `album | playlist | track | station`. Pass it back verbatim to `POST /api/play`.
+- `availability` says which **ecosystems** can play the item: `heos` is true when the HEOS
+  account has Tidal linked (`browse/get_music_sources`), `sonos` when the household has a Tidal
+  account (Sonos account serial found, or `HUB_SONOS_TIDAL_SN`). The client greys sides that
+  cannot play the content in the target picker; the hub also refuses with
+  `not_available_on_side`.
+- Tracks (inside a Container) carry `index` (0-based position, for "play from here"),
+  `album_id`, `artist`, `album`, `duration_ms`.
+- Art goes through the art proxy like now-playing art; Tidal covers are fetched from the Tidal CDN
+  at 1280 px (service-direct, PRD §3.4).
+- Unknown album/playlist/track → 404 `{code: "not_found", message, content_ref}`.
+- Album and playlist track lists are complete (the hub walks Tidal's 100-item pages). Favorites
+  pages are capped at 50 by Tidal; `next_offset` is null once a page comes back short.
+- `content_ref.id` must match `^[A-Za-z0-9_.:-]+$` (422 otherwise).
+
+## Play
+
+`POST /api/play` `{target, content_ref, start_index = 0}` → **Ack** (`action: "play_content"`).
+
+The hub resolves the album/playlist to its track list, then on every target side replaces the
+queue and starts at `start_index`. Sonos: Tidal URIs + DIDL metadata built from the ids
+(`x-sonos-http:track/{id}.flac?sid=174&flags=8224&sn={sn}`); HEOS: `browse/add_to_queue`
+(replace and play) with the Tidal source id 10. The exact ref formats are in
+`docs/spikes/tidal-refs.md` and are **unverified on hardware** until ai-dev #10 runs.
+
+Ack additions: `applied` lists the side ids the content actually started on. Error codes added
+for this endpoint:
+
+| code | HTTP | Meaning |
+|---|---|---|
+| `needs_link` | 409 | The hub has no account for the service (link it in Settings). Raised before any side is touched, as the `needs_link` envelope above rather than an Ack |
+| `not_available_on_side` | 409 | That ecosystem has no account for the service (link it in the vendor app). Other sides still play; listed in `partial` |
+
+Every successful play writes a history row (below).
+
+## History and home
+
+The hub keeps its own play log in SQLite (`HUB_DATA_DIR/history.sqlite`, retention
+`HUB_HISTORY_MAX_ROWS`, default 500): neither HEOS nor Sonos exposes listening history, so
+"Recently played" only knows plays routed through the hub.
+
+`GET /api/history?limit=20` → `{items: HistoryItem[]}`, newest first, one row per content ref:
+
+```json
+{"content_ref": {"service": "tidal", "kind": "album", "id": "101"},
+ "title": "Warm Glow", "subtitle": "Analog Heart", "art": {…},
+ "last_played_at": "2026-09-07T22:10:04.120Z",
+ "last_targets": ["heos:heos-1"], "play_count": 3, "sync": false}
+```
+
+`last_targets` are the side ids of the most recent play, which the target picker pre-highlights
+(PRD Decision 4).
+
+`GET /api/home` → one call for the home screen:
+
+```json
+{"recents": [HistoryItem],
+ "playlists":       {"items": [BrowseItem], "needs_link": null},
+ "favorite_albums": {"items": [BrowseItem], "needs_link": null},
+ "stations":        {"items": [], "needs_link": null}}
+```
+
+- `playlists` merges the user's own and saved Tidal playlists (YouTube Music joins in Phase 6),
+  sorted by recency of play (hub history) then alphabetically. Same-named playlists across
+  services are **not** deduped; the badge disambiguates.
+- A section whose service is not linked returns `items: []` with `needs_link: "tidal"` instead of
+  failing the whole call; the client renders the "Connect Tidal" card there. A section whose
+  loader fails for any other reason returns `items: []` with `error: "<summary>"`; recents and the
+  other sections still render.
+- `stations` is a Phase 5 placeholder and is always empty for now.
+- Warm responses come from the browse cache; the hub logs `home_ms` per call.
+
+## Settings
+
+`GET /api/settings`:
+
+```json
+{"accounts": [
+   {"service": "tidal", "linked": true, "account_name": "james", "expires_at": "…", "pending": null, "last_error": null},
+   {"service": "ytmusic", "linked": false},
+   {"service": "pandora", "linked": true},
+   {"service": "heos_account", "linked": true, "account_name": "james@…"}],
+ "hub": {"address": "192.168.1.10", "port": 8080, "https": false, "version": "0.1.0", "uptime_s": 4021.3, "fake_devices": false},
+ "hardware": [{"id": "heos-1", "name": "Living Room Amp", "vendor": "heos", "kind": "player", "model": "Denon AVR-X3700H", "ip": "…", "online": true},
+              {"id": "denon-10.0.0.5:main", "name": "Main zone", "vendor": "denon", "kind": "zone", "ip": "10.0.0.5", "online": true}]}
+```
+
+`pandora.linked` reflects whether either ecosystem reports Pandora as linked (Pandora is played
+natively per ecosystem, PRD §3.5); `ytmusic` is a placeholder until Phase 6.
+
+`POST /api/hub/restart` (requires `X-Illyhub: 1`) → 202 `{restarting: true}`; the process exits
+with code 0 half a second later and launchd's `KeepAlive=true` relaunches it regardless of exit
+code. Repeated calls while a restart is scheduled return 202 without scheduling another exit.
+409 `{code: "restart_disabled"}` when `HUB_ALLOW_RESTART=0`.
+
 ## Dev endpoint (fake devices only)
 
 Mounted only when `HUB_FAKE_DEVICES=1`. Simulates changes made outside the hub so the PWA and
-its Playwright suite can exercise state handling.
+its Playwright suite can exercise state handling. With `HUB_FAKE_TIDAL=1` the browse, play, history
+and home endpoints serve a canned Tidal library (6 albums, 4 playlists) and the fakes keep a real
+queue per side: `next`/`prev` walk it and now-playing follows.
 
 `POST /api/dev/fake/{scenario}` → `{scenario, result, state_version}`
 
@@ -182,6 +359,8 @@ its Playwright suite can exercise state handling.
 | `disconnect_heos` | HEOS adapter drops to `reconnecting`, its players go offline |
 | `reconnect_heos` | HEOS adapter back to `connected` |
 | `sonos_regroup` | Toggles Kitchen + Patio between grouped and solo |
+| `link_tidal` / `unlink_tidal` | With `HUB_FAKE_TIDAL=1`: link/unlink the canned Tidal library everywhere at once (hub account and both vendor apps), so `needs_link` and `not_available_on_side` paths can be exercised |
+| `approve_tidal` | Completes a pending fake link flow immediately. (`POST /api/auth/tidal/start` in fake mode goes `pending` for about a second, then `linked`, so the pending UI can be exercised.) |
 
 Unknown scenario → 404 with the list of valid names.
 

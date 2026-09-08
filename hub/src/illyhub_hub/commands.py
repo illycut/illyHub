@@ -21,9 +21,16 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from .adapters.base import DenonAdapter, PlaybackAdapter, UnsupportedCommandError
+from .adapters.base import (
+    ContentUnavailableError,
+    DenonAdapter,
+    PlayableTrack,
+    PlaybackAdapter,
+    UnsupportedCommandError,
+)
 from .coalesce import Coalescer
 from .config import Vendor
+from .content import Availability, ContentRef
 from .logsetup import correlation_id, get_logger
 from .state import HubState, Player, Side, StateStore
 
@@ -37,6 +44,8 @@ ErrorCode = Literal[
     "device_offline",
     "invalid_argument",
     "vendor_error",
+    "needs_link",
+    "not_available_on_side",
 ]
 
 ERROR_CATALOGUE: dict[str, tuple[int, str]] = {
@@ -52,6 +61,12 @@ ERROR_CATALOGUE: dict[str, tuple[int, str]] = {
         "with neither level nor delta, or a group across vendors).",
     ),
     "vendor_error": (502, "The device rejected the command or the hub hit an unexpected error."),
+    "needs_link": (409, "The streaming service is not linked to the hub yet."),
+    "not_available_on_side": (
+        409,
+        "The streaming service is not linked inside that ecosystem (vendor app), so that side "
+        "cannot play the content.",
+    ),
 }
 
 TransportAction = Literal["play", "pause", "toggle", "stop", "next", "prev"]
@@ -87,6 +102,9 @@ class Ack(BaseModel):
     state_version: int
     error: ErrorEnvelope | None = None
     partial: list[PartialFailure] = Field(default_factory=list)
+    applied: list[str] = Field(
+        default_factory=list, description="targets (side or player ids) the command reached"
+    )
 
 
 AckCallback = Callable[[Ack], Awaitable[None] | None]
@@ -173,11 +191,13 @@ class _Outcomes:
     def __init__(self) -> None:
         self.attempted = 0
         self.failures: list[CommandError] = []
+        self.applied: list[str] = []
 
     async def attempt(self, target: str, coro: Awaitable[None]) -> bool:
         self.attempted += 1
         try:
             await coro
+            self.applied.append(target)
             return True
         except CommandError as exc:
             exc.target = target  # per-target outcome, not the user's selector ("all")
@@ -429,6 +449,89 @@ class CommandRouter:
 
         return await self._execute("ungroup", side_id, run)
 
+    async def play_content(
+        self,
+        target: str,
+        ref: ContentRef,
+        tracks: list[PlayableTrack],
+        *,
+        start_index: int = 0,
+        availability: Availability | None = None,
+    ) -> Ack:
+        """Replace each target side's queue with ``tracks`` and start at ``start_index``.
+
+        ``availability`` (which ecosystems have the service linked) comes from the service layer;
+        a side whose vendor lacks the service fails with ``not_available_on_side`` while the
+        others still play. The service layer has already raised ``needs_link`` if the hub itself
+        is not linked, so an empty ``tracks`` list here is a content problem, not an auth one.
+        """
+        avail = availability or self.service_availability(ref.service)
+
+        async def run(out: _Outcomes) -> None:
+            if not tracks:
+                raise CommandError("invalid_argument", "There is nothing to play.", target)
+            if not 0 <= start_index < len(tracks):
+                raise CommandError("invalid_argument", "Start index is out of range.", target)
+            for side in resolve_sides(self.state, target):
+                await out.attempt(
+                    side.id, self._play_on_side(side, ref, tracks, start_index, avail, target)
+                )
+
+        return await self._execute("play_content", target, run)
+
+    async def _play_on_side(
+        self,
+        side: Side,
+        ref: ContentRef,
+        tracks: list[PlayableTrack],
+        start_index: int,
+        avail: Availability,
+        target: str,
+    ) -> None:
+        adapter = self._adapter_for(side.vendor, target)  # adapter_disconnected first
+        if not getattr(avail, side.vendor, False):
+            raise CommandError(
+                "not_available_on_side",
+                f"{side.name} can't play {ref.service.title()}; link it in the {side.vendor} app.",
+                side.id,
+            )
+        self._require_online(side.coordinator_player_id, target)
+        coord = side.coordinator_player_id
+        try:
+            await adapter.play_content(coord, ref, tracks, start_index)
+        except ContentUnavailableError as exc:
+            raise CommandError(
+                "not_available_on_side",
+                f"{side.name} can't play {ref.service.title()}; link it in the {side.vendor} app.",
+                side.id,
+            ) from exc
+        except CommandError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - vendor libraries raise their own types
+            log.warning(
+                "play_content failed",
+                extra={"extra": {"target": side.id, "content": ref.key, "error": str(exc)}},
+            )
+            raise CommandError(
+                "vendor_error", f"Play didn't happen on {side.name}.", side.id
+            ) from exc
+
+    def service_availability(self, service: str) -> Availability:
+        """Which ecosystems report the service as linked, per their adapters."""
+        return Availability(
+            heos=self._linked("heos", service),
+            sonos=self._linked("sonos", service),
+        )
+
+    def _linked(self, vendor: str, service: str) -> bool:
+        adapter = self.playback.get(vendor)
+        if adapter is None or adapter.status().state != "connected":
+            return False
+        try:
+            return bool(adapter.service_linked(service))
+        except Exception:  # noqa: BLE001
+            return False
+
     # -- internals ------------------------------------------------------------------
 
     @property
@@ -550,6 +653,7 @@ class CommandRouter:
                 else None
             ),
             partial=partial,
+            applied=list(out.applied),
         )
         log.info(
             "command",
@@ -596,6 +700,7 @@ def _verb(action: str) -> str:
         "zone_power": "Power",
         "group": "Grouping",
         "ungroup": "Ungrouping",
+        "play_content": "Play",
     }.get(action, action.capitalize())
 
 

@@ -465,7 +465,7 @@ async def client(settings: Settings):
     )
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://hub"
+            transport=httpx.ASGITransport(app=app), base_url="http://localhost"
         ) as c:
             yield c, app.state.runtime
 
@@ -532,7 +532,7 @@ async def test_art_proxy_disabled_serves_placeholders_not_device_urls(tmp_path: 
         np = next(iter(rt.store.state.now_playing.values()))
         assert np.art.url == f"/api/art/{PLACEHOLDER_KEY}" and "fake://" not in np.art.url
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://hub"
+            transport=httpx.ASGITransport(app=app), base_url="http://localhost"
         ) as c:
             r = await c.get(np.art.url, params={"size": "96"})
             assert r.status_code == 200 and r.headers["x-art-fallback"] == "proxy_disabled"

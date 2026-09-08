@@ -449,3 +449,139 @@ async def test_now_playing_art_registers_device_url_with_cache(
     assert np.art.url == f"/api/art/{np.art.cache_key}" and np.art.cache_key
     assert cache._read_meta(np.art.cache_key).source_url == "http://art/1.jpg"
     await a.disconnect()
+
+
+# -- Phase 3: play by canonical id ---------------------------------------------------------
+
+
+class Source:
+    def __init__(self, available: bool) -> None:
+        self.available = available
+
+
+async def test_play_content_uses_add_to_queue_and_music_sources(
+    store: StateStore, settings: Settings
+) -> None:
+    from illyhub_hub.adapters.base import ContentUnavailableError, PlayableTrack
+    from illyhub_hub.content import ContentRef
+
+    gen = Generations()
+    queue_calls: list[tuple[int, str, str | None, int]] = []
+    play_queue_calls: list[int] = []
+    queue_len = {"n": 0}
+    get_queue_calls: list[tuple[int, int]] = []
+
+    async def add_to_queue(source_id, container_id, media_id=None, add_criteria=None):
+        queue_calls.append((source_id, container_id, media_id, int(add_criteria)))
+        queue_len["n"] = 0  # the container loads asynchronously on a real receiver
+
+    async def get_queue(start, end):
+        get_queue_calls.append((start, end))
+        queue_len["n"] += 1  # one more item lands per poll
+        return list(range(min(queue_len["n"], end)))
+
+    async def play_queue(qid: int) -> None:
+        play_queue_calls.append(qid)
+
+    for p in gen.players.values():
+        p.add_to_queue = add_to_queue  # type: ignore[attr-defined]
+        p.play_queue = play_queue  # type: ignore[attr-defined]
+        p.get_queue = get_queue  # type: ignore[attr-defined]
+    sources = {10: Source(True), 1: Source(False)}
+    FakeHeosClient.get_music_sources = lambda self, *, refresh=False: _ret(sources)  # type: ignore[attr-defined]
+    a = make(store, settings, gen)
+    try:
+        await a.connect()
+        await wait_for(lambda: a.status().state == "connected")
+        assert a.service_linked("tidal") is True and a.service_linked("pandora") is False
+        assert a.service_linked("ytmusic") is False
+        tracks = [
+            PlayableTrack(service="tidal", track_id="10101", title="Signal", album_id="101"),
+            PlayableTrack(service="tidal", track_id="10102", title="Carrier", album_id="101"),
+            PlayableTrack(service="tidal", track_id="10103", title="Sideband", album_id="101"),
+        ]
+        album = ContentRef(service="tidal", kind="album", id="101")
+        await a.play_content("heos-1", album, tracks, start_index=0)
+        assert queue_calls == [(10, "101", None, 4)] and play_queue_calls == []
+        # start_index waits for the queue to contain enough items before play_queue.
+        await a.play_content("heos-1", album, tracks, start_index=2)
+        assert play_queue_calls == [3]  # HEOS queue ids are 1-based
+        assert len(get_queue_calls) == 3 and get_queue_calls[-1] == (1, 3)
+        await a.play_content(
+            "heos-1", ContentRef(service="tidal", kind="track", id="10102"), tracks, 1
+        )
+        assert queue_calls[-1] == (10, "101", "10102", 4)
+        with pytest.raises(IndexError):
+            await a.play_content("heos-1", album, tracks, 9)
+        sources[10].available = False
+        await a._load_sources(gen.current)
+        with pytest.raises(ContentUnavailableError):
+            await a.play_content("heos-1", album, tracks, 0)
+        await a.disconnect()
+        assert a._sources == {}  # teardown forgets the sources
+    finally:
+        del FakeHeosClient.get_music_sources  # type: ignore[attr-defined]
+
+
+async def test_play_content_start_index_never_silently_dropped(
+    store: StateStore, settings: Settings
+) -> None:
+    from illyhub_hub.adapters.base import PlayableTrack
+    from illyhub_hub.content import ContentRef
+
+    gen = Generations()
+
+    async def add_to_queue(*a, **k):
+        return None
+
+    for p in gen.players.values():
+        p.add_to_queue = add_to_queue  # type: ignore[attr-defined]
+    sources = {10: Source(True)}
+    FakeHeosClient.get_music_sources = lambda self, *, refresh=False: _ret(sources)  # type: ignore[attr-defined]
+    a = make(store, settings, gen)
+    try:
+        await a.connect()
+        await wait_for(lambda: a.status().state == "connected")
+        tracks = [PlayableTrack(service="tidal", track_id=str(i), title=f"T{i}") for i in range(3)]
+        album = ContentRef(service="tidal", kind="album", id="101")
+        with pytest.raises(RuntimeError, match="start_index dropped"):
+            await a.play_content("heos-1", album, tracks, start_index=1)  # no play_queue
+
+        async def play_queue(qid):
+            return None
+
+        async def get_queue(start, end):
+            return []  # never fills
+
+        for p in gen.players.values():
+            p.play_queue = play_queue  # type: ignore[attr-defined]
+            p.get_queue = get_queue  # type: ignore[attr-defined]
+        a.QUEUE_WAIT_S = 0.3
+        with pytest.raises(TimeoutError):
+            await a.play_content("heos-1", album, tracks, start_index=1)
+        await a.disconnect()
+    finally:
+        del FakeHeosClient.get_music_sources  # type: ignore[attr-defined]
+
+
+async def _ret(value):
+    return value
+
+
+async def test_music_sources_failure_means_nothing_linked(
+    store: StateStore, settings: Settings
+) -> None:
+    gen = Generations()
+
+    async def boom(self, *, refresh=False):
+        raise RuntimeError("no sources")
+
+    FakeHeosClient.get_music_sources = boom  # type: ignore[attr-defined]
+    try:
+        a = make(store, settings, gen)
+        await a.connect()
+        await wait_for(lambda: a.status().state == "connected")
+        assert a.service_linked("tidal") is False
+        await a.disconnect()
+    finally:
+        del FakeHeosClient.get_music_sources  # type: ignore[attr-defined]

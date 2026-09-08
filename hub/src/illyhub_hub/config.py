@@ -74,6 +74,19 @@ class Settings(BaseSettings):
     tls_cert: str | None = None  # PEM cert; with tls_key uvicorn serves HTTPS (mkcert path)
     tls_key: str | None = None
 
+    # Phase 3: auth vault, Tidal, play history, settings
+    vault_key: str | None = None  # Fernet key; generated into $HUB_DATA_DIR/vault.key when unset
+    fake_tidal: bool = False  # canned Tidal library + fake queue (needs HUB_FAKE_DEVICES=1)
+    sonos_tidal_sn: str | None = None  # Sonos account serial for Tidal URIs when discovery fails
+    browse_cache_s: float = 300.0
+    history_max_rows: int = 500
+    allow_restart: bool = True
+    # Request-origin policy. Bodyless cross-origin POSTs need no CORS preflight, so the hub
+    # rejects state-changing requests whose Origin is not one of its own, and refuses unknown
+    # Host headers (DNS rebinding). Add tailnet / mkcert names here.
+    allowed_hosts: list[str] = Field(default_factory=list)  # extra hosts beyond the defaults
+    allowed_origins: list[str] = Field(default_factory=list)  # extra full origins
+
     @property
     def data_path(self) -> Path:
         return resolve_path(self.data_dir)
@@ -81,6 +94,18 @@ class Settings(BaseSettings):
     @property
     def art_path(self) -> Path:
         return self.data_path / "art"
+
+    @property
+    def vault_path(self) -> Path:
+        return self.data_path / "vault.json"
+
+    @property
+    def vault_key_path(self) -> Path:
+        return self.data_path / "vault.key"
+
+    @property
+    def history_path(self) -> Path:
+        return self.data_path / "history.sqlite"
 
     @property
     def app_path(self) -> Path:

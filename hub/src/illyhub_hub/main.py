@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import uvicorn
 
 from .api import create_app
@@ -32,7 +34,9 @@ def uvicorn_kwargs(settings: Settings) -> dict[str, object]:
 def run() -> None:  # pragma: no cover - exercised manually
     settings = Settings()
     configure_logging(settings.log_level, settings.log_file, settings.effective_stdout_level)
-    uvicorn.run(create_app(settings), **uvicorn_kwargs(settings))  # type: ignore[arg-type]
+    # os._exit is wired only here: POST /api/hub/restart ends the process and launchd relaunches.
+    app = create_app(settings, exit_fn=os._exit)
+    uvicorn.run(app, **uvicorn_kwargs(settings))  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":  # pragma: no cover

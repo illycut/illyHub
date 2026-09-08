@@ -107,6 +107,19 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
+  /* Settings rows (§6.9, UX U4): hairline inset past the icon column, none on the last row. */
+  .settings-row::after {
+    content: "";
+    position: absolute;
+    left: 56px;
+    right: 0;
+    bottom: 0;
+    height: 1px;
+    background: var(--stroke);
+  }
+  li:last-child > .settings-row::after {
+    display: none;
+  }
   .no-scrollbar::-webkit-scrollbar {
     display: none;
   }

@@ -593,3 +593,108 @@ async def test_relative_album_art_is_absolutized_before_registration(
     meta = cache._read_meta(np.art.cache_key)
     assert meta.source_url == "http://192.168.1.31:1400/getaa?s=1&u=x"
     await a.disconnect()
+
+
+# -- Phase 3: Tidal refs and play by canonical id -------------------------------------------
+
+
+def test_tidal_ref_builders_match_the_spike_doc() -> None:
+    from illyhub_hub.adapters.base import PlayableTrack
+    from illyhub_hub.adapters.sonos import (
+        TIDAL_DESC,
+        build_tidal_didl,
+        tidal_item_id,
+        tidal_parent_id,
+        tidal_track_uri,
+    )
+
+    assert tidal_track_uri("10101", "7") == "x-sonos-http:track/10101.flac?sid=174&flags=8224&sn=7"
+    assert tidal_item_id("10101") == "10032020track/10101"
+    assert tidal_parent_id("101", None) == "1004206calbum/101"
+    assert tidal_parent_id("101", "p-1") == "1006006cplaylist/p-1"
+    assert tidal_parent_id(None, None) == "10032020"
+    assert TIDAL_DESC == "SA_RINCON44551_X_#Svc44551-0-Token"
+    track = PlayableTrack(
+        service="tidal",
+        track_id="10101",
+        title="Signal",
+        artist="Analog Heart",
+        album="Warm Glow",
+        album_id="101",
+    )
+    didl = build_tidal_didl(track, "7")
+    xml = didl.to_element()
+    from xml.etree import ElementTree as ET
+
+    text = ET.tostring(xml).decode()
+    assert "x-sonos-http:track/10101.flac?sid=174&amp;flags=8224&amp;sn=7" in text
+    assert 'id="10032020track/10101"' in text and 'parentID="1004206calbum/101"' in text
+    assert (
+        "SA_RINCON44551_X_#Svc44551-0-Token" in text and "object.item.audioItem.musicTrack" in text
+    )
+
+
+async def test_play_content_clears_queue_batches_and_plays_from_index(
+    store: StateStore, settings: Settings
+) -> None:
+    from illyhub_hub.adapters.base import ContentUnavailableError, PlayableTrack
+    from illyhub_hub.content import ContentRef
+
+    h = Harness()
+    a = h.adapter(store, settings)
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+    k = h.zones[0]
+    k.clear_queue = lambda: k._rec("clear_queue")  # type: ignore[attr-defined]
+    k.add_multiple_to_queue = lambda items: k._rec("add_multiple", len(items))  # type: ignore[attr-defined]
+    k.play_from_queue = lambda i: k._rec("play_from_queue", i)  # type: ignore[attr-defined]
+    tracks = [
+        PlayableTrack(service="tidal", track_id=str(i), title=f"T{i}", album_id="101")
+        for i in range(20)
+    ]
+    ref = ContentRef(service="tidal", kind="album", id="101")
+    assert a.service_linked("tidal") is False  # no sn discovered, no setting
+    with pytest.raises(ContentUnavailableError):
+        await a.play_content("sonos-RINCON_K", ref, tracks, 0)
+    a.settings = settings.model_copy(update={"sonos_tidal_sn": "3"})
+    assert a.service_linked("tidal") is True
+    await a.play_content("sonos-RINCON_K", ref, tracks, start_index=5)
+    names = [c for c in k.calls if c[0] in {"clear_queue", "add_multiple", "play_from_queue"}]
+    assert names == [("clear_queue", None), ("add_multiple", 20), ("play_from_queue", 5)]
+    side = "sonos:sonos-gG1"
+    assert store.state.positions[side].position_ms == 0
+    assert store.state.positions[side].confidence == 0.5
+    with pytest.raises(ContentUnavailableError):
+        await a.play_content(
+            "sonos-RINCON_K", ContentRef(service="ytmusic", kind="album", id="x"), tracks, 0
+        )
+    await a.disconnect()
+
+
+def test_discover_tidal_sn_maps_service_type_44551() -> None:
+    from illyhub_hub.adapters.sonos import discover_tidal_sn
+
+    class Acct:
+        def __init__(self, service_type: str) -> None:
+            self.service_type = service_type
+
+    class Accounts:
+        @staticmethod
+        def get_accounts(zone):
+            assert zone == "zone"
+            return {"1": Acct("2311"), "7": Acct("44551"), "9": Acct("65031")}
+
+    class Broken:
+        @staticmethod
+        def get_accounts(zone):
+            raise OSError("no route")
+
+    class NoTidal:
+        @staticmethod
+        def get_accounts(zone):
+            return {"1": Acct("2311")}
+
+    assert discover_tidal_sn("zone", account_class=Accounts) == "7"
+    assert discover_tidal_sn("zone", account_class=NoTidal) is None
+    assert discover_tidal_sn("zone", account_class=Broken) is None
+    assert discover_tidal_sn(None, account_class=Accounts) is None

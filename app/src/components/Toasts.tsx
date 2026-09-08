@@ -1,11 +1,13 @@
 "use client";
 import { useEffect } from "react";
-import { TOAST_TTL_MS, useToasts } from "@/lib/ui/toasts";
+import Link from "next/link";
+import { ttlOf, useToasts } from "@/lib/ui/toasts";
 
 /** Command-failed toasts (design system §8). aria-live so screen readers hear them once. */
 export function Toasts() {
   const toasts = useToasts((s) => s.toasts);
   const expire = useToasts((s) => s.expire);
+  const dismiss = useToasts((s) => s.dismiss);
   useEffect(() => {
     if (toasts.length === 0) return;
     const id = setInterval(() => expire(Date.now()), 250);
@@ -22,10 +24,15 @@ export function Toasts() {
         <div
           key={t.id}
           role="status"
-          data-ttl={TOAST_TTL_MS}
-          className="pointer-events-auto max-w-[420px] rounded-control bg-overlay px-4 py-3 text-body text-primary shadow-mini"
+          data-ttl={ttlOf(t)}
+          className="pointer-events-auto flex max-w-[420px] items-center gap-3 rounded-control bg-overlay px-4 py-3 text-body text-primary shadow-mini"
         >
-          {t.message}
+          <span className="min-w-0 flex-1">{t.message}</span>
+          {t.action ? (
+            <Link href={t.action.href} className="shrink-0 rounded-control px-2 py-2 text-body text-signal" onClick={() => dismiss(t.id)} data-testid="toast-action">
+              {t.action.label}
+            </Link>
+          ) : null}
         </div>
       ))}
     </div>

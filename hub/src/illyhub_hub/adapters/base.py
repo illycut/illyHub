@@ -17,6 +17,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from ..art import ArtHelper
+from ..content import ContentRef
 from ..logsetup import get_logger
 from ..state import ConnectionStatus, ConnState, StateStore
 from ..tasks import cancel_all, spawn
@@ -130,6 +131,25 @@ class UnsupportedCommandError(Exception):
     """The protocol has no way to perform this command (e.g. seek on the HEOS CLI)."""
 
 
+class ContentUnavailableError(Exception):
+    """This ecosystem cannot play the content: the service is not linked on that side."""
+
+
+class PlayableTrack(BaseModel):
+    """One track resolved from a service, in the shape both ecosystems need to build a queue
+    entry. Ids are the service's canonical ids (Tidal track/album ids are integers-as-strings)."""
+
+    service: str
+    track_id: str
+    title: str
+    artist: str | None = None
+    album: str | None = None
+    album_id: str | None = None
+    playlist_id: str | None = None
+    duration_ms: int | None = None
+    art_url: str | None = None
+
+
 class PlaybackAdapter(BaseAdapter, ABC):
     """Command surface for a music ecosystem. Player ids are hub ids (``heos-1``, ``sonos-…``).
 
@@ -172,6 +192,19 @@ class PlaybackAdapter(BaseAdapter, ABC):
 
     @abstractmethod
     async def dissolve(self, coordinator_id: str, member_ids: list[str]) -> None: ...
+
+    def service_linked(self, service: str) -> bool:
+        """Whether this ecosystem has an account for ``service`` (Tidal, Pandora …). Drives the
+        per-side availability flags. Default: unknown → False; real adapters override."""
+        return False
+
+    @abstractmethod
+    async def play_content(
+        self, player_id: str, ref: ContentRef, tracks: list[PlayableTrack], start_index: int = 0
+    ) -> None:
+        """Replace the coordinator's queue with ``tracks`` (resolved from ``ref`` by the service
+        layer) and start at ``start_index``. Raises :class:`ContentUnavailableError` when the
+        ecosystem has no account for the service (Phase 3, PRD review §2.1)."""
 
 
 class HeosAdapter(PlaybackAdapter, ABC):

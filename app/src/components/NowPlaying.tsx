@@ -6,13 +6,13 @@ import { Scrubber } from "./Scrubber";
 import { ServiceBadge } from "./ServiceBadge";
 import { TransportRow } from "./TransportRow";
 import { VolumeSheet } from "./VolumeSheet";
-import { ZonePicker } from "./ZonePicker";
 import { ZoneDots } from "./ZoneDots";
 import { SyncChip } from "./SyncChip";
 import { Slider } from "./Slider";
 import { TextSkeleton } from "./Skeleton";
 import { artUrl } from "@/lib/hub/config";
 import { useHub } from "@/lib/hub/store";
+import { useChrome } from "@/lib/ui/chrome";
 import { resolveActiveSide, zoneDotsForState, zoneDotsLabel } from "@/lib/selectors";
 import { useReducedMotion } from "@/lib/reducedMotion";
 import { Coalescer } from "@/lib/coalesce";
@@ -42,7 +42,7 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
   const hubNow = useHub((s) => s.hubNow);
   const reduced = useReducedMotion();
   const [volumeOpen, setVolumeOpen] = useState(false);
-  const [zonesOpen, setZonesOpen] = useState(false);
+  const setZonesOpen = useChrome((s) => s.setZonesOpen);
 
   const accentSafe = !!np?.art?.accent && np.art.accent_is_safe;
   const accent = accentSafe ? np!.art.accent! : "var(--bg-raised)";
@@ -201,7 +201,6 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
       </div>
 
       <VolumeSheet open={volumeOpen} onClose={() => setVolumeOpen(false)} />
-      <ZonePicker open={zonesOpen} onClose={() => setZonesOpen(false)} />
     </section>
   );
 }

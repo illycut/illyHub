@@ -21,6 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..art import ArtHelper, ArtHints
+from ..content import ContentRef
 from ..state import (
     Capabilities,
     GroupTopology,
@@ -35,7 +36,14 @@ from ..state import (
     side_id_for_group,
 )
 from ..tasks import stop_task
-from .base import DenonAdapter, HeosAdapter, SonosAdapter, UnsupportedCommandError
+from .base import (
+    ContentUnavailableError,
+    DenonAdapter,
+    HeosAdapter,
+    PlayableTrack,
+    SonosAdapter,
+    UnsupportedCommandError,
+)
 
 FAKE_DENON_HOST = "fake"
 # Ids follow the real adapters' shapes: heos-<pid>, heos-g<gid>, sonos-<uid>, sonos-g<group uid>.
@@ -134,6 +142,56 @@ class FakeVendorMixin:
     def _side_for(self, player_id: str) -> str:
         return side_id_for(self.store.state.players[player_id])
 
+    # -- content (Phase 3): a fake queue per side ------------------------------------
+
+    linked_services: set[str]
+    _queues: dict[str, tuple[list[PlayableTrack], int]]
+
+    def service_linked(self, service: str) -> bool:
+        return service in self.linked_services
+
+    def _track_from_playable(self, t: PlayableTrack) -> FakeTrack:
+        return FakeTrack(
+            t.title,
+            t.artist or "",
+            t.album or "",
+            t.duration_ms or 200_000,
+            source=t.service,
+            art_url=f"fake://art/{(t.album_id or t.track_id).replace(':', '-')}",
+        )
+
+    async def play_content(
+        self, player_id: str, ref: ContentRef, tracks: list[PlayableTrack], start_index: int = 0
+    ) -> None:
+        self._check(player_id)
+        if not self.service_linked(ref.service):
+            raise ContentUnavailableError(f"{ref.service} is not linked in the {self.vendor} app")
+        if not 0 <= start_index < len(tracks):
+            raise IndexError(f"start_index {start_index} out of range for {len(tracks)} tracks")
+        side = self._side_for(player_id)
+        self._queues[side] = (list(tracks), start_index)
+        self.change_track(player_id, self._track_from_playable(tracks[start_index]))
+        self.sim_play_state(player_id, "play")
+
+    def _advance_queue(self, player_id: str, step: int) -> bool:
+        side = self._side_for(player_id)
+        queued = self._queues.get(side)
+        if not queued:
+            return False
+        tracks, idx = queued
+        nxt = idx + step
+        if not 0 <= nxt < len(tracks):
+            # End of queue: like the real players, stop instead of wrapping around.
+            if step > 0:
+                self.sim_play_state(player_id, "stop")
+                self._ticker.seek(side, 0)
+            else:
+                self._ticker.seek(side, 0)  # "previous" at the first track restarts it
+            return True
+        self._queues[side] = (tracks, nxt)
+        self.change_track(player_id, self._track_from_playable(tracks[nxt]))
+        return True
+
     # -- scripting (simulates the vendor app) -----------------------------------------
 
     def sim_volume(self, player_id: str, volume: int, muted: bool | None = None) -> None:
@@ -207,6 +265,8 @@ class FakeVendorMixin:
 
     async def next(self, player_id: str) -> None:
         self._check(player_id)
+        if self._advance_queue(player_id, +1):
+            return
         current = self.store.state.now_playing.get(self._side_for(player_id))
         titles = [t.title for t in NEXT_TRACKS]
         idx = titles.index(current.title) if current and current.title in titles else -1
@@ -214,6 +274,8 @@ class FakeVendorMixin:
 
     async def previous(self, player_id: str) -> None:
         self._check(player_id)
+        if self._advance_queue(player_id, -1):
+            return
         self._ticker.seek(self._side_for(player_id), 0)
 
     async def seek(self, player_id: str, position_ms: int) -> None:
@@ -237,6 +299,8 @@ class FakeHeos(FakeVendorMixin, HeosAdapter):
         super().__init__(store, art=art)
         self._ticker = ticker
         self._connected = False
+        self.linked_services = {"tidal", "pandora"}
+        self._queues = {}
 
     async def connect(self) -> None:
         if self._connected:
@@ -327,6 +391,8 @@ class FakeSonos(FakeVendorMixin, SonosAdapter):
         super().__init__(store, art=art)
         self._ticker = ticker
         self._connected = False
+        self.linked_services = {"tidal", "pandora", "ytmusic"}
+        self._queues = {}
 
     async def connect(self) -> None:
         if self._connected:
@@ -475,6 +541,53 @@ class FakeBundle:
         self.heos = FakeHeos(store, self.ticker, art)
         self.sonos = FakeSonos(store, self.ticker, art)
         self.denon = FakeDenon(store)
+        self.tidal_linked = True
+        self.tidal_pending = False  # fake device-code flow in progress
+        self.on_tidal_link: Callable[[bool], None] | None = None  # flips the fake catalog
+        self._link_task: asyncio.Task[None] | None = None
+        self.fake_link_delay_s = 1.0
+
+    def set_tidal_linked(self, linked: bool) -> None:
+        """Simulate linking/unlinking Tidal everywhere at once: the hub account (catalog) and
+        both vendor apps (per-side availability)."""
+        self.tidal_linked = linked
+        self.tidal_pending = False
+        for a in (self.heos, self.sonos):
+            if linked:
+                a.linked_services.add("tidal")
+            else:
+                a.linked_services.discard("tidal")
+        if self.on_tidal_link is not None:
+            self.on_tidal_link(linked)
+
+    def start_fake_link(self) -> None:
+        """Mimic the device-code flow: pending for ``fake_link_delay_s``, then linked. The app
+        can render the pending UI; ``approve_tidal`` completes it immediately."""
+        self.tidal_pending = True
+        if self._link_task is not None:
+            self._link_task.cancel()
+
+        async def approve_later() -> None:
+            await asyncio.sleep(self.fake_link_delay_s)
+            if self.tidal_pending:
+                self.set_tidal_linked(True)
+
+        self._link_task = asyncio.get_running_loop().create_task(approve_later())
+
+    def approve_fake_link(self) -> bool:
+        if not self.tidal_pending:
+            return False
+        if self._link_task is not None:
+            self._link_task.cancel()
+            self._link_task = None
+        self.set_tidal_linked(True)
+        return True
+
+    @property
+    def tidal_state(self) -> str:
+        if self.tidal_linked:
+            return "linked"
+        return "pending" if self.tidal_pending else "unlinked"
 
     @property
     def adapters(self) -> list[HeosAdapter | SonosAdapter | DenonAdapter]:
@@ -487,6 +600,9 @@ class FakeBundle:
 
     async def stop(self) -> None:
         await self.ticker.stop()
+        if self._link_task is not None:
+            self._link_task.cancel()
+            self._link_task = None
         for a in self.adapters:
             await a.disconnect()
 
@@ -498,6 +614,9 @@ class FakeBundle:
         "disconnect_heos",
         "reconnect_heos",
         "sonos_regroup",
+        "link_tidal",
+        "unlink_tidal",
+        "approve_tidal",
     )
 
     def run_scenario(self, name: str) -> dict[str, object]:
@@ -526,4 +645,13 @@ class FakeBundle:
             else:
                 self.sonos.group([KITCHEN, PATIO], coordinator=KITCHEN)
             return {"grouped": not grouped}
+        if name == "link_tidal":
+            self.set_tidal_linked(True)
+            return {"tidal_linked": True}
+        if name == "unlink_tidal":
+            self.set_tidal_linked(False)
+            return {"tidal_linked": False}
+        if name == "approve_tidal":
+            approved = self.approve_fake_link()
+            return {"tidal_linked": self.tidal_linked, "approved": approved}
         raise KeyError(name)

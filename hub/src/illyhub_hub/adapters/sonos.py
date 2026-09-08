@@ -22,6 +22,7 @@ from typing import Any, Protocol
 
 from ..art import ArtHelper, ArtHints
 from ..config import Settings
+from ..content import ContentRef
 from ..positions import PositionTracker
 from ..state import (
     Capabilities,
@@ -33,7 +34,7 @@ from ..state import (
     side_id_for,
 )
 from ..tasks import stop_task
-from .base import Backoff, SonosAdapter
+from .base import Backoff, ContentUnavailableError, PlayableTrack, SonosAdapter
 
 SERVICES = ("avTransport", "renderingControl")
 SUBSCRIPTION_TIMEOUT_S = 600
@@ -64,9 +65,12 @@ class GroupSnapshot:
 
 @dataclass
 class Topology:
+    """Zones, groups, raw SoCo handles, and the household's Tidal account serial (``sn``)."""
+
     zones: list[ZoneSnapshot] = field(default_factory=list)
     groups: list[GroupSnapshot] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)  # uid -> SoCo object, for subscribing
+    tidal_sn: str | None = None  # Sonos account serial for Tidal, from the household accounts
 
 
 class SonosSubscription(Protocol):
@@ -138,9 +142,75 @@ async def default_snapshot(settings: Settings) -> Topology:  # pragma: no cover
         zones = soco.discover(
             timeout=settings.ssdp_timeout_s, interface_addr=settings.sonos_listener_host
         )
-        return snapshot_zones(zones or [])
+        topo = snapshot_zones(zones or [])
+        topo.tidal_sn = discover_tidal_sn(next(iter(zones), None) if zones else None)
+        return topo
 
     return await asyncio.to_thread(work)
+
+
+def _soco_account_class() -> Any:  # pragma: no cover - import of the real SoCo class
+    from soco.music_services.accounts import Account
+
+    return Account
+
+
+def discover_tidal_sn(zone: Any, account_class: Any | None = None) -> str | None:
+    """Read the household's Tidal account serial from ``/status/accounts`` via SoCo. Sonos
+    service type for Tidal is ``sid*256 + 7`` = 44551. Returns None when Tidal is not linked
+    in the Sonos app (or the lookup fails); ``HUB_SONOS_TIDAL_SN`` is the manual fallback.
+    ``account_class`` is injectable so the mapping is testable without SoCo's network code."""
+    if zone is None:
+        return None
+    try:
+        account = account_class or _soco_account_class()
+        for serial, acct in account.get_accounts(zone).items():
+            if str(getattr(acct, "service_type", "")) == TIDAL_SERVICE_TYPE:
+                return str(serial)
+    except Exception:  # noqa: BLE001 - best effort
+        return None
+    return None
+
+
+# -- Tidal on Sonos: refs built from the canonical Tidal id (docs/spikes/tidal-refs.md) -------
+
+TIDAL_SID = 174
+TIDAL_SERVICE_TYPE = str(TIDAL_SID * 256 + 7)  # "44551"
+TIDAL_DESC = f"SA_RINCON{TIDAL_SERVICE_TYPE}_X_#Svc{TIDAL_SERVICE_TYPE}-0-Token"
+TIDAL_PROTOCOL_INFO = "sonos.com-http:*:audio/flac:*"
+
+
+def tidal_track_uri(track_id: str, sn: str) -> str:
+    return f"x-sonos-http:track/{track_id}.flac?sid={TIDAL_SID}&flags=8224&sn={sn}"
+
+
+def tidal_item_id(track_id: str) -> str:
+    return f"10032020track/{track_id}"
+
+
+def tidal_parent_id(album_id: str | None, playlist_id: str | None) -> str:
+    if playlist_id:
+        return f"1006006cplaylist/{playlist_id}"
+    if album_id:
+        return f"1004206calbum/{album_id}"
+    return "10032020"
+
+
+def build_tidal_didl(track: PlayableTrack, sn: str) -> Any:
+    """A SoCo ``DidlMusicTrack`` the player accepts for a Tidal track (metadata carries the
+    ``desc`` token that tells the player which account to stream with)."""
+    from soco.data_structures import DidlMusicTrack, DidlResource
+
+    res = DidlResource(uri=tidal_track_uri(track.track_id, sn), protocol_info=TIDAL_PROTOCOL_INFO)
+    return DidlMusicTrack(
+        title=track.title,
+        parent_id=tidal_parent_id(track.album_id, track.playlist_id),
+        item_id=tidal_item_id(track.track_id),
+        resources=[res],
+        desc=TIDAL_DESC,
+        creator=track.artist,
+        album=track.album,
+    )
 
 
 async def default_groups(zone: Any) -> list[GroupSnapshot]:  # pragma: no cover
@@ -361,6 +431,44 @@ class SoCoAdapter(SonosAdapter):
                 await self._run_sync(self._raw(member).unjoin)
 
     # -- position polling -------------------------------------------------------------
+
+    # -- content (Phase 3) ----------------------------------------------------------
+
+    @property
+    def tidal_sn(self) -> str | None:
+        return self._topology.tidal_sn or self.settings.sonos_tidal_sn
+
+    def service_linked(self, service: str) -> bool:
+        if service == "tidal":
+            return bool(self.tidal_sn)
+        return False
+
+    async def play_content(
+        self, player_id: str, ref: ContentRef, tracks: list[PlayableTrack], start_index: int = 0
+    ) -> None:
+        """Replace the coordinator's queue with Tidal tracks built from canonical ids, then play
+        from ``start_index``. **Unverified on hardware** (ai-dev #10); every SoCo call runs in a
+        worker thread."""
+        if ref.service != "tidal":
+            raise ContentUnavailableError(f"{ref.service} is not playable on Sonos from the hub")
+        sn = self.tidal_sn
+        if not sn:
+            raise ContentUnavailableError("Tidal is not linked in the Sonos app")
+        raw = self._raw(player_id)
+
+        if not 0 <= start_index < len(tracks):
+            raise IndexError(f"start_index {start_index} out of range for {len(tracks)} tracks")
+
+        def work() -> None:
+            items = [build_tidal_didl(t, sn) for t in tracks]
+            raw.clear_queue()
+            raw.add_multiple_to_queue(items)  # SoCo chunks the SOAP calls itself (16 per call)
+            raw.play_from_queue(start_index)
+
+        await self._run_sync(work)
+        side = side_id_for(self.store.state.players[player_id])
+        self._trackers.pop(side, None)
+        self.store.set_position(side, optimistic_position(0))
 
     def _sync_pollers(self) -> None:
         """One poller per side whose coordinator is playing; stop the rest."""

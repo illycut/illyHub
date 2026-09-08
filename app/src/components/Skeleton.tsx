@@ -22,12 +22,30 @@ export function EmptyState({ children }: { children: React.ReactNode }) {
   return <p className="py-6 text-body text-secondary">{children}</p>;
 }
 
-/** Grid-position placeholder card: "Connect Tidal" / "Connect YouTube Music" (design system §8). */
-export function ConnectCard({ service }: { service: string }) {
-  return (
-    <div className="flex aspect-square w-full flex-col items-center justify-center gap-2 rounded-art border border-stroke bg-raised p-3 text-center" data-testid="connect-card">
+/**
+ * Grid-position card: "Connect Tidal" / "Connect YouTube Music" (design system §8). Tapping
+ * starts the hub sign-in flow; a disabled card carries a short note instead.
+ */
+export function ConnectCard({ service, onPress, note }: { service: string; onPress?: () => void; note?: string }) {
+  const cls = "flex aspect-square w-full flex-col items-center justify-center gap-2 rounded-art border border-stroke bg-raised p-3 text-center";
+  if (!onPress) {
+    // Disabled: no opacity; title text-secondary, reason text-tertiary (UX U5).
+    return (
+      <div className={cls} data-testid="connect-card" aria-disabled="true">
+        <span className="text-body text-secondary">Connect {service}</span>
+        {note ? <span className="text-micro text-tertiary">{note}</span> : null}
+      </div>
+    );
+  }
+  const body = (
+    <>
       <span className="text-body text-primary">Connect {service}</span>
-      <span className="text-micro text-tertiary">Available in Settings soon</span>
-    </div>
+      {note ? <span className="text-micro text-tertiary">{note}</span> : null}
+    </>
+  );
+  return (
+    <button type="button" className={`${cls} transition-transform duration-press active:scale-[0.97]`} onClick={onPress} data-testid="connect-card">
+      {body}
+    </button>
   );
 }

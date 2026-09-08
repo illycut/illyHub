@@ -74,7 +74,7 @@ async def test_serves_export_with_cache_headers_and_reserved_paths(tmp_path: Pat
     assert app.state.static_mounted == StaticMounts(fonts=True, app=True)
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://hub"
+            transport=httpx.ASGITransport(app=app), base_url="http://localhost"
         ) as c:
             r = await c.get("/")
             assert r.status_code == 200 and "index" in r.text
@@ -108,7 +108,7 @@ async def test_unknown_paths_get_404_envelope_on_any_method(tmp_path: Path) -> N
     app = create_app(_settings(tmp_path))
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://hub"
+            transport=httpx.ASGITransport(app=app), base_url="http://localhost"
         ) as c:
             for method, path in (
                 ("GET", "/api/nope"),
@@ -134,7 +134,7 @@ async def test_missing_export_is_not_mounted_but_404s_are_enveloped(tmp_path: Pa
     assert app.state.static_mounted == StaticMounts(fonts=False, app=False)
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://hub"
+            transport=httpx.ASGITransport(app=app), base_url="http://localhost"
         ) as c:
             r = await c.get("/")
             assert r.status_code == 404 and r.json()["code"] == "not_found"

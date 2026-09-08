@@ -12,21 +12,44 @@
 import { create } from "zustand";
 import { commands as C, sendCommand, type CommandRequest, type Fetcher } from "./commands";
 import { newCorrelationId } from "./correlation";
-import { applyDelta, emptyState, type DeltaMessage } from "./state";
-import type { Ack, HubState, Position, ServerMessage, TransportAction, Vendor } from "./types";
+import type { ContentRef } from "./library";
 import type { ConnectionPhase } from "./socket";
-import { toast } from "../ui/toasts";
-import { linkedVolumeLevels, sideForPlayer } from "../selectors";
+import { applyDelta, emptyState, type DeltaMessage } from "./state";
+import type { Ack, ArtRef, HubState, Position, ServerMessage, TransportAction, Vendor } from "./types";
 import { interpolatePosition } from "../position";
+import { linkedVolumeLevels, sideForPlayer } from "../selectors";
+import { toast } from "../ui/toasts";
+
+/** What `play()` needs from a library item to update the UI optimistically. */
+export interface PlayItem {
+  content_ref: ContentRef;
+  title: string;
+  subtitle: string | null;
+  art: ArtRef;
+  start_index?: number;
+}
 
 export const ACK_TIMEOUT_MS = 5000;
+
+/** Error codes that mean "nothing on any side was touched" and end a multi-side play early. */
+export const PLAY_SHORT_CIRCUIT_CODES = new Set(["needs_link", "not_found", "invalid_argument", "unknown_target"]);
+
+const CONNECT_LABEL: Record<string, string> = { tidal: "Connect Tidal", ytmusic: "Connect YouTube Music", pandora: "Connect Pandora" };
 
 type Patch = (s: HubState) => HubState;
 export type TimerHandle = unknown;
 
+/** What to do when a command fails: the default toasts and resyncs; "keep" leaves both to the caller. */
+export type OnFail = "resync" | "keep";
+
+export interface DispatchOptions {
+  onFail?: OnFail;
+}
+
 interface Pending {
   timer: TimerHandle | null;
   label: string;
+  onFail: OnFail;
 }
 
 export interface HubStore {
@@ -56,7 +79,7 @@ export interface HubStore {
   setTargets(ids: string[]): void;
 
   // commands
-  dispatch(req: CommandRequest, optimistic?: Patch, label?: string): Promise<Ack>;
+  dispatch(req: CommandRequest, optimistic?: Patch, label?: string, opts?: DispatchOptions): Promise<Ack>;
   transport(action: TransportAction, target: string): Promise<Ack>;
   seek(sideId: string, positionMs: number): Promise<Ack>;
   skip(sideId: string, deltaMs: number): Promise<Ack>;
@@ -67,6 +90,12 @@ export interface HubStore {
   zonePower(zoneId: string, on: boolean): Promise<Ack>;
   setGroup(vendor: Vendor, coordinatorId: string, memberIds: string[]): Promise<Ack>;
   ungroup(sideId: string): Promise<Ack>;
+  /**
+   * Play library content on one or more sides (one command per side). Optimistically marks each
+   * side playing and shows the item in now-playing so the mini-player updates before the hub
+   * confirms. Resolves with every ack; failures toast per side.
+   */
+  play(sideIds: string[], item: PlayItem): Promise<Ack[]>;
 
   /** Test seams. */
   _deps: {
@@ -155,7 +184,7 @@ export const useHub = create<HubStore>((set, get) => ({
     set({ selectedTargets: ids });
   },
 
-  async dispatch(req, optimistic, label = req.path) {
+  async dispatch(req, optimistic, label = req.path, opts = {}) {
     const deps = get()._deps;
     const cid = req.correlationId ?? newCorrelationId();
     const before = get().state;
@@ -166,7 +195,7 @@ export const useHub = create<HubStore>((set, get) => ({
       if (!p) return;
       fail(get, set, cid, `${p.label} didn't get confirmed by the hub.`);
     }, ACK_TIMEOUT_MS);
-    set((s) => ({ pending: { ...s.pending, [cid]: { timer, label } } }));
+    set((s) => ({ pending: { ...s.pending, [cid]: { timer, label, onFail: opts.onFail ?? "resync" } } }));
 
     try {
       const ack = await sendCommand({ ...req, correlationId: cid }, deps.fetcher);
@@ -188,6 +217,9 @@ export const useHub = create<HubStore>((set, get) => ({
   },
 
   transport(action, target) {
+    // Pin the side being controlled so Now Playing does not hop to another playing side when
+    // this one pauses (the resolver prefers playing sides only while nothing is chosen).
+    if (!get().activeSideId && get().state?.sides[target]) set({ activeSideId: target });
     const patch: Patch | undefined =
       action === "play" || action === "pause" || action === "toggle" || action === "stop"
         ? (s) => {
@@ -301,6 +333,75 @@ export const useHub = create<HubStore>((set, get) => ({
     return get().dispatch(C.ungroup(sideId), undefined, "Ungroup");
   },
 
+  async play(sideIds, item) {
+    const patchFor =
+      (sideId: string): Patch =>
+      (s) => {
+        const side = s.sides[sideId];
+        if (!side) return s;
+        const prev = s.now_playing[sideId];
+        const np = {
+          title: item.title,
+          artist: item.subtitle,
+          album: item.content_ref.kind === "album" ? item.title : (prev?.album ?? null),
+          art: item.art,
+          source: item.content_ref.service,
+          seekable: side.capabilities?.supports_seek ?? prev?.seekable ?? true,
+          supports_next: true,
+          supports_prev: true,
+          duration_ms: null,
+          track_id: null,
+        };
+        return {
+          ...s,
+          sides: { ...s.sides, [sideId]: { ...side, play_state: "play" } },
+          now_playing: { ...s.now_playing, [sideId]: np },
+          positions: { ...s.positions, [sideId]: { position_ms: 0, reported_at: new Date(get().hubNow()).toISOString(), confidence: 0.5 } },
+        };
+      };
+    /** Undo the optimistic entries for one side. Only used when the hub touched nothing. */
+    const revertFor = (sideId: string, before: HubState | null): Patch => (s) => {
+      if (!before) return s;
+      const sides = { ...s.sides };
+      const now_playing = { ...s.now_playing };
+      const positions = { ...s.positions };
+      if (before.sides[sideId]) sides[sideId] = before.sides[sideId]!;
+      if (before.now_playing[sideId]) now_playing[sideId] = before.now_playing[sideId]!;
+      else delete now_playing[sideId];
+      if (before.positions[sideId]) positions[sideId] = before.positions[sideId]!;
+      else delete positions[sideId];
+      return { ...s, sides, now_playing, positions };
+    };
+    const names = (id: string) => get().state?.sides[id]?.name ?? "that room";
+    const acks: Ack[] = [];
+    const service = item.content_ref.service;
+    // Sequential so a "nothing was touched" failure on the first side short-circuits the rest
+    // with a single toast and no resync (docs/api.md: needs_link is raised before any side).
+    for (const id of sideIds) {
+      const before = get().state;
+      const ack = await get().dispatch(C.play(id, item.content_ref, item.start_index), patchFor(id), `Play on ${names(id)}`, { onFail: "keep" });
+      acks.push(ack);
+      if (ack.ok) {
+        for (const f of ack.partial ?? []) toast(f.message);
+        continue;
+      }
+      const code = ack.error?.code ?? "vendor_error";
+      if (PLAY_SHORT_CIRCUIT_CODES.has(code)) {
+        set((s) => ({ state: s.state ? revertFor(id, before)(s.state) : s.state }));
+        toast(
+          ack.error?.message ?? `${item.title} didn't start.`,
+          code === "needs_link" ? { label: CONNECT_LABEL[service] ?? "Connect", href: `/settings?link=${service}` } : undefined,
+        );
+        break;
+      }
+      // Per-side failure (not_available_on_side, device_offline, vendor error): say which room,
+      // drop this side's optimistic entries, keep going for the other sides.
+      set((s) => ({ state: s.state ? revertFor(id, before)(s.state) : s.state }));
+      toast(ack.error?.message ?? `${names(id)} didn't start ${item.title}.`);
+    }
+    return acks;
+  },
+
   _reset() {
     for (const p of Object.values(get().pending)) if (p.timer) get()._deps.clearTimer(p.timer);
     set({
@@ -331,9 +432,15 @@ function finishPending(get: Get, set: Set, cid: string): void {
   });
 }
 
-/** Any failure: drop the optimistic layer via resync and tell the user what did not happen. */
+/**
+ * Any failure: by default drop the optimistic layer via resync and tell the user what did not
+ * happen. With `onFail: "keep"` the caller owns both (used by `play`, which knows when the hub
+ * touched nothing and can undo locally).
+ */
 function fail(get: Get, set: Set, cid: string, message: string): void {
+  const p = get().pending[cid];
   finishPending(get, set, cid);
+  if (p?.onFail === "keep") return;
   toast(message);
   get().requestResync();
 }
@@ -347,7 +454,7 @@ function settle(get: Get, set: Set, ack: Ack): void {
     return;
   }
   finishPending(get, set, ack.correlation_id);
-  for (const f of ack.partial ?? []) toast(f.message);
+  if (p.onFail !== "keep") for (const f of ack.partial ?? []) toast(f.message);
 }
 
 function actionLabel(action: TransportAction): string {

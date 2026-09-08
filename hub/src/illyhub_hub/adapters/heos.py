@@ -18,6 +18,7 @@ from typing import Any, Protocol
 
 from ..art import ArtHelper, ArtHints
 from ..config import Settings
+from ..content import ContentRef
 from ..positions import PositionTracker
 from ..state import (
     Capabilities,
@@ -28,7 +29,13 @@ from ..state import (
     side_id_for,
 )
 from ..tasks import stop_task
-from .base import Backoff, HeosAdapter, UnsupportedCommandError
+from .base import (
+    Backoff,
+    ContentUnavailableError,
+    HeosAdapter,
+    PlayableTrack,
+    UnsupportedCommandError,
+)
 
 EVENT_PLAYERS_CHANGED = "event/players_changed"
 EVENT_GROUPS_CHANGED = "event/groups_changed"
@@ -49,6 +56,7 @@ class HeosClient(Protocol):
     def add_on_disconnected(self, cb: Callable[[], Any]) -> Callable[[], None]: ...
     def add_on_controller_event(self, cb: Callable[[str, Any], Any]) -> Callable[[], None]: ...
     async def set_group(self, player_ids: Sequence[int]) -> None: ...
+    async def get_music_sources(self, *, refresh: bool = False) -> dict[int, Any]: ...
 
 
 HeosFactory = Callable[[str, Settings], HeosClient]
@@ -117,6 +125,7 @@ class PyHeosAdapter(HeosAdapter):
         self._factory = factory
         self._clock = clock or (lambda: asyncio.get_running_loop().time())
         self._heos: HeosClient | None = None
+        self._sources: dict[int, bool] = {}
         self._task: asyncio.Task[None] | None = None
         self._backoff = Backoff(cap=settings.reconnect_max_s)
         self._player_unsubs: dict[str, Callable[[], None]] = {}
@@ -143,6 +152,7 @@ class PyHeosAdapter(HeosAdapter):
         self._set_status("disconnected")
 
     async def _teardown(self) -> None:
+        self._sources = {}
         for unsub in self._player_unsubs.values():
             unsub()
         self._player_unsubs.clear()
@@ -172,6 +182,76 @@ class PyHeosAdapter(HeosAdapter):
                 self.log.warning("heos connect failed", extra={"extra": {"error": str(exc)}})
             await self._teardown()
             await asyncio.sleep(self._backoff.next())
+
+    HEOS_SERVICE_SIDS = {"pandora": 1, "spotify": 4, "tidal": 10, "amazon": 13}
+
+    async def _load_sources(self, heos: HeosClient) -> None:
+        """``browse/get_music_sources``: which streaming services the HEOS account has linked.
+        Missing on older fakes/clients → no services (never a crash)."""
+        getter = getattr(heos, "get_music_sources", None)
+        if getter is None:
+            return
+        try:
+            sources = await getter(refresh=True)
+        except Exception as exc:  # noqa: BLE001 - optional feature
+            self.log.warning("music sources unavailable", extra={"extra": {"error": str(exc)}})
+            return
+        self._sources = {
+            int(sid): bool(getattr(src, "available", True)) for sid, src in dict(sources).items()
+        }
+
+    def service_linked(self, service: str) -> bool:
+        sid = self.HEOS_SERVICE_SIDS.get(service)
+        return bool(sid is not None and self._sources.get(sid, False))
+
+    async def play_content(
+        self, player_id: str, ref: ContentRef, tracks: list[PlayableTrack], start_index: int = 0
+    ) -> None:
+        """Replace-and-play via ``browse/add_to_queue`` (HEOS CLI 4.4.11/4.4.12).
+
+        Tidal on HEOS is source id 10; container ids for Tidal albums/playlists and media ids for
+        tracks are the Tidal ids (see docs/spikes/tidal-refs.md — **unverified on hardware**).
+        Starting mid-list uses ``player/play_queue`` after the container loads.
+        """
+        if not self.service_linked(ref.service):
+            raise ContentUnavailableError(f"{ref.service} is not linked in the HEOS app")
+        if not 0 <= start_index < len(tracks):
+            raise IndexError(f"start_index {start_index} out of range for {len(tracks)} tracks")
+        raw = self._raw(player_id)
+        sid = self.HEOS_SERVICE_SIDS[ref.service]
+        from pyheos.types import AddCriteriaType
+
+        replace = AddCriteriaType.REPLACE_AND_PLAY
+        if ref.kind == "track":
+            track = tracks[start_index]
+            cid = track.album_id or ""
+            await raw.add_to_queue(sid, cid, media_id=ref.id, add_criteria=replace)
+            return
+        await raw.add_to_queue(sid, ref.id, add_criteria=replace)
+        if start_index > 0:
+            play_queue = getattr(raw, "play_queue", None)
+            if play_queue is None:
+                raise RuntimeError("HEOS client cannot play a queue position; start_index dropped")
+            await self._wait_for_queue(raw, start_index + 1)
+            await play_queue(start_index + 1)
+
+    QUEUE_WAIT_S = 5.0
+
+    async def _wait_for_queue(self, raw: Any, needed: int) -> None:
+        """A container is added asynchronously; poll ``player/get_queue`` until at least
+        ``needed`` items are present (or time out) before asking for a queue position."""
+        get_queue = getattr(raw, "get_queue", None)
+        if get_queue is None:
+            raise RuntimeError("HEOS client cannot read the queue; start_index dropped")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.QUEUE_WAIT_S
+        while True:
+            items = await get_queue(1, needed)
+            if len(items) >= needed:
+                return
+            if loop.time() >= deadline:
+                raise TimeoutError(f"HEOS queue has {len(items)} items, needed {needed}")
+            await asyncio.sleep(0.2)
 
     async def _connect_once(self) -> None:
         self._disconnected = asyncio.Event()
@@ -214,6 +294,7 @@ class PyHeosAdapter(HeosAdapter):
                 if unsub:
                     unsub()
         await self._load_groups(heos)
+        await self._load_sources(heos)
         for pid, raw in players.items():
             p = self.store.state.players.get(player_id(pid))
             if p is not None:

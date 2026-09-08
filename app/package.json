@@ -12,7 +12,7 @@
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
     "e2e": "playwright test",
-    "openapi": "cd ../hub && uv run python -c \"import json; from illyhub_hub.api import create_app; from illyhub_hub.config import Settings; json.dump(create_app(Settings(fake_devices=True, _env_file=None)).openapi(), open('../app/src/lib/hub/openapi.json','w'), indent=1)\" && openapi-typescript src/lib/hub/openapi.json -o src/lib/hub/openapi.d.ts"
+    "openapi": "cd ../hub && uv run python -c \"import json; from illyhub_hub.api import create_app; from illyhub_hub.config import Settings; json.dump(create_app(Settings(fake_devices=True, fake_tidal=True, _env_file=None)).openapi(), open('../app/src/lib/hub/openapi.json','w'), indent=1)\" && cd ../app && openapi-typescript src/lib/hub/openapi.json -o src/lib/hub/openapi.d.ts"
   },
   "dependencies": {
     "framer-motion": "^13.2.0",

@@ -5,7 +5,10 @@ import { NowPlaying } from "./NowPlaying";
 import { MiniPlayer, miniPlayerRenders, resetMiniPlayerRenders } from "./MiniPlayer";
 import { VolumeSheet } from "./VolumeSheet";
 import { ZonePicker, sideStatus } from "./ZonePicker";
-import { AppShell, shouldCollapse } from "./AppShell";
+import { PlayerChrome, shouldCollapse } from "./PlayerChrome";
+import { useChrome } from "@/lib/ui/chrome";
+import { readLastTarget, rememberTargets } from "@/lib/prefs";
+import { useLibrary } from "@/lib/library/store";
 import { useHub } from "@/lib/hub/store";
 import { useToasts } from "@/lib/ui/toasts";
 import { jsonResponse, okAck, sampleState, side } from "@/test/fixtures";
@@ -105,7 +108,7 @@ describe("NowPlaying", () => {
     await userEvent.click(screen.getByTestId("open-volume"));
     expect(screen.getByTestId("volume-sheet")).toBeInTheDocument();
     await userEvent.click(screen.getByTestId("target-indicator"));
-    expect(screen.getByTestId("zone-picker")).toBeInTheDocument();
+    expect(useChrome.getState().zonesOpen).toBe(true); // the single picker lives in PlayerChrome (A11)
   });
 
   it("shows skeletons (not display-size copy) and a disabled play button before the first snapshot", () => {
@@ -226,7 +229,7 @@ describe("ZonePicker", () => {
     expect(useHub.getState().selectedTargets).toEqual(["sonos:sonos-gK"]);
     expect(useHub.getState().activeSideId).toBe("sonos:sonos-gK");
     expect(onClose).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(localStorage.getItem("illyhub.lastTarget.v1")!).last).toEqual(["sonos:sonos-gK"]);
+    expect(readLastTarget()).toEqual(["sonos:sonos-gK"]);
   });
   it("deselecting does not change the active side or close; multi-select stays open", async () => {
     const onClose = vi.fn();
@@ -243,33 +246,101 @@ describe("ZonePicker", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
   it("pre-highlights the remembered target when opened with nothing selected", () => {
-    localStorage.setItem("illyhub.lastTarget.v1", JSON.stringify({ last: ["heos:heos-1", "gone"] }));
+    rememberTargets(["heos:heos-1", "gone"]);
     render(<ZonePicker open onClose={() => {}} />);
     expect(useHub.getState().selectedTargets).toEqual(["heos:heos-1"]);
     expect(within(screen.getByTestId("zone-row-heos:heos-1")).getByRole("button", { name: /Living Room/ })).toHaveAttribute("aria-pressed", "true");
   });
 });
 
-describe("AppShell", () => {
-  it("starts on Now Playing, collapses to the home shell with connect cards, expands again; body locked while expanded", async () => {
+describe("PlayerChrome", () => {
+  beforeEach(() => {
     boot();
-    render(<AppShell />);
+    useChrome.setState({ npExpanded: false, zonesOpen: false, playRequest: null });
+    useLibrary.getState()._reset();
+    useLibrary.setState({ _deps: { fetcher, now: () => Date.now(), timeoutMs: 8000 } });
+  });
+
+  it("starts collapsed on the route content, expands from the mini-player, collapses; body locked while expanded", async () => {
+    render(
+      <PlayerChrome>
+        <p>route content</p>
+      </PlayerChrome>,
+    );
+    expect(screen.getByText("route content")).toBeInTheDocument();
+    expect(screen.queryByTestId("now-playing-layer")).toBeNull();
+    expect(document.body.classList.contains("scroll-lock")).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Open Now Playing" }));
     expect(screen.getByTestId("now-playing-layer")).toBeInTheDocument();
     expect(document.body.classList.contains("scroll-lock")).toBe(true);
+    // expanding pins the resolved side so pausing it does not hop Now Playing elsewhere
+    expect(useHub.getState().activeSideId).toBe("heos:heos-1");
     await userEvent.click(screen.getByRole("button", { name: "Collapse" }));
     await waitFor(() => expect(screen.queryByTestId("now-playing-layer")).toBeNull());
     expect(document.body.classList.contains("scroll-lock")).toBe(false);
-    expect(screen.getByText("Play something and it lands here.")).toBeInTheDocument();
-    expect(screen.getAllByTestId("connect-card").map((c) => c.textContent)).toEqual([expect.stringContaining("Connect Tidal"), expect.stringContaining("Connect YouTube Music")]);
-    expect(screen.getByRole("button", { name: "Settings" })).toBeDisabled();
-    await userEvent.click(screen.getByRole("button", { name: "Open Now Playing" }));
-    expect(screen.getByTestId("now-playing-layer")).toBeInTheDocument();
   });
-  it("shows skeletons before the first snapshot", () => {
-    useHub.getState()._reset();
-    const { container } = render(<AppShell startExpanded={false} />);
-    expect(container.querySelectorAll(".aspect-square").length).toBeGreaterThan(0);
+
+  it("a play request opens the picker in play mode with the preferred side pre-highlighted; confirming posts /api/play per side and updates the mini-player optimistically", async () => {
+    render(
+      <PlayerChrome>
+        <span />
+      </PlayerChrome>,
+    );
+    act(() =>
+      useChrome.getState().requestPlay({
+        content_ref: { service: "tidal", kind: "album", id: "77" },
+        title: "Kind of Blue",
+        subtitle: "Miles Davis",
+        art: { url: "/api/art/k", accent: null, accent_is_safe: false },
+        preferred: ["sonos:sonos-gK"],
+      }),
+    );
+    const picker = screen.getByTestId("zone-picker");
+    expect(within(picker).getByRole("heading")).toHaveTextContent("Play “Kind of Blue” on");
+    const confirm = screen.getByTestId("confirm-play");
+    expect(confirm).toHaveTextContent("Play on Kitchen + 1");
+    await userEvent.click(confirm);
+    const playCall = fetchMock.mock.calls.find((c) => String(c[0]).endsWith("/api/play"));
+    expect(playCall).toBeDefined();
+    expect(JSON.parse(playCall![1]!.body as string)).toEqual({ target: "sonos:sonos-gK", content_ref: { service: "tidal", kind: "album", id: "77" } });
+    // optimistic: the side is playing and the mini-player shows the item
+    expect(useHub.getState().state?.sides["sonos:sonos-gK"]?.play_state).toBe("play");
+    expect(useHub.getState().state?.now_playing["sonos:sonos-gK"]?.title).toBe("Kind of Blue");
+    expect(useHub.getState().activeSideId).toBe("sonos:sonos-gK");
+    await waitFor(() => expect(screen.queryByTestId("zone-picker")).toBeNull());
+    expect(useChrome.getState().playRequest).toBeNull();
+    // home recents are refreshed after a play
+    await waitFor(() => expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("/api/home"))).toBe(true));
   });
+
+  it("play mode: an unavailable side is disabled with a reason; toggling rows updates the button label; two rooms read 'and'", async () => {
+    render(
+      <PlayerChrome>
+        <span />
+      </PlayerChrome>,
+    );
+    act(() =>
+      useChrome.getState().requestPlay({
+        content_ref: { service: "ytmusic", kind: "playlist", id: "p1" },
+        title: "Focus",
+        subtitle: null,
+        art: { url: null, accent: null, accent_is_safe: false },
+        preferred: [],
+        availability: { heos: false, sonos: true },
+      }),
+    );
+    const heosRow = within(screen.getByTestId("zone-row-heos:heos-1")).getAllByRole("button")[0]!;
+    expect(heosRow).toBeDisabled();
+    expect(heosRow).toHaveTextContent("Not available on HEOS");
+    const confirm = screen.getByTestId("confirm-play");
+    expect(confirm).toBeDisabled();
+    expect(confirm).toHaveTextContent("Choose a room");
+    await userEvent.click(within(screen.getByTestId("zone-row-sonos:sonos-gK")).getAllByRole("button")[0]!);
+    expect(confirm).toHaveTextContent("Play on Kitchen + 1");
+    // picker stays open in play mode after a single selection
+    expect(screen.getByTestId("zone-picker")).toBeInTheDocument();
+  });
+
   it("swipe-down rule: collapse past 80px or 600px/s, only from scrollTop 0", () => {
     const pt = { x: 0, y: 0 };
     expect(shouldCollapse({ offset: { x: 0, y: 90 }, velocity: pt }, 0)).toBe(true);
