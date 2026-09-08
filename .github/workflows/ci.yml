@@ -52,7 +52,7 @@ jobs:
           # The fake hub writes art cache, history, vault and sync logs here; keep them out of the checkout.
           HUB_DATA_DIR: ${{ runner.temp }}/illyhub-data
         run: uv run pytest -q --cov=illyhub_hub --cov-report=xml --cov-report=term
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: hub-coverage
@@ -82,7 +82,7 @@ jobs:
         run: npx vitest run --coverage
       - name: Static export
         run: npx next build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: app-coverage
@@ -123,7 +123,7 @@ jobs:
         env:
           HUB_DATA_DIR: ${{ runner.temp }}/illyhub-data
         run: npx playwright test
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-failure
