@@ -10,7 +10,7 @@ import { useChrome, type PlayRequest } from "@/lib/ui/chrome";
 import { useToasts } from "@/lib/ui/toasts";
 import { useLibrary, fresh } from "@/lib/library/store";
 import { idleSync, jsonResponse, okAck, sampleState, sampleSync } from "@/test/fixtures";
-import { SYNC_NEEDS_TIDAL, SYNC_NOTE, SYNC_OFFER_NOTE, SYNC_UNSUPPORTED_TOAST } from "@/lib/sync";
+import { SYNC_NOTE, SYNC_OFFER_NOTE, SYNC_UNSUPPORTED_TOAST } from "@/lib/sync";
 import * as reducedMotion from "@/lib/reducedMotion";
 import type { Detail, HistoryItem } from "@/lib/hub/library";
 
@@ -173,7 +173,9 @@ describe("ZonePicker in play mode: Sync Play button rule", () => {
 
   it("non-Tidal + both vendors → plain Play plus a disabled Sync Play with the reason (no silent fallback)", () => {
     const onConfirm = vi.fn();
-    render(<ZonePicker open onClose={() => {}} play={pandoraReq} onConfirm={onConfirm} />);
+    // a YouTube Music playlist: non-Tidal content that is not a station (stations get their own caption, Phase 5)
+    const ytReq = { ...pandoraReq, content_ref: { service: "ytmusic" as const, kind: "playlist" as const, id: "p-1" }, title: "Focus" };
+    render(<ZonePicker open onClose={() => {}} play={ytReq} onConfirm={onConfirm} />);
     fireEvent.click(screen.getByTestId("zone-row-sonos:sonos-gK").querySelector("button")!);
     const confirm = screen.getByTestId("confirm-play");
     expect(confirm).toHaveTextContent("Play on Kitchen + 1 and Living Room Amp");
@@ -182,9 +184,9 @@ describe("ZonePicker in play mode: Sync Play button rule", () => {
     expect(disabled).toBeDisabled();
     expect(disabled).toHaveTextContent("Sync Play");
     expect(disabled.className).not.toContain("bg-signal");
-    expect(screen.getByTestId("sync-reason")).toHaveTextContent(SYNC_NEEDS_TIDAL);
+    expect(screen.getByTestId("sync-reason")).toHaveTextContent(SYNC_UNSUPPORTED_TOAST);
     fireEvent.click(confirm);
-    expect(onConfirm).toHaveBeenCalledWith(expect.any(Array), { mode: "play", syncReason: SYNC_NEEDS_TIDAL });
+    expect(onConfirm).toHaveBeenCalledWith(expect.any(Array), { mode: "play", syncReason: SYNC_UNSUPPORTED_TOAST });
   });
 
   it("initialSelection skips offline sides", () => {
@@ -375,7 +377,7 @@ describe("Now Playing and mini-player during a session", () => {
   it("offer prefers the room's recent album when its cached detail holds the current track, starting there", () => {
     boot();
     const art = { url: null, accent: null, accent_is_safe: false };
-    const album: HistoryItem = { content_ref: { service: "tidal", kind: "album", id: "a-1" }, title: "Kind of Blue", subtitle: "Miles Davis", art, last_targets: ["heos:heos-1"], last_played_at: "2026-09-07T00:00:00Z", play_count: 1 };
+    const album: HistoryItem = { content_ref: { service: "tidal", kind: "album", id: "a-1" }, title: "Kind of Blue", subtitle: "Miles Davis", art, last_targets: ["heos:heos-1"], last_played_at: "2026-09-07T00:00:00Z", play_count: 1, availability: null };
     const detail: Detail = {
       item: { content_ref: album.content_ref, title: "Kind of Blue", subtitle: "Miles Davis", art } as Detail["item"],
       tracks: [

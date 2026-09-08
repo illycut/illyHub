@@ -54,7 +54,12 @@ async def test_auth_status_and_fake_link_toggle(client) -> None:
         "service": "tidal",
     }
     home = (await c.get("/api/home")).json()
-    assert home["playlists"] == {"items": [], "needs_link": "tidal", "error": None}
+    assert home["playlists"] == {
+        "items": [],
+        "needs_link": "tidal",
+        "error": None,
+        "linked": None,
+    }
     assert home["favorite_albums"]["needs_link"] == "tidal" and home["recents"] == []
     assert (await c.get("/api/auth/tidal/status")).json()["state"] == "unlinked"
     rt.fakes.fake_link_delay_s = 0.05

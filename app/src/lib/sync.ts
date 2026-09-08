@@ -11,8 +11,10 @@ import type { Side, SyncState, SyncStatus } from "./hub/types";
 
 export const SYNC_NOTE = "Close, not perfect.";
 export const SYNC_BUTTON = "Sync Play";
-export const SYNC_NEEDS_TIDAL = "Sync Play needs Tidal content";
+/** One phrase for one fact (§10): the picker reason and the hub-refusal toast say the same thing. */
 export const SYNC_UNSUPPORTED_TOAST = "Sync Play works with Tidal content.";
+/** Picker caption for a station with both vendors selected (design §13 1.3): no button, just the fact. */
+export const STATIONS_CANT_SYNC = "Stations can't sync: Pandora picks different songs for each room.";
 export const STOP_SYNC = "Stop sync";
 export const RETRY = "Retry";
 /** Picker note when Sync Play was launched from the Now Playing offer (UX S6). */
@@ -111,7 +113,8 @@ export function syncEligibility(selected: string[], sides: Record<string, Side>,
   const heos = selected.filter((id) => sides[id]?.vendor === "heos");
   const sonos = selected.filter((id) => sides[id]?.vendor === "sonos");
   if (heos.length === 0 || sonos.length === 0) return { mode: "play", syncReason: null };
-  if (ref?.service !== "tidal") return { mode: "play", syncReason: SYNC_NEEDS_TIDAL };
+  if (ref?.kind === "station") return { mode: "play", syncReason: STATIONS_CANT_SYNC };
+  if (ref?.service !== "tidal") return { mode: "play", syncReason: SYNC_UNSUPPORTED_TOAST };
   return { mode: "sync", heos, sonos };
 }
 

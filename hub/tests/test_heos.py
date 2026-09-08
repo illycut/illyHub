@@ -665,3 +665,187 @@ async def test_prime_content_loads_without_playing_and_start_primed_plays_queue(
         await a.disconnect()
     finally:
         del FakeHeosClient.get_music_sources  # type: ignore[attr-defined]
+
+
+# --------------------------------------------------------------------------------------
+# Phase 5: Pandora stations via browse/browse + browse/play_stream
+# --------------------------------------------------------------------------------------
+
+
+def Item(  # noqa: N802 - factory named like the class it builds
+    name: str,
+    *,
+    type: str = "station",  # noqa: A002 - mirrors the CLI field
+    playable: bool = True,
+    browsable: bool = False,
+    container_id: str | None = None,
+    media_id: str | None = None,
+    image_url: str = "",
+):
+    """A real ``pyheos.MediaItem`` built from the CLI's raw payload fields, so the adapter is
+    exercised against the library's own parsing (``playable``/``container`` are yes/no strings,
+    ids are ``cid``/``mid``)."""
+    from pyheos.media import MediaItem
+
+    data: dict[str, Any] = {
+        "name": name,
+        "type": type,
+        "image_url": image_url,
+        "playable": "yes" if playable else "no",
+    }
+    if browsable:
+        data["container"] = "yes"
+    if container_id is not None:
+        data["cid"] = container_id
+    if media_id is not None:
+        data["mid"] = media_id
+    return MediaItem.from_data(data, source_id=1)
+
+
+class Browse:
+    def __init__(self, items: list[Any]) -> None:
+        self.items = items
+
+
+async def test_list_and_play_stations_use_browse_and_play_stream(
+    store: StateStore, settings: Settings
+) -> None:
+    from illyhub_hub.adapters.base import ContentUnavailableError
+    from illyhub_hub.content import ContentRef
+
+    gen = Generations()
+    browse_calls: list[tuple[int, str | None]] = []
+    play_calls: list[tuple[int, int, str | None, str]] = []
+    tree = {
+        None: [
+            Item("My Stations", type="container", browsable=True, container_id="my"),
+            Item("Thumbprint Radio", media_id="tp", image_url="http://art/tp.jpg"),
+            Item("Search", type="container", browsable=True, container_id="search"),
+        ],
+        "my": [
+            Item("Chill Radio", container_id="my", media_id="c1", image_url="http://art/c.jpg"),
+            Item("Chill Radio", container_id="my", media_id="c1"),  # duplicate (cid, mid)
+            Item("Shuffle", type="container", browsable=True, container_id="deeper"),
+            Item("Ad", playable=False, media_id="ad"),
+        ],
+        "search": [],
+        "broken": None,  # this folder's browse raises; the rest must still come back
+    }
+    tree[None].insert(
+        1, Item("Broken folder", type="container", browsable=True, container_id="broken")
+    )
+
+    async def browse(source_id, container_id=None, range_start=None, range_end=None):
+        browse_calls.append((source_id, container_id))
+        if tree.get(container_id, []) is None:
+            raise TimeoutError("receiver busy")
+        return Browse(tree[container_id])
+
+    async def play_station(player_id, source_id, container_id, media_id):
+        play_calls.append((player_id, source_id, container_id, media_id))
+
+    sources = {10: Source(True), 1: Source(True)}
+    FakeHeosClient.get_music_sources = lambda self, *, refresh=False: _ret(sources)  # type: ignore[attr-defined]
+    FakeHeosClient.browse = lambda self, *a, **k: browse(*a, **k)  # type: ignore[attr-defined]
+    FakeHeosClient.play_station = lambda self, *a: play_station(*a)  # type: ignore[attr-defined]
+    a = make(store, settings, gen)
+    try:
+        await a.connect()
+        await wait_for(lambda: a.status().state == "connected")
+        stations = await a.list_stations("pandora")
+        assert [s.name for s in stations] == ["Thumbprint Radio", "Chill Radio"]  # deduped
+        assert stations[1].ids == {"sid": "1", "cid": "my", "mid": "c1"}
+        assert stations[1].art_url == "http://art/c.jpg" and stations[0].ids["cid"] == ""
+        # root + one level of containers (a raising folder is skipped), never deeper
+        assert browse_calls == [(1, None), (1, "my"), (1, "broken"), (1, "search")]
+
+        ref = ContentRef(service="pandora", kind="station", id="chill-radio")
+        await a.play_station("heos-1", ref, stations[1])
+        assert play_calls == [(1, 1, "my", "c1")]
+        np = store.state.now_playing["heos:heos-1"]
+        assert np.title == "Chill Radio" and np.source == "pandora" and np.content_ref == ref
+        assert np.seekable is False and np.supports_prev is False and np.supports_next is True
+        assert store.state.positions["heos:heos-1"].confidence == 0.5
+        assert store.state.players["heos-1"].play_state == "play"  # optimistic, like Sonos
+
+        # The receiver's now-playing event (a Pandora station) keeps the station identity and
+        # reports the service by NAME, not by source id.
+        raw = gen.players[1]
+        raw.now_playing_media = Media(
+            song="Some Track", type="station", source_id=1, media_id="x", album="Chill Radio"
+        )
+        raw.fire(heos_mod.EVENT_NOW_PLAYING_CHANGED)
+        np = store.state.now_playing["heos:heos-1"]
+        assert np.title == "Some Track" and np.content_ref == ref and np.supports_next is True
+        assert np.source == "pandora"
+        # Another station chosen in the HEOS app (different station name) drops the stale ref.
+        raw.now_playing_media = Media(
+            song="Other", type="station", source_id=1, media_id="y", album="Jazz Nights"
+        )
+        raw.fire(heos_mod.EVENT_NOW_PLAYING_CHANGED)
+        assert store.state.now_playing["heos:heos-1"].content_ref is None
+        assert store.state.now_playing["heos:heos-1"].source == "pandora"
+        # Re-play, then a Tidal track from the vendor app drops it too (source is a name).
+        await a.play_station("heos-1", ref, stations[1])
+        raw.now_playing_media = Media(song="Signal", type="song", source_id=10, media_id="555")
+        raw.fire(heos_mod.EVENT_NOW_PLAYING_CHANGED)
+        np = store.state.now_playing["heos:heos-1"]
+        assert np.content_ref is not None and np.content_ref.service == "tidal"
+        assert np.source == "tidal" and "heos:heos-1" not in a._station_playing
+        # An unknown source id still yields a string, never a swallowed None.
+        raw.now_playing_media = Media(song="Line in", type="song", source_id=1024, media_id="")
+        raw.fire(heos_mod.EVENT_NOW_PLAYING_CHANGED)
+        assert store.state.now_playing["heos:heos-1"].source == "1024"
+
+        # A vendor failure during play_station restores the previous now-playing.
+        before = store.state.now_playing["heos:heos-1"]
+
+        async def boom(*_a):
+            raise TimeoutError("receiver busy")
+
+        FakeHeosClient.play_station = lambda self, *a: boom(*a)  # type: ignore[attr-defined]
+        with pytest.raises(TimeoutError):
+            await a.play_station("heos-1", ref, stations[1])
+        assert store.state.now_playing["heos:heos-1"] == before
+        assert "heos:heos-1" not in a._station_playing
+        FakeHeosClient.play_station = lambda self, *a: play_station(*a)  # type: ignore[attr-defined]
+
+        # Missing ids / unlinked service refuse cleanly.
+        with pytest.raises(ContentUnavailableError):
+            await a.play_station("heos-1", ref, stations[1].model_copy(update={"ids": {}}))
+        sources[1].available = False
+        await a._load_sources(gen.current)
+        with pytest.raises(ContentUnavailableError):
+            await a.list_stations("pandora")
+        with pytest.raises(ContentUnavailableError):
+            await a.play_station("heos-1", ref, stations[1])
+        await a.disconnect()
+    finally:
+        del FakeHeosClient.get_music_sources  # type: ignore[attr-defined]
+        del FakeHeosClient.browse  # type: ignore[attr-defined]
+        del FakeHeosClient.play_station  # type: ignore[attr-defined]
+
+
+async def test_station_calls_without_browse_support_refuse(
+    store: StateStore, settings: Settings
+) -> None:
+    from illyhub_hub.adapters.base import ContentUnavailableError, VendorStation
+    from illyhub_hub.content import ContentRef
+
+    gen = Generations()
+    sources = {1: Source(True)}
+    FakeHeosClient.get_music_sources = lambda self, *, refresh=False: _ret(sources)  # type: ignore[attr-defined]
+    a = make(store, settings, gen)
+    try:
+        await a.connect()
+        await wait_for(lambda: a.status().state == "connected")
+        with pytest.raises(ContentUnavailableError, match="not ready"):
+            await a.list_stations("pandora")
+        station = VendorStation(vendor="heos", name="X", ids={"sid": "1", "mid": "m"})
+        with pytest.raises(ContentUnavailableError, match="cannot play stations"):
+            await a.play_station(
+                "heos-1", ContentRef(service="pandora", kind="station", id="x"), station
+            )
+        await a.disconnect()
+    finally:
+        del FakeHeosClient.get_music_sources  # type: ignore[attr-defined]

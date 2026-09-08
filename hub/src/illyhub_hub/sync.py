@@ -43,7 +43,7 @@ from .commands import Ack, CommandError, CommandRouter, ErrorEnvelope, resolve_s
 from .content import BrowseItem, ContentRef, NeedsLinkError
 from .history import PlayHistory
 from .logsetup import correlation_id, get_logger
-from .state import NowPlaying, Side, StateStore, SyncState, SyncStatus
+from .state import NowPlaying, Side, StateStore, SyncState, SyncStatus, vendor_label
 from .tasks import spawn, stop_task
 
 log = get_logger("sync")
@@ -617,7 +617,8 @@ class SyncEngine:
                 if not getattr(avail, side.vendor, False):
                     raise CommandError(
                         "not_available_on_side",
-                        f"{side.name} can't play Tidal; link it in the {side.vendor} app.",
+                        f"{side.name} can't play Tidal; link it in the "
+                        f"{vendor_label(side.vendor)} app.",
                         side.id,
                     )
         except CommandError:
@@ -652,7 +653,9 @@ class SyncEngine:
         created = False
         if isinstance(target, list):
             if not target:
-                raise CommandError("invalid_argument", f"No {vendor} room was chosen.", vendor)
+                raise CommandError(
+                    "invalid_argument", f"No {vendor_label(vendor)} room was chosen.", vendor
+                )
             if len(target) > 1:
                 ack = await self.router.group(vendor, target[0], target[1:])  # type: ignore[arg-type]
                 if not ack.ok and ack.error is not None:
@@ -662,11 +665,15 @@ class SyncEngine:
         sides = resolve_sides(self.store.state, target)
         if target == "all" or len(sides) != 1:
             raise CommandError(
-                "invalid_argument", f"Sync Play needs exactly one {vendor} room.", target
+                "invalid_argument",
+                f"Sync Play needs exactly one {vendor_label(vendor)} room.",
+                target,
             )
         side = sides[0]
         if side.vendor != vendor:
-            raise CommandError("invalid_argument", f"{side.name} is not a {vendor} room.", target)
+            raise CommandError(
+                "invalid_argument", f"{side.name} is not a {vendor_label(vendor)} room.", target
+            )
         return side, created
 
     def _adapter(self, side: Side) -> PlaybackAdapter:
@@ -927,7 +934,7 @@ class SyncEngine:
         for side in (master, follower):
             conn = state.connections.get(side.vendor)
             if conn is None or conn.state != "connected":
-                await self._lose(session, f"the {side.vendor} link dropped")
+                await self._lose(session, f"the {vendor_label(side.vendor)} link dropped")
                 return
         if session.paused:
             return  # both parked through the hub; nothing to judge until play resumes

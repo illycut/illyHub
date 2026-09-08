@@ -92,6 +92,17 @@ export function Scrubber({
     commit(target);
   };
 
+  if (!durationMs) {
+    // No duration (a radio stream with an unknown length): no track, no slider; elapsed time only.
+    return (
+      <div className="flex h-target w-full items-center" data-testid="scrubber" data-seekable="false">
+        <span role="timer" aria-label="Elapsed" className="text-micro text-tertiary numeric" data-testid="elapsed">
+          {formatTime(shown)}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div className="w-full" data-testid="scrubber" data-seekable={canSeek}>
       <div
@@ -99,7 +110,7 @@ export function Scrubber({
         tabIndex={0}
         aria-label="Playback position"
         aria-valuemin={0}
-        aria-valuemax={durationMs ?? 0}
+        aria-valuemax={durationMs}
         aria-valuenow={Math.round(shown)}
         aria-valuetext={formatTime(shown)}
         aria-readonly={!canSeek || undefined}
@@ -139,7 +150,7 @@ export function Scrubber({
       </div>
       <div className="flex justify-between text-micro text-tertiary numeric">
         <span data-testid="elapsed">{formatTime(shown)}</span>
-        <span data-testid="total">{durationMs ? formatTime(durationMs) : "--:--"}</span>
+        <span data-testid="total">{formatTime(durationMs)}</span>
       </div>
       <span className="sr-only" aria-live="polite">
         {announce}

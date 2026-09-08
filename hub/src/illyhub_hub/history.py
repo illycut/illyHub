@@ -23,13 +23,13 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from .content import ContentRef
+from .content import Availability, ContentRef
 from .logsetup import get_logger
 from .state import ArtRef
 
 log = get_logger("history")
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Every column the current schema requires; migrations must end with all of these present.
 REQUIRED_COLUMNS: dict[str, str] = {
@@ -46,6 +46,7 @@ REQUIRED_COLUMNS: dict[str, str] = {
     "side_ids_json": "TEXT NOT NULL DEFAULT '[]'",
     "played_at": "TEXT NOT NULL DEFAULT ''",
     "sync": "INTEGER NOT NULL DEFAULT 0",
+    "availability_json": "TEXT",
 }
 
 
@@ -58,6 +59,9 @@ class HistoryItem(BaseModel):
     last_targets: list[str] = Field(default_factory=list, description="side ids of the last play")
     play_count: int = 1
     sync: bool = False
+    # Which ecosystems could play this at the time of the play; the API refreshes it from the
+    # live browse caches when serving, so the recents rail can grey a vendor that lost the item.
+    availability: Availability | None = None
 
 
 class MigrationError(RuntimeError):
@@ -115,7 +119,13 @@ def _migrate_to_2(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE plays ADD COLUMN sync INTEGER NOT NULL DEFAULT 0")
 
 
-MIGRATIONS = {1: _migrate_to_1, 2: _migrate_to_2}
+def _migrate_to_3(conn: sqlite3.Connection) -> None:
+    """v3: per-vendor ``availability`` snapshot (Phase 5)."""
+    if "availability_json" not in _columns(conn):
+        conn.execute("ALTER TABLE plays ADD COLUMN availability_json TEXT")
+
+
+MIGRATIONS = {1: _migrate_to_1, 2: _migrate_to_2, 3: _migrate_to_3}
 
 
 def migrate(conn: sqlite3.Connection) -> int:
@@ -174,13 +184,15 @@ class PlayHistory:
         side_ids: Sequence[str],
         sync: bool,
         played_at: datetime,
+        availability: Availability | None = None,
     ) -> None:
         with contextlib.closing(self._connect()) as conn, conn:
             conn.execute(
                 """
                 INSERT INTO plays (content_key, content_ref_json, service, kind, content_id, title,
-                                   subtitle, art_json, targets_json, side_ids_json, played_at, sync)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   subtitle, art_json, targets_json, side_ids_json, played_at, sync,
+                                   availability_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ref.key,
@@ -195,6 +207,7 @@ class PlayHistory:
                     json.dumps(list(side_ids)),
                     played_at.isoformat(),
                     1 if sync else 0,
+                    availability.model_dump_json() if availability else None,
                 ),
             )
             # Retention by distinct content: keep every row of the newest N content keys.
@@ -215,7 +228,7 @@ class PlayHistory:
             rows = conn.execute(
                 """
                 SELECT p.content_ref_json, p.title, p.subtitle, p.art_json, p.side_ids_json,
-                       p.played_at, p.sync, c.n
+                       p.played_at, p.sync, c.n, p.availability_json
                 FROM plays p
                 JOIN (
                     SELECT content_key, MAX(id) AS last_id, COUNT(*) AS n
@@ -227,7 +240,7 @@ class PlayHistory:
                 (limit,),
             ).fetchall()
         items: list[HistoryItem] = []
-        for ref_json, title, subtitle, art_json, sides_json, played_at, sync, n in rows:
+        for ref_json, title, subtitle, art_json, sides_json, played_at, sync, n, avail in rows:
             items.append(
                 HistoryItem(
                     content_ref=ContentRef.model_validate_json(ref_json),
@@ -238,6 +251,7 @@ class PlayHistory:
                     last_targets=json.loads(sides_json),
                     play_count=int(n),
                     sync=bool(sync),
+                    availability=Availability.model_validate_json(avail) if avail else None,
                 )
             )
         return items
@@ -276,13 +290,14 @@ class PlayHistory:
         side_ids: Sequence[str] = (),
         sync: bool = False,
         played_at: datetime | None = None,
+        availability: Availability | None = None,
     ) -> bool:
         if not self._opened and not await self.open():
             return False
         when = played_at or datetime.now(UTC)
         try:
             await asyncio.to_thread(
-                self._record, ref, title, subtitle, art, targets, side_ids, sync, when
+                self._record, ref, title, subtitle, art, targets, side_ids, sync, when, availability
             )
         except sqlite3.Error as exc:
             self.last_error = f"history write failed: {exc}"

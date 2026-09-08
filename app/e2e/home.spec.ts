@@ -20,13 +20,14 @@ test.beforeEach(async ({ page }) => {
   await ensureLinked(page);
 });
 
-test("home renders the playlists and albums grids from the canned library; stations hidden while empty", async ({ page }) => {
+test("home renders the playlists, albums and Pandora stations grids from the canned libraries", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByTestId("home")).toBeVisible();
   await expect(page.getByTestId("playlists-grid").getByTestId("grid-card").first()).toBeVisible();
   await expect(page.getByTestId("albums-grid").getByTestId("grid-card")).toHaveCount(6);
   await expect(page.getByTestId("playlists-grid").getByTestId("grid-card")).toHaveCount(4);
-  await expect(page.getByText("Pandora stations")).toHaveCount(0);
+  // Phase 5: the fake hub runs with HUB_FAKE_PANDORA=1, so the stations section is present
+  await expect(page.getByTestId("stations-section").getByTestId("grid-card").first()).toBeVisible();
   // every card carries a service badge chip
   await expect(page.getByTestId("albums-grid").getByRole("img", { name: "Tidal" }).first()).toBeVisible();
 });

@@ -27,6 +27,7 @@ from ..state import (
     NowPlaying,
     Player,
     StateStore,
+    optimistic_position,
     side_id_for,
 )
 from ..tasks import stop_task
@@ -37,6 +38,7 @@ from .base import (
     PlayableTrack,
     PrimedQueue,
     UnsupportedCommandError,
+    VendorStation,
 )
 
 EVENT_PLAYERS_CHANGED = "event/players_changed"
@@ -59,6 +61,16 @@ class HeosClient(Protocol):
     def add_on_controller_event(self, cb: Callable[[str, Any], Any]) -> Callable[[], None]: ...
     async def set_group(self, player_ids: Sequence[int]) -> None: ...
     async def get_music_sources(self, *, refresh: bool = False) -> dict[int, Any]: ...
+    async def browse(
+        self,
+        source_id: int,
+        container_id: str | None = None,
+        range_start: int | None = None,
+        range_end: int | None = None,
+    ) -> Any: ...
+    async def play_station(
+        self, player_id: int, source_id: int, container_id: str | None, media_id: str
+    ) -> None: ...
 
 
 HeosFactory = Callable[[str, Settings], HeosClient]
@@ -134,6 +146,9 @@ class PyHeosAdapter(HeosAdapter):
         self._raw_players: dict[str, Any] = {}
         self._trackers: dict[str, PositionTracker] = {}
         self._primed_qid: dict[str, int] = {}  # player id -> queue id captured at prime time
+        # side id -> (station ref, station name): the ref rides on now_playing.content_ref while
+        # the receiver still reports that station (Phase 5).
+        self._station_playing: dict[str, tuple[ContentRef, str]] = {}
         self._disconnected = asyncio.Event()
         self._closing = False
 
@@ -221,6 +236,7 @@ class PyHeosAdapter(HeosAdapter):
         if not 0 <= start_index < len(tracks):
             raise IndexError(f"start_index {start_index} out of range for {len(tracks)} tracks")
         raw = self._raw(player_id)
+        self._station_playing.pop(self._side_id(raw_pid(player_id)) or "", None)
         sid = self.HEOS_SERVICE_SIDS[ref.service]
         from pyheos.types import AddCriteriaType
 
@@ -237,6 +253,109 @@ class PyHeosAdapter(HeosAdapter):
                 raise RuntimeError("HEOS client cannot play a queue position; start_index dropped")
             items = await self._wait_for_queue(raw, start_index + 1)
             await play_queue(_queue_id(items[start_index], start_index))
+
+    # -- radio stations (Phase 5, PRD PAN-1/PAN-2; docs/spikes/pandora-refs.md) -------------
+
+    MAX_STATION_CONTAINERS = 4  # e.g. Pandora's "My Stations" folder; one level deep only
+
+    async def list_stations(self, service: str) -> list[VendorStation]:
+        """``browse/browse`` on the service's source (Pandora = sid 1). Stations come back as
+        ``station`` media items, either at the root or one container down. **Unverified on
+        hardware**: the HEOS CLI spec lists this call but the Pandora tree shape is assumed."""
+        if not self.service_linked(service):
+            raise ContentUnavailableError(f"{service} is not linked in the HEOS app")
+        heos = self._heos
+        browse = getattr(heos, "browse", None)
+        if heos is None or browse is None:
+            raise ContentUnavailableError("the HEOS connection is not ready")
+        sid = self.HEOS_SERVICE_SIDS[service]
+        root = await browse(sid)
+        stations: list[VendorStation] = []
+        seen: set[tuple[str, str]] = set()
+        containers: list[Any] = []
+
+        def add(item: Any) -> None:
+            st = _station_from(item, sid, service)
+            key = (st.ids["cid"], st.ids["mid"])
+            if key not in seen:
+                seen.add(key)
+                stations.append(st)
+
+        for item in getattr(root, "items", []) or []:
+            if _is_station(item):
+                add(item)
+            elif getattr(item, "browsable", False) and getattr(item, "container_id", None):
+                containers.append(item)
+        for container in containers[: self.MAX_STATION_CONTAINERS]:
+            try:
+                sub = await browse(sid, container.container_id)
+            except Exception as exc:  # noqa: BLE001 - one folder failing must not hide the rest
+                self.log.warning(
+                    "station container browse failed",
+                    extra={
+                        "extra": {
+                            "container": getattr(container, "name", container.container_id),
+                            "error": str(exc),
+                        }
+                    },
+                )
+                continue
+            for i in getattr(sub, "items", []) or []:
+                if _is_station(i):
+                    add(i)
+        return stations
+
+    async def play_station(self, player_id: str, ref: ContentRef, station: VendorStation) -> None:
+        """``browse/play_stream`` (HEOS CLI 4.4.7) with the station's own sid/cid/mid. Pandora
+        picks the tracks; the hub only chooses the station (PRD §3.5)."""
+        if not self.service_linked(ref.service):
+            raise ContentUnavailableError(f"{ref.service} is not linked in the HEOS app")
+        self._raw(player_id)  # unknown player -> ConnectionError, like the other commands
+        play = getattr(self._heos, "play_station", None)
+        if play is None:
+            raise ContentUnavailableError("the HEOS connection cannot play stations")
+        mid = station.ids.get("mid")
+        if not mid:
+            raise ContentUnavailableError(f"{station.name} has no HEOS media id")
+        side = self._side_id(raw_pid(player_id))
+        if side is None:  # pragma: no cover - the player was resolved by _raw above
+            return
+        previous = self.store.state.now_playing.get(side)
+        previous_station = self._station_playing.get(side)
+        # Optimistic first (like the other commands); the receiver's event confirms with the
+        # first track, or the failure below puts the previous state back.
+        self._station_playing[side] = (ref, station.name)
+        self.store.set_now_playing(
+            side,
+            NowPlaying(
+                title=station.name,
+                art=self.art.ref(ArtHints(device_url=station.art_url, service=ref.service)),
+                source=ref.service,
+                seekable=False,
+                supports_next=True,
+                supports_prev=False,
+                duration_ms=None,
+                content_ref=ref,
+            ),
+        )
+        self.store.set_position(side, optimistic_position(0))
+        for member in self.store.state.sides[side].member_ids:
+            self.store.update_player(member, play_state="play")
+        try:
+            await play(
+                raw_pid(player_id),
+                int(station.ids.get("sid") or self.HEOS_SERVICE_SIDS[ref.service]),
+                station.ids.get("cid") or None,
+                mid,
+            )
+        except Exception:
+            if previous_station is None:
+                self._station_playing.pop(side, None)
+            else:
+                self._station_playing[side] = previous_station
+            if previous is not None:
+                self.store.set_now_playing(side, previous)
+            raise
 
     async def prime_content(
         self, player_id: str, ref: ContentRef, tracks: list[PlayableTrack], start_index: int = 0
@@ -453,8 +572,22 @@ class PyHeosAdapter(HeosAdapter):
         duration = getattr(media, "duration", None)
         controls = _controls(media)
         is_station = _enum_value(getattr(media, "type", "")) == "station"
+        side = side_id_for(p)
+        source_id = getattr(media, "source_id", None)
+        service = _service_name(source_id)
+        station_ref: ContentRef | None = None
+        stored = self._station_playing.get(side)
+        if stored is not None:
+            station_ref, station_name = stored
+            # The CLI has no station id on now-playing; ``station`` (or ``album``, where the
+            # receiver puts the station name) is the best available switch detector.
+            reported = getattr(media, "station", None) or getattr(media, "album", None)
+            switched = bool(reported) and str(reported).casefold() != station_name.casefold()
+            if service != station_ref.service or not is_station or switched:
+                self._station_playing.pop(side, None)  # the room moved on
+                station_ref = None
         self.store.set_now_playing(
-            side_id_for(p),
+            side,
             NowPlaying(
                 art=self.art.ref(
                     ArtHints(
@@ -465,15 +598,16 @@ class PyHeosAdapter(HeosAdapter):
                 title=getattr(media, "song", None),
                 artist=getattr(media, "artist", None),
                 album=getattr(media, "album", None),
-                source=str(getattr(media, "source_id", "") or "") or None,
+                source=service or (str(source_id) if source_id not in (None, "") else None),
                 seekable=not is_station,  # the CLI cannot seek anyway; kept for the UI badge
-                supports_next="play_next" in controls if controls else not is_station,
+                supports_next="play_next" in controls if controls else True,  # stations skip
                 supports_prev="play_previous" in controls if controls else not is_station,
                 duration_ms=int(duration) if duration else None,
                 track_id=str(getattr(media, "media_id", "") or "") or None,
                 content_ref=_tidal_ref(
                     getattr(media, "source_id", None), getattr(media, "media_id", None)
-                ),
+                )
+                or station_ref,
             ),
         )
 
@@ -562,3 +696,23 @@ def _service_name(source_id: Any) -> str | None:
         return HEOS_SOURCE_NAMES.get(int(source_id)) if source_id is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _is_station(item: Any) -> bool:
+    return _enum_value(getattr(item, "type", "")) == "station" and bool(
+        getattr(item, "playable", True)
+    )
+
+
+def _station_from(item: Any, sid: int, service: str) -> VendorStation:
+    return VendorStation(
+        vendor="heos",
+        service=service,
+        name=str(getattr(item, "name", "") or "Station"),
+        ids={
+            "sid": str(sid),
+            "cid": str(getattr(item, "container_id", None) or ""),
+            "mid": str(getattr(item, "media_id", None) or ""),
+        },
+        art_url=str(getattr(item, "image_url", "") or "") or None,
+    )

@@ -16,7 +16,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ push, back: vi.fn() }), 
 const art = { url: "/api/art/aaaaaaaaaaaaaaaaaaaaaaaa", accent: null, accent_is_safe: false };
 const album: LibraryItem = { content_ref: { service: "tidal", kind: "album", id: "a1" }, title: "Kind of Blue", subtitle: "Miles Davis", art, duration_ms: null, track_count: 9, availability: { heos: true, sonos: true } };
 const playlist: LibraryItem = { content_ref: { service: "ytmusic", kind: "playlist", id: "p1" }, title: "Focus", subtitle: "12 tracks", art, duration_ms: null, track_count: 12, availability: { heos: false, sonos: true } };
-const recent: HistoryItem = { content_ref: album.content_ref, title: album.title, subtitle: album.subtitle, art, last_targets: ["sonos:sonos-gK"], last_played_at: "2026-09-07T00:00:00Z", play_count: 1 };
+const recent: HistoryItem = { content_ref: album.content_ref, title: album.title, subtitle: album.subtitle, art, last_targets: ["sonos:sonos-gK"], last_played_at: "2026-09-07T00:00:00Z", play_count: 1, availability: null };
 const homeBody = (over: Record<string, unknown> = {}) => ({ recents: [], playlists: { items: [], needs_link: null }, favorite_albums: { items: [], needs_link: null }, stations: { items: [], needs_link: null }, ...over });
 
 function bootHome(responder: (calls: number) => unknown) {
@@ -87,7 +87,7 @@ describe("RecentsRail", () => {
 describe("CardGrid", () => {
   it("renders connect cards when the section needs a link; YouTube Music is disabled without opacity and reads 'Coming later'", async () => {
     const onConnect = vi.fn();
-    render(<CardGrid section={{ items: [], needs_link: "tidal", error: null }} loading={false} connect={["tidal", "ytmusic"]} onPlay={() => {}} onDetail={() => {}} onConnect={onConnect} emptyCopy="x" testId="g" />);
+    render(<CardGrid section={{ items: [], needs_link: "tidal", error: null, linked: null }} loading={false} connect={["tidal", "ytmusic"]} onPlay={() => {}} onDetail={() => {}} onConnect={onConnect} emptyCopy="x" testId="g" />);
     const cards = screen.getAllByTestId("connect-card");
     expect(cards.map((c) => c.textContent)).toEqual([expect.stringContaining("Connect Tidal"), expect.stringContaining("Connect YouTube MusicComing in a later phase")]);
     await userEvent.click(cards[0]!);
@@ -98,9 +98,9 @@ describe("CardGrid", () => {
   it("shows skeletons before data, empty copy with no items, and a section error as an alert", () => {
     const { rerender } = render(<CardGrid section={null} loading connect={[]} onPlay={() => {}} onDetail={() => {}} onConnect={() => {}} emptyCopy="Nothing here." testId="g" />);
     expect(document.querySelectorAll("[data-skeleton]").length).toBe(4);
-    rerender(<CardGrid section={{ items: [], needs_link: null, error: null }} loading={false} connect={[]} onPlay={() => {}} onDetail={() => {}} onConnect={() => {}} emptyCopy="Nothing here." testId="g" />);
+    rerender(<CardGrid section={{ items: [], needs_link: null, error: null, linked: null }} loading={false} connect={[]} onPlay={() => {}} onDetail={() => {}} onConnect={() => {}} emptyCopy="Nothing here." testId="g" />);
     expect(screen.getByText("Nothing here.")).toBeInTheDocument();
-    rerender(<CardGrid section={{ items: [], needs_link: null, error: "Tidal timed out." }} loading={false} connect={[]} onPlay={() => {}} onDetail={() => {}} onConnect={() => {}} emptyCopy="Nothing here." testId="g" />);
+    rerender(<CardGrid section={{ items: [], needs_link: null, error: "Tidal timed out.", linked: null }} loading={false} connect={[]} onPlay={() => {}} onDetail={() => {}} onConnect={() => {}} emptyCopy="Nothing here." testId="g" />);
     expect(screen.getByRole("alert")).toHaveTextContent("Tidal timed out.");
   });
 });

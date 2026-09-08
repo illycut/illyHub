@@ -34,3 +34,38 @@ def settings(tmp_path: Path) -> Settings:
 @pytest.fixture
 def store() -> StateStore:
     return StateStore()
+
+
+# --------------------------------------------------------------------------------------
+# User-facing copy audit: every message a person can read (CommandError → error envelopes and
+# partial failures, AckWarning, NeedsLinkError) is recorded across the whole session, and
+# tests/test_zz_vendor_labels.py fails if any of them names an ecosystem by its raw id
+# ("heos", "sonos") instead of its label ("HEOS", "Sonos").
+# --------------------------------------------------------------------------------------
+
+RECORDED_MESSAGES: list[tuple[str, str]] = []
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _record_user_messages() -> None:
+    from illyhub_hub import commands, content
+
+    orig_cmd_init = commands.CommandError.__init__
+    orig_link_init = content.NeedsLinkError.__init__
+    orig_warning_post = commands.AckWarning.model_post_init
+
+    def cmd_init(self, code, message, target=None):  # type: ignore[no-untyped-def]
+        RECORDED_MESSAGES.append(("CommandError", message))
+        orig_cmd_init(self, code, message, target)
+
+    def link_init(self, service, message=None):  # type: ignore[no-untyped-def]
+        orig_link_init(self, service, message)
+        RECORDED_MESSAGES.append(("NeedsLinkError", self.message))
+
+    def warning_post(self, ctx):  # type: ignore[no-untyped-def]
+        RECORDED_MESSAGES.append(("AckWarning", self.message))
+        orig_warning_post(self, ctx)
+
+    commands.CommandError.__init__ = cmd_init  # type: ignore[method-assign]
+    content.NeedsLinkError.__init__ = link_init  # type: ignore[method-assign]
+    commands.AckWarning.model_post_init = warning_post  # type: ignore[method-assign]

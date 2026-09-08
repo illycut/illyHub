@@ -23,7 +23,7 @@ export default defineConfig({
     { name: "chromium-pixel7", use: { ...devices["Pixel 7"] } },
   ],
   webServer: {
-    command: `npm run build && HUB_FAKE_DEVICES=1 HUB_FAKE_TIDAL=1 HUB_PORT=${PORT} HUB_APP_DIR=../app/out uv run --project ../hub hub`,
+    command: `npm run build && HUB_FAKE_DEVICES=1 HUB_FAKE_TIDAL=1 HUB_FAKE_PANDORA=1 HUB_PORT=${PORT} HUB_APP_DIR=../app/out uv run --project ../hub hub`,
     url: `http://127.0.0.1:${PORT}/api/health`,
     reuseExistingServer: !process.env.CI,
     timeout: 180_000,

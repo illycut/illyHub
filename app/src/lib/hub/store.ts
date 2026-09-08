@@ -19,6 +19,7 @@ import type { Ack, ArtRef, HubState, Position, ServerMessage, TransportAction, V
 import { interpolatePosition } from "../position";
 import { linkedVolumeLevels, sideForPlayer } from "../selectors";
 import { toast } from "../ui/toasts";
+import { warningToast } from "../pandora";
 import { SYNC_UNSUPPORTED_TOAST, transportTargetFor } from "../sync";
 
 /** What `play()` needs from a library item to update the UI optimistically. */
@@ -395,7 +396,7 @@ export const useHub = create<HubStore>((set, get) => ({
       const ack = await get().dispatch(C.play(id, item.content_ref, item.start_index), patchFor(id), `Play on ${names(id)}`, { onFail: "keep" });
       acks.push(ack);
       if (ack.ok) {
-        for (const f of ack.partial ?? []) toast(f.message);
+        toastNotes(ack, get().state?.sides);
         continue;
       }
       const code = ack.error?.code ?? "vendor_error";
@@ -451,7 +452,7 @@ export const useHub = create<HubStore>((set, get) => ({
     const one = (xs: string[]) => (xs.length === 1 ? xs[0]! : xs);
     const ack = await get().dispatch(C.syncPlay(item.content_ref, one(heosTargets), one(sonosTargets), item.start_index), patch, "Sync Play", { onFail: "keep" });
     if (ack.ok) {
-      for (const f of ack.partial ?? []) toast(f.message);
+      toastNotes(ack, get().state?.sides);
       return ack;
     }
     const code: string = ack.error?.code ?? "vendor_error";
@@ -521,7 +522,21 @@ function fail(get: Get, set: Set, cid: string, message: string): void {
   get().requestResync();
 }
 
-/** Resolve an ack against pending commands. Acks for other clients' commands (or duplicates) are ignored. */
+/**
+ * Non-fatal notes on a successful ack: per-target failures in `partial` and hub warnings such as
+ * `pandora_concurrent`, both shown verbatim (the hub owns the copy, docs/api.md).
+ */
+export function toastNotes(ack: Ack, sides?: Record<string, { name: string }>): void {
+  for (const f of ack.partial ?? []) toast(f.message);
+  for (const w of ack.warnings ?? []) toast(warningToast(w, sides));
+}
+
+/**
+ * Resolve an ack against pending commands. Acks for other clients' commands (or duplicates) are
+ * ignored. Every command's ack arrives twice, once as the REST response and once on the WebSocket:
+ * whichever lands first removes the pending entry, so the second call returns at `!p` and nothing
+ * is toasted twice. With `onFail: "keep"` the caller (play, syncPlay) toasts from the REST ack.
+ */
 function settle(get: Get, set: Set, ack: Ack): void {
   const p = get().pending[ack.correlation_id];
   if (!p) return;
@@ -530,7 +545,7 @@ function settle(get: Get, set: Set, ack: Ack): void {
     return;
   }
   finishPending(get, set, ack.correlation_id);
-  if (p.onFail !== "keep") for (const f of ack.partial ?? []) toast(f.message);
+  if (p.onFail !== "keep") toastNotes(ack, get().state?.sides);
 }
 
 function actionLabel(action: TransportAction): string {

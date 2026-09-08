@@ -104,7 +104,7 @@ src/lib/library/    SWR-style store for home, details, settings (refetch on focu
 src/lib/ui/         chrome state (Now Playing expanded, picker, play request), toasts
 src/lib/            position interpolation, scrub math, coalescer, prefs, selectors, format
 src/styles/         tokens.css (single source of truth), globals.css
-e2e/                Playwright smoke
+e2e/                Playwright: smoke, viewports, home, sync, pandora
 ```
 
 ## Sync Play (Phase 4)
@@ -128,3 +128,30 @@ to offer it and renders `HubState.sync`.
   while the session is being driven (resolving through correcting); once lost or stopped each
   side is on its own again (`transportTargetFor` in `src/lib/sync.ts`).
 - E2E: `e2e/sync.spec.ts` drives the fake hub's `sync_drift` / `sync_lose_sonos` scenarios.
+
+## Pandora (Phase 5)
+
+Stations are per ecosystem and Pandora is linked inside the HEOS and Sonos apps, never through
+the hub, so there is no Connect flow. The hub merges both vendors' station lists and reports
+per-station availability (`docs/api.md`, Phase 5); the app only renders that.
+
+- **Home** (`stationsSectionModel` in `src/lib/pandora.ts`): a "Pandora stations" section of
+  art cards with the Pandora badge, alphabetical, hidden while empty (a hub-side section error
+  shows in its place). A vendor the hub reports as not linked (`stations.linked`) gets a one-line
+  note naming its rooms ("Living Room Amp and Den can't play these until Pandora is added in the
+  HEOS app.") instead of a Connect card. Card subtitles come from availability ("Sonos rooms only";
+  none when both vendors can play). Station cards have no detail view; tapping opens the target picker.
+- **Picker**: rows whose vendor cannot play the station are disabled with the reason from the hub's
+  per-vendor link state: "Pandora is set up in the HEOS app." when that vendor is not linked, "Not in
+  the HEOS Pandora account." when it is linked but lacks the station. Sync Play is never offered for
+  stations: with both vendors selected the picker shows one caption ("Stations can't sync: Pandora
+  picks different songs for each room.") and no Sync Play button. Choosing two rooms, or one room
+  while another already plays Pandora, shows the single-stream note (PRD §3.5); the hub's
+  `pandora_concurrent` note on `Ack.warnings` (ok stays true) is toasted, leading with the room the
+  hub names ("Kitchen may pause: …"); identical toasts refresh instead of stacking.
+- **Now Playing radio mode**: the scrubber is read-only with no thumb, elapsed time only (no
+  total when `duration_ms` is null), previous disabled and next enabled per the hub's
+  capabilities, Pandora badge, station name on the album line. Recents show stations with the
+  badge and the last-played glyph.
+- E2E: `e2e/pandora.spec.ts` against the fake hub's canned stations (`HUB_FAKE_PANDORA=1`) and
+  the `link_pandora` / `unlink_pandora?vendor=` scenarios.

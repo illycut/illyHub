@@ -62,6 +62,16 @@ Art = ArtRef  # backwards-compatible alias (Phase 0/1 name)
 
 
 Service = Literal["tidal", "ytmusic", "pandora"]
+
+# User-facing names for the two ecosystems. Every message a person can read (error envelopes,
+# partial failures, warnings, needs_link) goes through this map; raw vendor ids never do.
+VENDOR_LABEL: dict[str, str] = {"heos": "HEOS", "sonos": "Sonos", "denon": "Denon"}
+
+
+def vendor_label(vendor: str) -> str:
+    return VENDOR_LABEL.get(vendor, vendor.title())
+
+
 ContentKind = Literal["album", "playlist", "track", "station"]
 
 

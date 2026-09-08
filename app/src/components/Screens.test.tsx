@@ -76,13 +76,14 @@ describe("NowPlaying", () => {
     expect(screen.getByLabelText("Next track")).toBeEnabled();
   });
 
-  it("falls back to bg-raised when the accent is unsafe; radio disables prev and shows --:--", () => {
+  it("falls back to bg-raised when the accent is unsafe; radio disables prev and shows the track total", () => {
     useHub.getState().selectSide("sonos:sonos-gK");
     render(<NowPlaying />);
     expect(varOf(screen.getByTestId("now-playing"), "--art-accent")).toBe("var(--bg-raised)");
     expect(screen.getByLabelText("Previous track")).toBeDisabled();
     expect(screen.getByLabelText("Next track")).toBeEnabled();
-    expect(screen.getByTestId("total")).toHaveTextContent("--:--");
+    // Phase 5 radio mode: Pandora tracks carry a duration (the fixture: 3:00); the null case is in Pandora.test
+    expect(screen.getByTestId("total")).toHaveTextContent("3:00");
     expect(screen.getAllByText("Pandora").length).toBeGreaterThan(0);
   });
 

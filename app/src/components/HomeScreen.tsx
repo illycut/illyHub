@@ -1,5 +1,6 @@
 "use client";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useMemo } from "react";
+import { useShallow } from "zustand/react/shallow";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArtCard } from "./ArtCard";
@@ -8,7 +9,9 @@ import { GearIcon, LayersIcon } from "./icons";
 import { ArtSkeleton, ConnectCard } from "./Skeleton";
 import { useLibrary, onRefocus } from "@/lib/library/store";
 import { useChrome, type PlayRequest } from "@/lib/ui/chrome";
-import { refKey, type ContentRef, type HistoryItem, type LibraryItem, type Section, type Service } from "@/lib/hub/library";
+import { stationSubtitle, stationsSectionModel, unlinkedVendors } from "@/lib/pandora";
+import { useHub } from "@/lib/hub/store";
+import { refKey, type ContentRef, type Home, type HistoryItem, type LibraryItem, type Section, type Service } from "@/lib/hub/library";
 
 export function detailHref(ref: ContentRef): string {
   return `/browse?ref=${encodeURIComponent(refKey(ref))}`;
@@ -16,12 +19,33 @@ export function detailHref(ref: ContentRef): string {
 
 const SERVICE_LABEL: Record<Service, string> = { tidal: "Tidal", ytmusic: "YouTube Music", pandora: "Pandora" };
 
-export function toPlayRequest(item: LibraryItem, preferred: string[] = []): PlayRequest {
-  return { content_ref: item.content_ref, title: item.title, subtitle: item.subtitle, art: item.art, preferred, availability: item.availability };
+export function toPlayRequest(item: LibraryItem, preferred: string[] = [], unlinked_vendors?: PlayRequest["unlinked_vendors"]): PlayRequest {
+  return { content_ref: item.content_ref, title: item.title, subtitle: item.subtitle, art: item.art, preferred, availability: item.availability, unlinked_vendors };
 }
 
-export function historyToPlayRequest(item: HistoryItem): PlayRequest {
-  return { content_ref: item.content_ref, title: item.title, subtitle: item.subtitle, art: item.art, preferred: item.last_targets };
+/**
+ * Recents tap (UX U1): availability comes from the history item when the hub sends it, else from the
+ * matching station in the home stations section; the picker then disables rooms that cannot play it.
+ */
+export function historyToPlayRequest(item: HistoryItem, home?: Home | null): PlayRequest {
+  const key = refKey(item.content_ref);
+  const fromHome = home?.stations.items.find((s) => refKey(s.content_ref) === key);
+  const availability = item.availability ?? fromHome?.availability;
+  const unlinked = item.content_ref.service === "pandora" ? unlinkedVendors(home?.stations.linked) : undefined;
+  return { content_ref: item.content_ref, title: item.title, subtitle: item.subtitle, art: item.art, preferred: item.last_targets, availability, unlinked_vendors: unlinked };
+}
+
+/** Room names per vendor from the hub's sides, as primitives so a shallow selector stays stable. */
+function useRoomsByVendor(): { heos: string[]; sonos: string[] } {
+  const flat = useHub(useShallow((s) => Object.values(s.state?.sides ?? {}).map((side) => `${side.vendor}|${side.name}`)));
+  return useMemo(() => {
+    const out = { heos: [] as string[], sonos: [] as string[] };
+    for (const f of flat) {
+      const sep = f.indexOf("|");
+      out[f.slice(0, sep) as "heos" | "sonos"].push(f.slice(sep + 1));
+    }
+    return out;
+  }, [flat]);
 }
 
 /** Grid of art cards with skeletons, connect cards for unlinked services, and the §8 empty copy. */
@@ -106,8 +130,18 @@ export function HomeScreen() {
 
   const data = home.data;
   const loading = home.loading && !data;
+  const roomsByVendor = useRoomsByVendor();
+  const stations = useMemo(() => stationsSectionModel(data?.stations, roomsByVendor), [data?.stations, roomsByVendor]);
+  // Station cards: subtitle says which vendor's rooms can play it (UX U9); none when both can.
+  const stationsSection = useMemo<Section<LibraryItem> | null>(
+    () => (data ? { ...data.stations, items: stations.items.map((it) => ({ ...it, subtitle: stationSubtitle(it.availability) })) } : null),
+    [data, stations.items],
+  );
+  // Station rows in the picker name the fix per vendor from the section's link state (UX U3).
+  const unlinked = useMemo(() => unlinkedVendors(data?.stations.linked), [data?.stations.linked]);
+  const playStation = useCallback((item: LibraryItem) => requestPlay(toPlayRequest(item, [], unlinked)), [requestPlay, unlinked]);
   const playItem = useCallback((item: LibraryItem) => requestPlay(toPlayRequest(item)), [requestPlay]);
-  const playRecent = useCallback((item: HistoryItem) => requestPlay(historyToPlayRequest(item)), [requestPlay]);
+  const playRecent = useCallback((item: HistoryItem) => requestPlay(historyToPlayRequest(item, data)), [requestPlay, data]);
   const goDetail = useCallback((item: { content_ref: ContentRef }) => router.push(detailHref(item.content_ref)), [router]);
   const goConnect = useCallback((service: Service) => router.push(`/settings?link=${service}`), [router]);
 
@@ -166,11 +200,28 @@ export function HomeScreen() {
             />
           </div>
         </section>
-        {data && data.stations.items.length > 0 ? (
-          <section aria-labelledby="stations-h">
+        {stations.visible && stationsSection ? (
+          // Pandora stations (HOME-5): alphabetical, hidden while empty. Pandora is linked in the
+          // vendor apps, never through the hub, so a vendor that lacks it gets a one-line fact-and-fix
+          // note instead of a Connect card (design system §8, §10).
+          <section aria-labelledby="stations-h" data-testid="stations-section">
             <h2 id="stations-h" className="text-title-2 text-primary">Pandora stations</h2>
+            {stations.note ? (
+              <p className="mt-1 text-caption text-secondary" data-testid="stations-note">
+                {stations.note}
+              </p>
+            ) : null}
             <div className="mt-3">
-              <CardGrid section={data.stations} loading={false} connect={[]} onPlay={playItem} onDetail={goDetail} onConnect={goConnect} emptyCopy="" testId="stations-grid" />
+              <CardGrid
+                section={stationsSection}
+                loading={false}
+                connect={[]}
+                onPlay={playStation}
+                onDetail={goDetail}
+                onConnect={goConnect}
+                emptyCopy=""
+                testId="stations-grid"
+              />
             </div>
           </section>
         ) : null}

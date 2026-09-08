@@ -74,7 +74,7 @@ function boot(opts: Opts = {}) {
 
 describe("helpers", () => {
   it("status line, uptime copy, and the restart state machine", () => {
-    const base: AccountStatus = { service: "tidal", state: "unlinked", linked: false, account_name: null, expires_at: null, pending: null, last_error: null };
+    const base: AccountStatus = { service: "tidal", state: "unlinked", linked: false, account_name: null, expires_at: null, pending: null, last_error: null, linked_by_vendor: null };
     expect(accountStatusLine(base)).toBe("Not connected");
     expect(accountStatusLine({ ...base, last_error: "Token refresh failed" })).toBe("Not connected · Token refresh failed");
     expect(accountStatusLine({ ...base, state: "linked", linked: true, account_name: "james" })).toBe("Connected · james");

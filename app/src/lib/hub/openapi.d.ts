@@ -333,6 +333,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/browse/pandora/stations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pandora Stations
+         * @description Merged station list (PAN-3): one item per station name, ``availability`` per side.
+         */
+        get: operations["pandora_stations_api_browse_pandora_stations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/browse/refresh": {
         parameters: {
             query?: never;
@@ -598,6 +618,10 @@ export interface components {
             } | null;
             /** Last Error */
             last_error?: string | null;
+            /** Linked By Vendor */
+            linked_by_vendor?: {
+                [key: string]: boolean | null;
+            } | null;
         };
         /** Ack */
         Ack: {
@@ -625,12 +649,32 @@ export interface components {
              */
             session_id?: string | null;
             /**
+             * Warnings
+             * @description non-fatal notes, e.g. pandora_concurrent
+             */
+            warnings?: components["schemas"]["AckWarning"][];
+            /**
              * Resolved
              * @description transport acks: side id -> the action actually sent (toggle resolved)
              */
             resolved?: {
                 [key: string]: string;
             };
+        };
+        /**
+         * AckWarning
+         * @description A non-fatal note about a command that still succeeded (e.g. a second Pandora stream).
+         */
+        AckWarning: {
+            /**
+             * Code
+             * @constant
+             */
+            code: "pandora_concurrent";
+            /** Message */
+            message: string;
+            /** Target */
+            target?: string | null;
         };
         /**
          * ArtRef
@@ -709,6 +753,10 @@ export interface components {
             total?: number | null;
             /** Next Offset */
             next_offset?: number | null;
+            /** Linked */
+            linked?: {
+                [key: string]: boolean | null;
+            } | null;
         };
         /**
          * Capabilities
@@ -937,6 +985,7 @@ export interface components {
              * @default false
              */
             sync: boolean;
+            availability?: components["schemas"]["Availability"] | null;
         };
         /** HistoryResponse */
         HistoryResponse: {
@@ -965,6 +1014,13 @@ export interface components {
              * @description section failed; others still render
              */
             error?: string | null;
+            /**
+             * Linked
+             * @description per-ecosystem services (stations): vendor -> true | false | null (unknown)
+             */
+            linked?: {
+                [key: string]: boolean | null;
+            } | null;
         };
         /** HubInfo */
         HubInfo: {
@@ -1957,6 +2013,26 @@ export interface operations {
             };
         };
     };
+    pandora_stations_api_browse_pandora_stations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrowsePage"];
+                };
+            };
+        };
+    };
     browse_refresh_api_browse_refresh_post: {
         parameters: {
             query?: never;
@@ -2311,7 +2387,9 @@ export interface operations {
     };
     fake_scenario_api_dev_fake__scenario__post: {
         parameters: {
-            query?: never;
+            query?: {
+                vendor?: string | null;
+            };
             header?: never;
             path: {
                 scenario: string;

@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+from urllib.parse import quote, unquote
 
 from ..art import ArtHelper, ArtHints
 from ..config import Settings
@@ -35,7 +37,15 @@ from ..state import (
     side_id_for,
 )
 from ..tasks import stop_task
-from .base import Backoff, ContentUnavailableError, PlayableTrack, PrimedQueue, SonosAdapter
+from .base import (
+    Backoff,
+    ContentUnavailableError,
+    PlayableTrack,
+    PrimedQueue,
+    ServiceAuthError,
+    SonosAdapter,
+    VendorStation,
+)
 
 SERVICES = ("avTransport", "renderingControl")
 SUBSCRIPTION_TIMEOUT_S = 600
@@ -72,6 +82,7 @@ class Topology:
     groups: list[GroupSnapshot] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)  # uid -> SoCo object, for subscribing
     tidal_sn: str | None = None  # Sonos account serial for Tidal, from the household accounts
+    pandora_sn: str | None = None  # same for Pandora (Phase 5)
 
 
 class SonosSubscription(Protocol):
@@ -144,7 +155,9 @@ async def default_snapshot(settings: Settings) -> Topology:  # pragma: no cover
             timeout=settings.ssdp_timeout_s, interface_addr=settings.sonos_listener_host
         )
         topo = snapshot_zones(zones or [])
-        topo.tidal_sn = discover_tidal_sn(next(iter(zones), None) if zones else None)
+        first = next(iter(zones), None) if zones else None
+        topo.tidal_sn = discover_tidal_sn(first)
+        topo.pandora_sn = discover_pandora_sn(first)
         return topo
 
     return await asyncio.to_thread(work)
@@ -156,21 +169,33 @@ def _soco_account_class() -> Any:  # pragma: no cover - import of the real SoCo 
     return Account
 
 
-def discover_tidal_sn(zone: Any, account_class: Any | None = None) -> str | None:
-    """Read the household's Tidal account serial from ``/status/accounts`` via SoCo. Sonos
-    service type for Tidal is ``sid*256 + 7`` = 44551. Returns None when Tidal is not linked
-    in the Sonos app (or the lookup fails); ``HUB_SONOS_TIDAL_SN`` is the manual fallback.
-    ``account_class`` is injectable so the mapping is testable without SoCo's network code."""
+def discover_service_sn(
+    zone: Any, service_type: str, account_class: Any | None = None
+) -> str | None:
+    """Read a service's account serial (``sn``) from the household's ``/status/accounts`` via
+    SoCo. Sonos service types are ``sid*256 + 7``. Returns None when the service is not linked in
+    the Sonos app (or the lookup fails). ``account_class`` is injectable so the mapping is
+    testable without SoCo's network code."""
     if zone is None:
         return None
     try:
         account = account_class or _soco_account_class()
         for serial, acct in account.get_accounts(zone).items():
-            if str(getattr(acct, "service_type", "")) == TIDAL_SERVICE_TYPE:
+            if str(getattr(acct, "service_type", "")) == service_type:
                 return str(serial)
     except Exception:  # noqa: BLE001 - best effort
         return None
     return None
+
+
+def discover_tidal_sn(zone: Any, account_class: Any | None = None) -> str | None:
+    """Tidal's ``sn`` (service type 44551); ``HUB_SONOS_TIDAL_SN`` is the manual fallback."""
+    return discover_service_sn(zone, TIDAL_SERVICE_TYPE, account_class)
+
+
+def discover_pandora_sn(zone: Any, account_class: Any | None = None) -> str | None:
+    """Pandora's ``sn`` (service type 60423); ``HUB_SONOS_PANDORA_SN`` is the manual fallback."""
+    return discover_service_sn(zone, PANDORA_SERVICE_TYPE, account_class)
 
 
 # -- Tidal on Sonos: refs built from the canonical Tidal id (docs/spikes/tidal-refs.md) -------
@@ -223,6 +248,175 @@ def build_tidal_didl(track: PlayableTrack, sn: str) -> Any:
         creator=track.artist,
         album=track.album,
     )
+
+
+# -- Pandora on Sonos: SMAPI stations (docs/spikes/pandora-refs.md, unverified on hardware) ----
+
+PANDORA_SID = 236
+PANDORA_SERVICE_TYPE = str(PANDORA_SID * 256 + 7)  # "60423"
+PANDORA_DESC = f"SA_RINCON{PANDORA_SERVICE_TYPE}_X_#Svc{PANDORA_SERVICE_TYPE}-0-Token"
+PANDORA_PROTOCOL_INFO = "sonos.com-http:*:*:*"
+PANDORA_SERVICE_NAME = "Pandora"  # SoCo MusicService name (get_all_music_services_names)
+STATION_ITEM_TYPES = {"stream", "program", "station"}
+
+
+def pandora_station_uri(item_id: str, sn: str) -> str:
+    """Programmed-radio URI the player resolves through the service (``getMediaURI``)."""
+    return f"x-sonosapi-radio:{quote(item_id, safe='')}?sid={PANDORA_SID}&flags=8300&sn={sn}"
+
+
+def pandora_item_id(item_id: str) -> str:
+    return f"F00092020{quote(item_id, safe='')}"
+
+
+PANDORA_URI_RE = re.compile(r"^x-sonosapi-radio:([^?]+)\?")
+
+
+def pandora_item_from_uri(uri: str | None) -> str | None:
+    """The SMAPI station id inside a playing Pandora URI, for matching now-playing to a station."""
+    if not uri:
+        return None
+    m = PANDORA_URI_RE.match(uri)
+    return m.group(1) if m else None
+
+
+def build_station_didl(station: VendorStation, sn: str) -> tuple[str, Any]:
+    """URI plus a SoCo ``DidlAudioBroadcast`` carrying the Pandora account descriptor."""
+    from soco.data_structures import DidlAudioBroadcast, DidlResource
+
+    item_id = station.ids.get("id") or ""
+    uri = pandora_station_uri(item_id, sn)
+    res = DidlResource(uri=uri, protocol_info=PANDORA_PROTOCOL_INFO)
+    didl = DidlAudioBroadcast(
+        title=station.name,
+        parent_id="R:0/0",
+        item_id=pandora_item_id(item_id),
+        resources=[res],
+        desc=PANDORA_DESC,
+    )
+    return uri, didl
+
+
+_FIRST_CAP_RE = re.compile("(.)([A-Z][a-z]+)")
+_ALL_CAP_RE = re.compile("([a-z0-9])([A-Z])")
+
+
+def snake(key: str) -> str:
+    """SoCo's ``camel_to_underscore`` (``albumArtURI`` → ``album_art_uri``), reproduced so the
+    hub reads ``MusicServiceItem.metadata`` by the keys SoCo actually stores."""
+    return _ALL_CAP_RE.sub(r"\1_\2", _FIRST_CAP_RE.sub(r"\1_\2", key)).lower()
+
+
+def _md(item: Any, key: str, default: Any = None) -> Any:
+    """Read a SMAPI field off a SoCo ``MusicServiceItem`` / ``MetadataDictBase`` or a raw dict.
+
+    SoCo stores the SOAP fields **snake_cased** in ``.metadata`` (and coerces booleans), so both
+    spellings are tried on dicts and only the snake form as an attribute."""
+    snake_key = snake(key)
+    if isinstance(item, dict):
+        if key in item:
+            return item[key]
+        return item.get(snake_key, default)
+    meta = getattr(item, "metadata", None)
+    if isinstance(meta, dict):
+        if snake_key in meta:
+            return meta[snake_key]
+        if key in meta:
+            return meta[key]
+    return getattr(item, snake_key, default)
+
+
+def _truthy(value: Any) -> bool:
+    return value is True or str(value).lower() == "true"
+
+
+def _station_art(item: Any) -> str | None:
+    """Collections carry ``albumArtURI``; programs/streams carry it in ``streamMetadata.logo`` or
+    ``trackMetadata.albumArtURI`` (both nested ``MetadataDictBase`` objects)."""
+    art = _md(item, "albumArtURI")
+    if art:
+        return str(art)
+    stream = _md(item, "streamMetadata")
+    logo = _md(stream, "logo") if stream is not None else None
+    if logo:
+        return str(logo)
+    track = _md(item, "trackMetadata")
+    art = _md(track, "albumArtURI") if track is not None else None
+    return str(art) if art else None
+
+
+def _is_smapi_auth_fault(exc: Exception) -> bool:
+    """SoCo raises ``MusicServiceAuthException`` for expired/missing tokens and
+    ``MusicServiceException`` for other SOAP faults; matched by class name so tests can raise
+    look-alikes."""
+    return any(k.__name__ == "MusicServiceAuthException" for k in type(exc).__mro__)
+
+
+def _is_smapi_fault(exc: Exception) -> bool:
+    return any(k.__name__ == "MusicServiceException" for k in type(exc).__mro__)
+
+
+def collect_smapi_stations(
+    service: Any, *, depth: int = 2, count: int = 100
+) -> list[VendorStation]:
+    """Walk a SMAPI service tree from ``root`` and return the playable stations (Pandora lists
+    them under a "My Stations"/"Stations" container; a flat root is handled too). Runs inside
+    ``asyncio.to_thread``; every ``get_metadata`` is a SOAP call.
+
+    Items are SoCo ``MediaCollection`` (containers: ``item_type``, ``can_enumerate``,
+    ``can_play`` as real bools) and ``MediaMetadata`` (playables: ``item_type`` only, art nested).
+    A station is any item whose ``item_type`` is in :data:`STATION_ITEM_TYPES`, or a playable
+    non-enumerable collection. Auth faults propagate as :class:`ServiceAuthError`; other SOAP
+    faults as ``RuntimeError`` so the caller retries instead of caching an empty list."""
+    out: list[VendorStation] = []
+    seen: set[str] = set()
+
+    def browse(item_id: str) -> list[Any]:
+        try:
+            result = service.get_metadata(item_id, index=0, count=count)
+        except Exception as exc:  # noqa: BLE001 - classify SoCo's SOAP faults
+            if _is_smapi_auth_fault(exc):
+                raise ServiceAuthError(
+                    "Pandora on Sonos needs to be signed in again in the Sonos app"
+                ) from exc
+            if _is_smapi_fault(exc):
+                raise RuntimeError(f"Sonos Pandora browse fault: {exc}") from exc
+            raise
+        items = getattr(result, "items", None)
+        if items is None:
+            items = result if isinstance(result, list) else []
+        return list(items)
+
+    def visit(item_id: str, level: int) -> None:
+        for it in browse(item_id):
+            iid = _md(it, "id")
+            if not iid or iid in seen:
+                continue
+            itype = str(_md(it, "itemType") or "").lower()
+            can_enum = _truthy(_md(it, "canEnumerate", False))
+            can_play = _truthy(_md(it, "canPlay", False))
+            if itype in STATION_ITEM_TYPES or (can_play and not can_enum):
+                seen.add(str(iid))
+                out.append(
+                    VendorStation(
+                        vendor="sonos",
+                        name=str(_md(it, "title") or "Station"),
+                        ids={"id": str(iid)},
+                        art_url=_station_art(it),
+                        subtitle=str(_md(it, "summary") or "") or None,
+                    )
+                )
+            elif can_enum and level < depth:
+                visit(str(iid), level + 1)
+
+    visit("root", 0)
+    return out
+
+
+def default_music_service(name: str, device: Any) -> Any:  # pragma: no cover - real SoCo
+    from soco.music_services import MusicService
+
+    return MusicService(name, device=device)
 
 
 async def default_groups(zone: Any) -> list[GroupSnapshot]:  # pragma: no cover
@@ -283,9 +477,16 @@ class SoCoAdapter(SonosAdapter):
         run_sync: RunSync = asyncio.to_thread,
         clock: Callable[[], float] | None = None,
         art: ArtHelper | None = None,
+        music_service: Callable[[str, Any], Any] = default_music_service,
     ) -> None:
         super().__init__(store, art=art)
         self.settings = settings
+        self._music_service = music_service
+        self._smapi: Any | None = None  # cached SoCo MusicService (SOAP session), per adapter
+        self._smapi_lock = threading.Lock()
+        # side id -> (station ref, SMAPI station id): the ref rides on now_playing.content_ref
+        # while the playing URI still carries that station id.
+        self._station_playing: dict[str, tuple[ContentRef, str]] = {}
         self._snapshot = snapshot or (lambda: default_snapshot(settings))
         self._groups = groups
         self._subscribe = subscribe
@@ -363,6 +564,28 @@ class SoCoAdapter(SonosAdapter):
         self._set_status("connected")
         self._emit("connected", players=len(topo.zones))
         self._sync_pollers()
+        with self._smapi_lock:
+            self._smapi = None  # new topology, new SOAP session
+        if self.pandora_sn:
+            self._spawn(self._prewarm_smapi())
+
+    async def _prewarm_smapi(self) -> None:
+        """Fetch SoCo's music-services data (one SOAP round trip) against a known zone at connect,
+        so the first station browse is not the one that discovers a broken session."""
+        raw_zone = next(iter(self._topology.raw.values()), None)
+        if raw_zone is None:
+            return
+        try:
+            await self._run_sync(lambda: self._service_for(raw_zone))
+        except Exception as exc:  # noqa: BLE001 - best effort; list_stations surfaces the cause
+            self.log.warning("smapi prewarm failed", extra={"extra": {"error": str(exc)}})
+
+    def _service_for(self, raw_zone: Any) -> Any:
+        """The cached SoCo ``MusicService`` for Pandora (worker thread only)."""
+        with self._smapi_lock:
+            if self._smapi is None:
+                self._smapi = self._music_service(PANDORA_SERVICE_NAME, raw_zone)
+            return self._smapi
 
     # -- commands (Phase 1) ---------------------------------------------------------
 
@@ -450,10 +673,92 @@ class SoCoAdapter(SonosAdapter):
     def tidal_sn(self) -> str | None:
         return self._topology.tidal_sn or self.settings.sonos_tidal_sn
 
+    @property
+    def pandora_sn(self) -> str | None:
+        return self._topology.pandora_sn or self.settings.sonos_pandora_sn
+
     def service_linked(self, service: str) -> bool:
         if service == "tidal":
             return bool(self.tidal_sn)
+        if service == "pandora":
+            return bool(self.pandora_sn)
         return False
+
+    # -- radio stations (Phase 5) -----------------------------------------------------
+
+    async def list_stations(self, service: str) -> list[VendorStation]:
+        """SMAPI browse through SoCo ``MusicService`` on any zone of the household. **Unverified
+        on hardware** (docs/spikes/pandora-refs.md): Sonos moved Pandora to app-link auth, and
+        SoCo's SMAPI client may need the household's token; ``HUB_SONOS_PANDORA_SN`` only
+        covers the account serial."""
+        if service != "pandora":
+            raise ContentUnavailableError(f"{service} stations are not available on Sonos")
+        if not self.pandora_sn:
+            raise ContentUnavailableError("Pandora is not linked in the Sonos app")
+        raw_zone = next(iter(self._topology.raw.values()), None)
+        if raw_zone is None:
+            raise ContentUnavailableError("no Sonos player is reachable")
+
+        def work() -> list[VendorStation]:
+            try:
+                svc = self._service_for(raw_zone)
+            except Exception as exc:  # noqa: BLE001 - SoCo's service lookup itself can fault
+                with self._smapi_lock:
+                    self._smapi = None
+                if _is_smapi_auth_fault(exc):
+                    raise ServiceAuthError(
+                        "Pandora on Sonos needs to be signed in again in the Sonos app"
+                    ) from exc
+                raise RuntimeError(f"Sonos music service lookup failed: {exc}") from exc
+            try:
+                return collect_smapi_stations(svc)
+            except ServiceAuthError:
+                with self._smapi_lock:
+                    self._smapi = None  # drop the broken session; the next call rebuilds it
+                raise
+
+        return await self._run_sync(work)
+
+    async def play_station(self, player_id: str, ref: ContentRef, station: VendorStation) -> None:
+        """``SetAVTransportURI`` with the station's programmed-radio URI and broadcast DIDL, then
+        play (SoCo ``play_uri``). Pandora chooses the tracks; ``next`` skips."""
+        if ref.service != "pandora":
+            raise ContentUnavailableError(f"{ref.service} stations are not playable on Sonos")
+        sn = self.pandora_sn
+        if not sn:
+            raise ContentUnavailableError("Pandora is not linked in the Sonos app")
+        if not station.ids.get("id"):
+            raise ContentUnavailableError(f"{station.name} has no Sonos station id")
+        raw = self._raw(player_id)
+        side = side_id_for(self.store.state.players[player_id])
+        previous = self.store.state.now_playing.get(side)
+        previous_station = self._station_playing.get(side)
+        # Optimistic first, like the other commands: the UI lands on the station immediately and
+        # the transport event confirms (or the failure below puts things back).
+        self._station_playing[side] = (ref, str(station.ids["id"]))
+        self._trackers.pop(side, None)
+        self.store.set_now_playing(side, _station_now_playing(self.art, station, ref))
+        if side in self.store.state.sides:
+            self.store.set_position(side, optimistic_position(0))
+            for member in self.store.state.sides[side].member_ids:
+                self.store.update_player(member, play_state="play")
+
+        def work() -> None:
+            from soco.data_structures import to_didl_string
+
+            uri, didl = build_station_didl(station, sn)
+            raw.play_uri(uri, meta=to_didl_string(didl), title=station.name, start=True)
+
+        try:
+            await self._run_sync(work)
+        except Exception:
+            if previous_station is None:
+                self._station_playing.pop(side, None)
+            else:
+                self._station_playing[side] = previous_station
+            if previous is not None:
+                self.store.set_now_playing(side, previous)
+            raise
 
     async def play_content(
         self, player_id: str, ref: ContentRef, tracks: list[PlayableTrack], start_index: int = 0
@@ -467,6 +772,7 @@ class SoCoAdapter(SonosAdapter):
         if not sn:
             raise ContentUnavailableError("Tidal is not linked in the Sonos app")
         raw = self._raw(player_id)
+        self._station_playing.pop(side_id_for(self.store.state.players[player_id]), None)
 
         if not 0 <= start_index < len(tracks):
             raise IndexError(f"start_index {start_index} out of range for {len(tracks)} tracks")
@@ -494,6 +800,7 @@ class SoCoAdapter(SonosAdapter):
         if not sn:
             raise ContentUnavailableError("Tidal is not linked in the Sonos app")
         raw = self._raw(player_id)
+        self._station_playing.pop(side_id_for(self.store.state.players[player_id]), None)
         if not 0 <= start_index < len(tracks):
             raise IndexError(f"start_index {start_index} out of range for {len(tracks)} tracks")
 
@@ -688,7 +995,7 @@ class SoCoAdapter(SonosAdapter):
                 return
             side = side_id_for(player)
             previous = self.store.state.now_playing.get(side)
-            np = self._now_playing(meta, variables, zone)
+            np = self._now_playing(meta, variables, zone, side)
             self.store.set_now_playing(side, np)
             if previous is None or previous.track_id != np.track_id:
                 tracker = self._trackers.get(side)
@@ -698,25 +1005,39 @@ class SoCoAdapter(SonosAdapter):
                     self.store.set_position(side, optimistic_position(0))
             self._emit("now_playing", player_id=p_id)
 
-    def _now_playing(self, meta: Any, variables: dict[str, Any], zone: ZoneSnapshot) -> NowPlaying:
+    def _now_playing(
+        self, meta: Any, variables: dict[str, Any], zone: ZoneSnapshot, side: str | None = None
+    ) -> NowPlaying:
         get = meta.get if isinstance(meta, dict) else lambda k, d=None: getattr(meta, k, d)
         art = get("album_art_uri") or get("album_art")
         uri = variables.get("current_track_uri") or get("uri")
         duration = variables.get("current_track_duration")
         broadcast = "audioBroadcast" in (get("item_class") or "")
         source = source_from_uri(uri)
+        station_ref: ContentRef | None = None
+        stored = self._station_playing.get(side) if side else None
+        if stored is not None:
+            station_ref, station_id = stored
+            playing_id = pandora_item_from_uri(uri)
+            if source != station_ref.service or (
+                playing_id is not None and unquote(playing_id) != station_id
+            ):
+                # The room moved on: another service, or another station from the Sonos app.
+                self._station_playing.pop(side or "", None)
+                station_ref = None
+        radio = broadcast or source == "pandora"
         return NowPlaying(
             title=get("title"),
             artist=get("creator"),
             album=get("album"),
             art=self.art.ref(ArtHints(device_url=absolutize(art, zone.ip), service=source)),
             source=source,
-            seekable=not broadcast,
-            supports_next=not broadcast,
-            supports_prev=not broadcast,
+            seekable=not radio,
+            supports_next=True if source == "pandora" else not broadcast,  # Pandora skips
+            supports_prev=not radio,
             duration_ms=_hms_to_ms(duration) if duration else None,
             track_id=uri or None,
-            content_ref=tidal_ref_from_uri(uri),
+            content_ref=tidal_ref_from_uri(uri) or station_ref,
         )
 
     async def _refresh_groups(self, zone: ZoneSnapshot) -> None:
@@ -764,3 +1085,16 @@ def _hms_to_ms(value: str) -> int | None:
         return None
     h, m, s = (int(p) for p in parts)
     return ((h * 60 + m) * 60 + s) * 1000
+
+
+def _station_now_playing(art: ArtHelper, station: VendorStation, ref: ContentRef) -> NowPlaying:
+    return NowPlaying(
+        title=station.name,
+        art=art.ref(ArtHints(device_url=station.art_url, service=ref.service)),
+        source=ref.service,
+        seekable=False,
+        supports_next=True,
+        supports_prev=False,
+        duration_ms=None,
+        content_ref=ref,
+    )

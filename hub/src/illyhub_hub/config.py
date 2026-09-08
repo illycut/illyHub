@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     vault_key: str | None = None  # Fernet key; generated into $HUB_DATA_DIR/vault.key when unset
     fake_tidal: bool = False  # canned Tidal library + fake queue (needs HUB_FAKE_DEVICES=1)
     sonos_tidal_sn: str | None = None  # Sonos account serial for Tidal URIs when discovery fails
+    # Phase 5: Pandora stations, played natively per ecosystem (PRD §3.5)
+    fake_pandora: bool = False  # canned stations on the fakes (needs HUB_FAKE_DEVICES=1)
+    sonos_pandora_sn: str | None = None  # Sonos account serial for Pandora URIs (manual)
     browse_cache_s: float = 300.0
     history_max_rows: int = 500
     allow_restart: bool = True

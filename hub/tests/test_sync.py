@@ -539,7 +539,7 @@ async def test_adapter_drop_loses_sync(rig: Rig) -> None:
     await start_sync(c, rt)
     await c.post("/api/dev/fake/disconnect_heos")
     await wait_for(lambda: rt.store.state.sync.status == "lost", timeout=1.0)
-    assert "heos link" in (rt.store.state.sync.reason or "")
+    assert "HEOS link" in (rt.store.state.sync.reason or "")
     await c.post("/api/dev/fake/reconnect_heos")
     r = await c.post("/api/sync/retry")
     assert r.status_code == 200

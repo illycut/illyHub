@@ -297,6 +297,7 @@ export function SettingsScreen({ initialLink = null }: { initialLink?: Service |
         expires_at: null,
         pending: null,
         last_error: null,
+        linked_by_vendor: null,
       }));
 
   return (

@@ -4,6 +4,7 @@
  * and docs/api.md.
  */
 import type { components } from "./openapi";
+import type { ContentRef } from "./library";
 
 export type Ack = components["schemas"]["Ack"];
 export type ErrorEnvelope = components["schemas"]["ErrorEnvelope"];
@@ -59,8 +60,11 @@ export interface NowPlaying {
   supports_prev: boolean;
   duration_ms: number | null;
   track_id: string | null;
-  /** Canonical id for the current track (Tidal on either vendor), null when unknown. */
-  content_ref: { service: string; kind: "track"; id: string } | null;
+  /**
+   * Canonical id for what is playing: a Tidal track (either vendor) or a Pandora station
+   * (kind "station"; the track itself has no canonical id). Null when unknown.
+   */
+  content_ref: ContentRef | null;
 }
 
 export interface Position {

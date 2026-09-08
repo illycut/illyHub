@@ -4,6 +4,7 @@ import { ArtCard } from "./ArtCard";
 import { ArtSkeleton, EmptyState } from "./Skeleton";
 import { useHub } from "@/lib/hub/store";
 import type { HistoryItem } from "@/lib/hub/library";
+import { stationSubtitle } from "@/lib/pandora";
 
 /** `vendor|name` per side id: primitive values so a shallow-compared selector stays stable. */
 export type SideInfoMap = Record<string, string>;
@@ -75,7 +76,7 @@ export function RecentsRail({
             <ArtCard
               payload={it}
               title={it.title}
-              subtitle={it.subtitle}
+              subtitle={it.content_ref.kind === "station" && it.availability ? stationSubtitle(it.availability) : it.subtitle}
               art={it.art}
               service={it.content_ref.service}
               lastVendor={last.vendor}

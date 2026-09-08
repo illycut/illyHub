@@ -15,13 +15,15 @@ import {
   syncOffer,
   syncSideIds,
   transportTargetFor,
-  SYNC_NEEDS_TIDAL,
+  STATIONS_CANT_SYNC,
+  SYNC_UNSUPPORTED_TOAST,
 } from "./sync";
 import { idleSync, sampleState, sampleSync, side } from "@/test/fixtures";
 import type { Detail, HistoryItem } from "./hub/library";
 
 const tidal = { service: "tidal", kind: "album", id: "a-1" } as const;
 const pandora = { service: "pandora", kind: "station", id: "s-1" } as const;
+const ytPlaylist = { service: "ytmusic", kind: "playlist", id: "p-1" } as const;
 const tidalTrack = { service: "tidal", kind: "track", id: "1" } as const;
 
 describe("syncEligibility (picker button rule)", () => {
@@ -35,7 +37,9 @@ describe("syncEligibility (picker button rule)", () => {
     expect(syncEligibility([], sides, tidal)).toEqual({ mode: "play", syncReason: null });
   });
   it("non-Tidal + both vendors → plain Play with a disabled Sync Play and the reason", () => {
-    expect(syncEligibility(["heos:heos-1", "sonos:sonos-gK"], sides, pandora)).toEqual({ mode: "play", syncReason: SYNC_NEEDS_TIDAL });
+    expect(syncEligibility(["heos:heos-1", "sonos:sonos-gK"], sides, ytPlaylist)).toEqual({ mode: "play", syncReason: SYNC_UNSUPPORTED_TOAST });
+    // a station is not merely non-Tidal: Pandora picks per room, so the picker says that instead (Phase 5)
+    expect(syncEligibility(["heos:heos-1", "sonos:sonos-gK"], sides, pandora)).toEqual({ mode: "play", syncReason: STATIONS_CANT_SYNC });
   });
   it("passes every selected side per vendor, in selection order (the hub groups them)", () => {
     const more = { ...sides, "heos:heos-2": side("heos:heos-2", "Den", "heos", ["heos-2"]) };
@@ -155,7 +159,7 @@ describe("syncOffer (Now Playing secondary action)", () => {
 
 describe("offerContent (what the offer plays)", () => {
   const art = { url: null, accent: null, accent_is_safe: false };
-  const album: HistoryItem = { content_ref: { service: "tidal", kind: "album", id: "a-1" }, title: "Kind of Blue", subtitle: "Miles Davis", art, last_targets: ["heos:heos-1"], last_played_at: "2026-09-07T00:00:00Z", play_count: 2 };
+  const album: HistoryItem = { content_ref: { service: "tidal", kind: "album", id: "a-1" }, title: "Kind of Blue", subtitle: "Miles Davis", art, last_targets: ["heos:heos-1"], last_played_at: "2026-09-07T00:00:00Z", play_count: 2, availability: null };
   const playlist: HistoryItem = { ...album, content_ref: { service: "tidal", kind: "playlist", id: "p-1" }, title: "Mix", last_targets: ["sonos:sonos-gK"] };
   const detail = (id: string, trackIds: string[]): Detail => ({
     item: { content_ref: { service: "tidal", kind: "album", id }, title: "x", subtitle: null, art } as Detail["item"],

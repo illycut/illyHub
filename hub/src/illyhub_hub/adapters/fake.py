@@ -34,6 +34,7 @@ from ..state import (
     now,
     side_id_for,
     side_id_for_group,
+    vendor_label,
 )
 from ..tasks import stop_task
 from .base import (
@@ -42,8 +43,10 @@ from .base import (
     HeosAdapter,
     PlayableTrack,
     PrimedQueue,
+    ServiceAuthError,
     SonosAdapter,
     UnsupportedCommandError,
+    VendorStation,
 )
 
 FAKE_DENON_HOST = "fake"
@@ -68,6 +71,41 @@ class FakeTrack:
     duration_ms: int
     source: str = "tidal"
     art_url: str = "fake://art/signal"  # the art proxy renders synthetic art for fake:// URLs
+
+
+# Phase 5: canned Pandora stations per vendor (HUB_FAKE_PANDORA=1). Four names are shared so the
+# merged list shows availability on both sides; one station per vendor is exclusive.
+_SHARED_STATIONS = ("Chill Radio", "Jazz Nights", "90s Alternative", "Focus Flow")
+FAKE_STATIONS = {
+    "heos": [*_SHARED_STATIONS, "Living Room Mix"],
+    "sonos": [*_SHARED_STATIONS, "Patio Party"],
+}
+STATION_ARTISTS = ("Low Tide", "Night Drive", "Analog Heart", "Static Bloom")
+STATION_WORDS = ("Ember", "Drift", "Halo", "Lantern", "Meridian")
+
+
+def fake_station(vendor: str, index: int, name: str) -> VendorStation:
+    slug = name.casefold().replace(" ", "-")
+    ids = (
+        {"sid": "1", "cid": "my-stations", "mid": f"st-heos-{index + 1}"}
+        if vendor == "heos"
+        else {"id": f"ST:{10_000 + index}"}
+    )
+    return VendorStation(
+        vendor=vendor, name=name, ids=ids, art_url=f"fake://art/station-{slug}", subtitle="Pandora"
+    )
+
+
+def station_track(station: VendorStation, n: int) -> FakeTrack:
+    """The n-th track Pandora "picked" for a station: rotating names, the station as album."""
+    return FakeTrack(
+        f"{STATION_WORDS[n % len(STATION_WORDS)]} {n + 1}",
+        STATION_ARTISTS[n % len(STATION_ARTISTS)],
+        station.name,
+        180_000 + (n * 11_000) % 60_000,
+        source="pandora",
+        art_url=station.art_url or "fake://art/station",
+    )
 
 
 DEFAULT_TRACK = FakeTrack("Signal", "Analog Heart", "Warm Glow", 213_000)
@@ -204,9 +242,50 @@ class FakeVendorMixin:
 
     linked_services: set[str]
     _queues: dict[str, tuple[list[PlayableTrack], int]]
+    _stations: dict[str, tuple[VendorStation, ContentRef, int]]  # side -> station, ref, track n
+    pandora_enabled: bool = False  # HUB_FAKE_PANDORA: canned stations exist
+    pandora_auth_fault: bool = False  # scenario: the vendor's Pandora session is broken
 
     def service_linked(self, service: str) -> bool:
         return service in self.linked_services
+
+    # -- stations (Phase 5) -----------------------------------------------------------
+
+    async def list_stations(self, service: str) -> list[VendorStation]:
+        if not self.service_linked(service):
+            raise ContentUnavailableError(
+                f"{service} is not linked in the {vendor_label(self.vendor)} app"
+            )
+        if service == "pandora" and self.pandora_auth_fault:
+            raise ServiceAuthError(
+                f"Pandora on {vendor_label(self.vendor)} needs to be signed in again in the "
+                f"{vendor_label(self.vendor)} app"
+            )
+        if service != "pandora" or not self.pandora_enabled:
+            return []
+        return [fake_station(self.vendor, i, n) for i, n in enumerate(FAKE_STATIONS[self.vendor])]
+
+    async def play_station(self, player_id: str, ref: ContentRef, station: VendorStation) -> None:
+        self._check(player_id)
+        if not self.service_linked(ref.service):
+            raise ContentUnavailableError(
+                f"{ref.service} is not linked in the {vendor_label(self.vendor)} app"
+            )
+        side = self._side_for(player_id)
+        self._queues.pop(side, None)
+        self._stations[side] = (station, ref, 0)
+        self.change_track(player_id, station_track(station, 0), content_ref=ref)
+        self.sim_play_state(player_id, "play")
+
+    def _station_advance(self, player_id: str) -> bool:
+        side = self._side_for(player_id)
+        current = self._stations.get(side)
+        if current is None:
+            return False
+        station, ref, n = current
+        self._stations[side] = (station, ref, n + 1)
+        self.change_track(player_id, station_track(station, n + 1), content_ref=ref)
+        return True
 
     def _track_from_playable(self, t: PlayableTrack) -> FakeTrack:
         return FakeTrack(
@@ -223,10 +302,13 @@ class FakeVendorMixin:
     ) -> None:
         self._check(player_id)
         if not self.service_linked(ref.service):
-            raise ContentUnavailableError(f"{ref.service} is not linked in the {self.vendor} app")
+            raise ContentUnavailableError(
+                f"{ref.service} is not linked in the {vendor_label(self.vendor)} app"
+            )
         if not 0 <= start_index < len(tracks):
             raise IndexError(f"start_index {start_index} out of range for {len(tracks)} tracks")
         side = self._side_for(player_id)
+        self._stations.pop(side, None)
         self._queues[side] = (list(tracks), start_index)
         self.change_track(
             player_id,
@@ -241,10 +323,13 @@ class FakeVendorMixin:
         """Load the queue positioned at ``start_index`` and leave the side paused at 0."""
         self._check(player_id)
         if not self.service_linked(ref.service):
-            raise ContentUnavailableError(f"{ref.service} is not linked in the {self.vendor} app")
+            raise ContentUnavailableError(
+                f"{ref.service} is not linked in the {vendor_label(self.vendor)} app"
+            )
         if not 0 <= start_index < len(tracks):
             raise IndexError(f"start_index {start_index} out of range for {len(tracks)} tracks")
         side = self._side_for(player_id)
+        self._stations.pop(side, None)
         self._queues[side] = (list(tracks), start_index)
         self.sim_play_state(player_id, "pause")
         track = tracks[start_index]
@@ -268,6 +353,10 @@ class FakeVendorMixin:
 
     def _advance_queue(self, player_id: str, step: int) -> bool:
         side = self._side_for(player_id)
+        if side in self._stations:
+            if step < 0:
+                raise UnsupportedCommandError("stations cannot go back")
+            return self._station_advance(player_id)
         queued = self._queues.get(side)
         if not queued:
             return False
@@ -309,10 +398,16 @@ class FakeVendorMixin:
         return canonical_id
 
     def change_track(
-        self, player_id: str, track: FakeTrack = DEFAULT_TRACK, *, track_id: str | None = None
+        self,
+        player_id: str,
+        track: FakeTrack = DEFAULT_TRACK,
+        *,
+        track_id: str | None = None,
+        content_ref: ContentRef | None = None,
     ) -> None:
         """``track_id`` is the *canonical* service id; the fake stamps its vendor-native form on
-        ``track_id`` and the canonical one on ``content_ref``, like the real adapters do."""
+        ``track_id`` and the canonical one on ``content_ref``, like the real adapters do.
+        ``content_ref`` overrides that derivation (stations: the vendor-neutral station ref)."""
         side = self._side_for(player_id)
         self.store.set_now_playing(
             side,
@@ -327,7 +422,8 @@ class FakeVendorMixin:
                 supports_prev=track.source != "pandora",
                 duration_ms=track.duration_ms,
                 track_id=self.vendor_track_id(track_id) if track_id else None,
-                content_ref=(
+                content_ref=content_ref
+                or (
                     ContentRef(service="tidal", kind="track", id=track_id)
                     if track_id and track.source == "tidal"
                     else None
@@ -414,6 +510,7 @@ class FakeHeos(FakeVendorMixin, HeosAdapter):
         self._connected = False
         self.linked_services = {"tidal", "pandora"}
         self._queues = {}
+        self._stations = {}
 
     async def connect(self) -> None:
         if self._connected:
@@ -534,6 +631,7 @@ class FakeSonos(FakeVendorMixin, SonosAdapter):
         self._connected = False
         self.linked_services = {"tidal", "pandora", "ytmusic"}
         self._queues = {}
+        self._stations = {}
 
     async def connect(self) -> None:
         if self._connected:
@@ -678,6 +776,7 @@ class FakeBundle:
     def __init__(
         self, store: StateStore, tick_interval_s: float = 1.0, art: ArtHelper | None = None
     ) -> None:
+        self.store = store
         self.ticker = _Ticker(store, tick_interval_s)
         self.heos = FakeHeos(store, self.ticker, art)
         self.sonos = FakeSonos(store, self.ticker, art)
@@ -686,6 +785,7 @@ class FakeBundle:
         self.tidal_linked = True
         self.tidal_pending = False  # fake device-code flow in progress
         self.on_tidal_link: Callable[[bool], None] | None = None  # flips the fake catalog
+        self.on_pandora_link: Callable[[], None] | None = None  # drops the station cache
         self._link_task: asyncio.Task[None] | None = None
         self.fake_link_delay_s = 1.0
 
@@ -701,6 +801,38 @@ class FakeBundle:
                 a.linked_services.discard("tidal")
         if self.on_tidal_link is not None:
             self.on_tidal_link(linked)
+
+    @property
+    def pandora_enabled(self) -> bool:
+        return self.heos.pandora_enabled
+
+    @pandora_enabled.setter
+    def pandora_enabled(self, enabled: bool) -> None:
+        self.heos.pandora_enabled = enabled
+        self.sonos.pandora_enabled = enabled
+
+    def set_pandora_linked(self, vendor: str | None, linked: bool) -> dict[str, bool]:
+        """Simulate linking Pandora inside one vendor app (or both when ``vendor`` is None).
+        Pandora is per-ecosystem (PRD §3.5): there is no hub account to link."""
+        targets = [self.heos, self.sonos] if vendor is None else [getattr(self, vendor)]
+        for a in targets:
+            if linked:
+                a.linked_services.add("pandora")
+                a.pandora_auth_fault = False
+            else:
+                a.linked_services.discard("pandora")
+        if self.on_pandora_link is not None:
+            self.on_pandora_link()
+        return {a.vendor: a.service_linked("pandora") for a in (self.heos, self.sonos)}
+
+    def set_pandora_auth_fault(self, vendor: str | None, broken: bool) -> dict[str, bool]:
+        """Simulate an expired Pandora session inside a vendor app: linked, but browsing faults."""
+        targets = [self.heos, self.sonos] if vendor is None else [getattr(self, vendor)]
+        for a in targets:
+            a.pandora_auth_fault = broken
+        if self.on_pandora_link is not None:
+            self.on_pandora_link()
+        return {a.vendor: a.pandora_auth_fault for a in (self.heos, self.sonos)}
 
     def start_fake_link(self) -> None:
         """Mimic the device-code flow: pending for ``fake_link_delay_s``, then linked. The app
@@ -766,10 +898,37 @@ class FakeBundle:
         "sync_drift",
         "sync_lose_sonos",
         "sync_track_change",
+        "link_pandora",
+        "unlink_pandora",
+        "pandora_auth_fault",
+        "pandora_auth_ok",
+        "station_track_change",
     )
 
-    def run_scenario(self, name: str) -> dict[str, object]:
-        """Simulate a change made outside the hub (vendor app, cable pull). Returns a summary."""
+    def run_scenario(self, name: str, *, vendor: str | None = None) -> dict[str, object]:
+        """Simulate a change made outside the hub (vendor app, cable pull). Returns a summary.
+        ``vendor`` (``heos`` | ``sonos``) scopes the Pandora scenarios to one ecosystem.
+        Unknown ``name`` → ``KeyError`` (404); bad ``vendor`` → ``ValueError`` (400)."""
+        if name not in self.SCENARIOS:
+            raise KeyError(name)
+        if vendor is not None and vendor not in ("heos", "sonos"):
+            raise ValueError(vendor)
+        if name == "pandora_auth_fault":
+            return {"pandora_auth_fault": self.set_pandora_auth_fault(vendor, True)}
+        if name == "pandora_auth_ok":
+            return {"pandora_auth_fault": self.set_pandora_auth_fault(vendor, False)}
+        if name == "link_pandora":
+            return {"pandora_linked": self.set_pandora_linked(vendor, True)}
+        if name == "unlink_pandora":
+            return {"pandora_linked": self.set_pandora_linked(vendor, False)}
+        if name == "station_track_change":
+            advanced = [
+                a.vendor
+                for a in (self.heos, self.sonos)
+                for side, (_st, _ref, _n) in list(a._stations.items())
+                if a._station_advance(self.store.state.sides[side].coordinator_player_id)
+            ]
+            return {"advanced": advanced}
         if name == "track_change":
             current = self.heos.store.state.now_playing.get(side_id_for_group("heos", HEOS_PLAYER))
             titles = [t.title for t in NEXT_TRACKS]

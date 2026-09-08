@@ -53,6 +53,9 @@ class BrowsePage(BaseModel):
     limit: int = 50
     total: int | None = None
     next_offset: int | None = None
+    # Per-ecosystem sources only (Pandora stations): true = that vendor's browse succeeded,
+    # false = not linked / auth fault there, null = vendor absent or its browse errored.
+    linked: dict[str, bool | None] | None = None
 
 
 class Container(BaseModel):

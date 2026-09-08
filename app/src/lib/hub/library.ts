@@ -59,6 +59,14 @@ export interface HistoryItem {
   last_targets: string[];
   last_played_at: string;
   play_count: number;
+  /** Per-vendor availability when the hub knows it (stations); null otherwise. */
+  availability: Availability | null;
+}
+
+/** Per-vendor link state: true = browse ok, false = not linked / auth fault, null = adapter absent or errored. */
+export interface VendorLinked {
+  heos: boolean | null;
+  sonos: boolean | null;
 }
 
 export interface Section<T> {
@@ -67,6 +75,8 @@ export interface Section<T> {
   needs_link: Service | null;
   /** Hub-side failure for this section only (the rest of home still rendered), or null. */
   error: string | null;
+  /** Per-vendor link state for services linked in the vendor apps (Pandora), else null. */
+  linked: VendorLinked | null;
 }
 
 export interface Home {
@@ -92,6 +102,8 @@ export interface AccountStatus {
   expires_at: string | null;
   pending: PendingLink | null;
   last_error: string | null;
+  /** Pandora only: which vendor apps have it linked. */
+  linked_by_vendor: VendorLinked | null;
 }
 
 export interface HubInfo {
@@ -264,21 +276,29 @@ export function asPage<T>(x: unknown, map: (v: unknown, i: number) => T): Page<T
   return { items, next_offset: (r.next_offset as number | null | undefined) ?? null, total: (r.total as number | null | undefined) ?? null };
 }
 
-/** Home sections: `recents` is a bare array, the others are `{items, needs_link}`. */
+function asVendorLinked(x: unknown): VendorLinked | null {
+  if (!x || typeof x !== "object") return null;
+  const l = x as Record<string, unknown>;
+  const one = (v: unknown) => (typeof v === "boolean" ? v : null);
+  return { heos: one(l.heos), sonos: one(l.sonos) };
+}
+
+/** Home sections: `recents` is a bare array, the others are `{items, needs_link, error, linked}`. */
 export function asSection<T>(x: unknown, map: (v: unknown, i: number) => T): Section<T> {
-  if (Array.isArray(x)) return { items: x.map(map), needs_link: null, error: null };
+  if (Array.isArray(x)) return { items: x.map(map), needs_link: null, error: null, linked: null };
   const r = (x ?? {}) as Record<string, unknown>;
-  warnUnknownKeys(r, ["items", "needs_link", "error"], "HomeSection");
+  warnUnknownKeys(r, ["items", "needs_link", "error", "linked"], "HomeSection");
   return {
     items: Array.isArray(r.items) ? (r.items as unknown[]).map(map) : [],
     needs_link: (r.needs_link as Service | null | undefined) ?? null,
     error: (r.error as string | null | undefined) ?? null,
+    linked: asVendorLinked(r.linked),
   };
 }
 
 export function asHistoryItem(x: unknown): HistoryItem {
   const r = (x ?? {}) as Record<string, unknown>;
-  warnUnknownKeys(r, ["content_ref", "title", "subtitle", "art", "last_played_at", "last_targets", "play_count", "sync"], "HistoryItem");
+  warnUnknownKeys(r, ["content_ref", "title", "subtitle", "art", "last_played_at", "last_targets", "play_count", "sync", "availability"], "HistoryItem");
   return {
     content_ref: r.content_ref as ContentRef,
     title: String(r.title ?? ""),
@@ -287,6 +307,7 @@ export function asHistoryItem(x: unknown): HistoryItem {
     last_targets: Array.isArray(r.last_targets) ? (r.last_targets as string[]) : [],
     last_played_at: String(r.last_played_at ?? ""),
     play_count: typeof r.play_count === "number" ? r.play_count : 0,
+    availability: r.availability && typeof r.availability === "object" ? asAvailability(r.availability) : null,
   };
 }
 
@@ -315,7 +336,7 @@ function asPending(x: unknown): PendingLink | null {
 
 export function asAccountStatus(x: unknown): AccountStatus {
   const r = (x ?? {}) as Record<string, unknown>;
-  warnUnknownKeys(r, ["service", "state", "linked", "account_name", "expires_at", "pending", "last_error"], "AccountStatus");
+  warnUnknownKeys(r, ["service", "state", "linked", "account_name", "expires_at", "pending", "last_error", "linked_by_vendor"], "AccountStatus");
   const linked = !!r.linked;
   const pending = asPending(r.pending);
   const state = (r.state as AccountState | undefined) ?? (linked ? "linked" : pending ? "pending" : "unlinked");
@@ -327,6 +348,7 @@ export function asAccountStatus(x: unknown): AccountStatus {
     expires_at: (r.expires_at as string | null | undefined) ?? null,
     pending,
     last_error: (r.last_error as string | null | undefined) ?? null,
+    linked_by_vendor: asVendorLinked(r.linked_by_vendor),
   };
 }
 

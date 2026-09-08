@@ -109,6 +109,23 @@ Nothing in this package has been run against physical hardware yet; see
 Offline dev with a canned library: `HUB_FAKE_DEVICES=1 HUB_FAKE_TIDAL=1 uv run hub`, then
 `POST /api/dev/fake/unlink_tidal` / `link_tidal` to exercise the not-linked paths.
 
+## Phase 5: Pandora stations
+
+Pandora is played **natively per ecosystem** (PRD §3.5): there is no hub-side Pandora account.
+`services/pandora.py` asks each adapter for the user's stations (`list_stations`: HEOS
+`browse/browse` on source 1, Sonos SMAPI via SoCo `MusicService`), merges them by normalised name
+into one list with per-side `availability`, and keeps each vendor's ids behind the vendor-neutral
+`content_ref {service: "pandora", kind: "station", id}`. `POST /api/play` with a station ref calls
+`play_station` on each target side (HEOS `browse/play_stream`; Sonos `x-sonosapi-radio:` URI +
+`audioBroadcast` DIDL); now-playing is marked non-seekable with skip-only transport and the
+station ref on `content_ref`. Starting a second Pandora stream adds a `pandora_concurrent` warning
+to the ack. Sync Play refuses stations. Endpoints: `GET /api/browse/pandora/stations`, the
+`stations` section of `/api/home`. Ref formats and the hardware checklist:
+`docs/spikes/pandora-refs.md` (**unverified on hardware**).
+
+Offline dev: `HUB_FAKE_DEVICES=1 HUB_FAKE_TIDAL=1 HUB_FAKE_PANDORA=1 uv run hub`; scenarios
+`link_pandora` / `unlink_pandora` (`?vendor=heos|sonos`) and `station_track_change`.
+
 ## Phase 4: Sync Play
 
 `POST /api/sync/play {content_ref, heos_target, sonos_target, start_index}` plays one Tidal album,

@@ -168,6 +168,22 @@ flight or coalesced and the resulting state change arrives later as a delta. `pa
 targets that failed when at least one target was attempted and the failures are not the whole
 story (a single failed target uses `error` alone).
 
+Acks may also carry `warnings`, non-fatal notes about a command that still succeeded:
+
+```json
+"warnings": [{"code": "pandora_concurrent",
+              "message": "Pandora usually allows one stream per account; the other room may pause.",
+              "target": "heos:heos-1"}]
+```
+
+| warning code | When |
+|---|---|
+| `pandora_concurrent` | A station **started** (only when at least one side actually applied) while another room already held a Pandora session (playing or paused; `target` names that room, preferring one on the same ecosystem), or two sides started Pandora in one request (`target` null). Pandora accounts typically allow one stream; the vendor may pause one of them. |
+
+The `message` text is the hub's single source for that copy (`CommandRouter.PANDORA_CONCURRENT_MSG`);
+clients display it verbatim rather than keeping their own wording. All user-facing messages name
+the ecosystems by label ("HEOS", "Sonos"), never by the raw vendor id.
+
 ### Error envelope
 
 `error` is null on success, otherwise:
@@ -263,9 +279,55 @@ carries the canonical Tidal id. Playback on each ecosystem is built from that id
   pages are capped at 50 by Tidal; `next_offset` is null once a page comes back short.
 - `content_ref.id` must match `^[A-Za-z0-9_.:-]+$` (422 otherwise).
 
+## Browse (Pandora stations)
+
+Pandora is not linked to the hub. Each ecosystem is linked to Pandora in its own app, and the hub
+lists the user's stations **per system** through the native paths (HEOS `browse/browse` on
+source 1; Sonos SMAPI through SoCo's `MusicService`), then merges the two lists by normalised
+station name (PRD PAN-1..3). Neither cross-system sync nor a shared track sequence is possible;
+`docs/spikes/pandora-refs.md` records the assumed tree shapes and ref formats (**unverified on
+hardware**).
+
+| Method | Path | Returns |
+|---|---|---|
+| GET | `/api/browse/pandora/stations` | **BrowsePage** of stations (all of them; `next_offset` is always null) |
+| POST | `/api/browse/refresh` | also drops the station cache (5 min TTL per vendor) |
+
+```json
+// station BrowseItem
+{"content_ref": {"service": "pandora", "kind": "station", "id": "chill-radio"},
+ "title": "Chill Radio", "subtitle": "Pandora station",
+ "art": {"url": "/api/art/…", "cache_key": "…", "accent": null, "accent_is_safe": false},
+ "duration_ms": null, "track_count": null,
+ "availability": {"heos": true, "sonos": false}}
+```
+
+- `content_ref.id` is the hub's vendor-neutral key: the station name lower-cased with runs of
+  non-alphanumerics collapsed to `-` (`"90's Alternative"` → `90-s-alternative`). Two stations of
+  one vendor that normalise alike get `-2`, `-3` suffixes. The hub keeps each vendor's own ids
+  behind the key; clients never see or need them.
+- `availability` says which ecosystem's Pandora account has that station. A station in only one
+  account is playable on that side only; the target picker greys the other.
+- Station art is whatever each vendor reports (HEOS `image_url`, Sonos `albumArtURI`/stream
+  logo), through the art proxy. No service-direct source exists for Pandora.
+- The page carries `linked: {heos, sonos}`, the per-ecosystem truth the client must use instead
+  of inferring it from station availability: `true` = that vendor's browse succeeded (an **empty**
+  account is `true` with no items), `false` = not linked there (HEOS: source 1 unavailable in
+  `get_music_sources`; Sonos: no Pandora account serial and `HUB_SONOS_PANDORA_SN` unset) **or**
+  the vendor's Pandora session is broken (Sonos SMAPI auth fault: re-sign-in in the Sonos app),
+  `null` = the vendor adapter is absent / disconnected or its browse errored (retried next call).
+- `needs_link` (409, `service: "pandora"`) when **no** ecosystem can list stations. The message
+  says "not linked in the HEOS or Sonos app" for the plain case and names the auth fault ("Pandora
+  on Sonos needs to be signed in again…") when that is the reason. If every usable vendor's browse
+  errors the call is a 500 (nothing is cached; the next call retries).
+- Sorted by title. Successful, unlinked and auth-fault outcomes are cached 5 minutes per vendor
+  (`HUB_BROWSE_CACHE_S`); errors are never cached. `POST /api/browse/refresh` and the fake
+  link/unlink scenarios drop the cache immediately.
+
 ## Play
 
-`POST /api/play` `{target, content_ref, start_index = 0}` → **Ack** (`action: "play_content"`).
+`POST /api/play` `{target, content_ref, start_index = 0}` → **Ack** (`action: "play_content"`,
+or `"play_station"` for a Pandora station).
 
 The hub resolves the album/playlist to its track list, then on every target side replaces the
 queue and starts at `start_index`. Sonos: Tidal URIs + DIDL metadata built from the ids
@@ -282,6 +344,27 @@ for this endpoint:
 | `not_available_on_side` | 409 | That ecosystem has no account for the service (link it in the vendor app). Other sides still play; listed in `partial` |
 
 Every successful play writes a history row (below).
+
+### Stations
+
+A `pandora` / `station` ref starts the station **natively** on each target side: HEOS
+`browse/play_stream` with the station's sid/cid/mid; Sonos `SetAVTransportURI` with a
+programmed-radio URI (`x-sonosapi-radio:{id}?sid=236&flags=8300&sn={sn}`) and `audioBroadcast`
+DIDL. Pandora picks the tracks per device session, so two rooms playing "the same station" hear
+different songs (PRD §3.5, accepted). Now-playing for a station has `seekable: false`,
+`supports_prev: false`, `supports_next: true` (Pandora skips), `duration_ms` possibly null,
+`source: "pandora"`, and `content_ref` set to the **station** ref (the track itself has no
+canonical id) — the client uses it to highlight the playing station.
+
+- A side whose vendor lacks the station (present in the other vendor's account only) fails with
+  `not_available_on_side` ("That station isn't in the Sonos Pandora account…") while the other
+  side plays; a side whose vendor has no Pandora account at all gets the "link it in the Sonos
+  app" variant; a side whose Pandora session is broken gets "can't reach Pandora right now; sign
+  in again in the Sonos app" — never the "isn't in the account" wording.
+- Starting Pandora while another room already streams it, or on two sides at once, succeeds with
+  a `pandora_concurrent` warning on the ack (see **Ack**).
+- Sync Play refuses stations with `unsupported_content`.
+- Any other `pandora` kind is 404 `not_found`.
 
 ## Sync Play
 
@@ -429,6 +512,13 @@ The hub keeps its own play log in SQLite (`HUB_DATA_DIR/history.sqlite`, retenti
 `last_targets` are the side ids of the most recent play, which the target picker pre-highlights
 (PRD Decision 4).
 
+`availability: {heos, sonos} | null` is which ecosystems could play the item. It is snapshotted at
+play time and **refreshed when served** (`GET /api/history` and the home `recents`): Tidal rows
+follow which vendor apps have Tidal linked now; station rows follow the current merged station map
+(falling back to the snapshot while the map is cold or the station has vanished from both
+accounts). The recents rail greys a vendor whose flag is false. Rows written before Phase 5 have
+`null` until they are played again.
+
 `GET /api/home` → one call for the home screen:
 
 ```json
@@ -445,7 +535,10 @@ The hub keeps its own play log in SQLite (`HUB_DATA_DIR/history.sqlite`, retenti
   failing the whole call; the client renders the "Connect Tidal" card there. A section whose
   loader fails for any other reason returns `items: []` with `error: "<summary>"`; recents and the
   other sections still render.
-- `stations` is a Phase 5 placeholder and is always empty for now.
+- `stations` is the merged Pandora station list (same items as `/api/browse/pandora/stations`),
+  with `needs_link: "pandora"` when no ecosystem can list stations and the same per-vendor
+  `linked: {heos, sonos}` map as the browse page (`true` / `false` / `null`, see **Browse (Pandora
+  stations)**). Station plays land in `recents` like any other content (`kind: "station"`).
 - Warm responses come from the browse cache; the hub logs `home_ms` per call.
 
 ## Settings
@@ -463,8 +556,12 @@ The hub keeps its own play log in SQLite (`HUB_DATA_DIR/history.sqlite`, retenti
               {"id": "denon-10.0.0.5:main", "name": "Main zone", "vendor": "denon", "kind": "zone", "ip": "10.0.0.5", "online": true}]}
 ```
 
-`pandora.linked` reflects whether either ecosystem reports Pandora as linked (Pandora is played
-natively per ecosystem, PRD §3.5); `ytmusic` is a placeholder until Phase 6.
+`pandora.linked` reflects whether either ecosystem reports a Pandora account (Pandora is played
+natively per ecosystem, PRD §3.5, so there is no hub-side Pandora account to link or unlink).
+The row also carries `linked_by_vendor: {heos, sonos}` (the same `true` / `false` / `null` map as
+the station browse) and `last_error` (an auth fault on either side, e.g. "Sonos: Pandora on Sonos
+needs to be signed in again in the Sonos app", or the latest browse error). `ytmusic` is a
+placeholder until Phase 6.
 
 `POST /api/hub/restart` (requires `X-Illyhub: 1`) → 202 `{restarting: true}`; the process exits
 with code 0 half a second later and launchd's `KeepAlive=true` relaunches it regardless of exit
@@ -492,6 +589,15 @@ queue per side: `next`/`prev` walk it and now-playing follows.
 | `sync_lose_sonos` | Pauses the fake Sonos side as if from the Sonos app → `lost` |
 | `sync_track_change` | Advances the fake HEOS master to its next queued track → follower re-verify / re-prime |
 | `approve_tidal` | Completes a pending fake link flow immediately. (`POST /api/auth/tidal/start` in fake mode goes `pending` for about a second, then `linked`, so the pending UI can be exercised.) |
+| `link_pandora` / `unlink_pandora` (`?vendor=heos\|sonos`, both when omitted) | With `HUB_FAKE_PANDORA=1`: link/unlink Pandora inside one vendor app (per-ecosystem, unlike Tidal). Result `{pandora_linked: {heos, sonos}}`. Follow with `POST /api/browse/refresh` to drop the 5-minute station cache |
+| `pandora_auth_fault` / `pandora_auth_ok` (`?vendor=`) | Simulate a broken Pandora session inside a vendor app (linked, but browsing faults): `linked` flips to `false` for that vendor with the sign-in-again message; plays on that side refuse with the "sign in again" copy |
+| `station_track_change` | Every side playing a fake station advances to Pandora's "next pick" |
+
+With `HUB_FAKE_PANDORA=1` the fakes expose five stations per vendor (four names shared, one
+exclusive each: "Living Room Mix" on HEOS, "Patio Party" on Sonos), station plays rotate through
+canned tracks, and `next` skips like Pandora does. `?vendor=` outside `heos|sonos` → 400; an
+unknown scenario name → 404 regardless of `vendor`. Link/unlink/auth scenarios drop the station
+cache, so `/api/home` reflects them on the next call.
 
 Unknown scenario → 404 with the list of valid names.
 
@@ -529,7 +635,7 @@ revert the optimistic state, and send `resync`.
   "zones":       {"denon-10.0.0.5:main": {"id", "key", "name", "power", "online", "host", "device_id", "player_ids"}},
   "groups":      {"sonos-gRINCON_…": {"id", "vendor", "coordinator_player_id", "member_ids", "name"}},
   "sides":       {"sonos:sonos-gRINCON_…": {"id", "vendor", "coordinator_player_id", "member_ids", "name", "play_state", "volume", "muted", "capabilities"}},
-  "now_playing": {"<side id>": {"title", "artist", "album", "art": {"url", "cache_key", "accent", "accent_is_safe"}, "source", "seekable", "supports_next", "supports_prev", "duration_ms", "track_id", "content_ref": {"service", "kind", "id"} | null}},
+  "now_playing": {"<side id>": {"title", "artist", "album", "art": {"url", "cache_key", "accent", "accent_is_safe"}, "source", "seekable", "supports_next", "supports_prev", "duration_ms", "track_id", "content_ref": {"service", "kind", "id"} | null}},   // Tidal track id, or the Pandora station ref
   "positions":   {"<side id>": {"position_ms", "reported_at", "confidence"}},
   "sync":        {"status", "session_id", "master_side", "follower_side", "content_ref", "title", "drift_ms", "start_delta_ms", "last_correction_at", "corrections", "reason", "started_at"},
   "connections": {"heos": {"state", "last_error", "since"}, "sonos": {...}, "denon": {...}}

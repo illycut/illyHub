@@ -10,6 +10,7 @@ import { refKey } from "@/lib/hub/library";
 import type { PlayRequest } from "@/lib/ui/chrome";
 import type { HubState, Side, Zone } from "@/lib/hub/types";
 import { SYNC_BUTTON, syncButtonLabel, syncEligibility, syncNote, type Eligibility } from "@/lib/sync";
+import { pandoraConcurrentNote, unavailableCopy } from "@/lib/pandora";
 
 /** Sentence-case status copy (design system §10). Offline is the only tertiary state. */
 export function sideStatus(side: Side, coordinatorOnline: boolean, zones: Zone[]): { text: string; tone: "secondary" | "tertiary" | "signal" } {
@@ -22,11 +23,15 @@ export function sideStatus(side: Side, coordinatorOnline: boolean, zones: Zone[]
   return { text: "Idle", tone: "secondary" };
 }
 
-/** Why a side cannot play the requested content, or null when it can. */
+/**
+ * Why a side cannot play the requested content, or null when it can. Pandora copy comes from the
+ * request's per-vendor link state: an unlinked vendor gets the fix, a linked one lacking the
+ * station gets the fact (see `unavailableCopy`).
+ */
 export function unavailableReason(side: Side, play: PlayRequest | null | undefined): string | null {
   if (!play?.availability) return null;
   const ok = side.vendor === "heos" ? play.availability.heos : play.availability.sonos;
-  return ok ? null : `Not available on ${side.vendor === "heos" ? "HEOS" : "Sonos"}`;
+  return ok ? null : unavailableCopy(play.content_ref?.service, side.vendor, play.unlinked_vendors);
 }
 
 /**
@@ -123,6 +128,10 @@ export function ZonePicker({
     [play, playSel, sides],
   );
 
+  // Pandora single-stream warning (PRD §3.5): a string selector, so 1 Hz position deltas do not
+  // re-render the sheet; it changes only when a room starts or stops playing Pandora.
+  const pandoraNote = useHub((s) => (playMode ? pandoraConcurrentNote(play?.content_ref.service, playSel, s.state) : null));
+
   const confirm = (mode: Eligibility = eligibility) => {
     if (!play || playSel.length === 0) return;
     rememberTargets(playSel, refKey(play.content_ref));
@@ -143,8 +152,10 @@ export function ZonePicker({
           const on = current.includes(side.id);
           const Glyph = side.vendor === "heos" ? AmpIcon : SpeakerIcon;
           const status = sideStatus(side, coordinatorOnline, zones);
-          // Disabled rows keep full opacity: name in text-secondary, reason in text-tertiary (UX U12).
+          // Disabled rows keep full opacity: name in text-secondary; an explanation of unavailability
+          // reads in text-secondary (UX U8), "Offline" stays tertiary (§8).
           const reason = !coordinatorOnline ? "Offline" : unavailableReason(side, play);
+          const reasonTone = reason === "Offline" ? "text-tertiary" : "text-secondary";
           const tone = status.tone === "tertiary" ? "text-tertiary" : status.tone === "signal" ? "text-signal" : "text-secondary";
           return (
             <li key={side.id} className="flex min-h-row items-center gap-3 border-b border-stroke last:border-0" data-testid={`zone-row-${side.id}`}>
@@ -167,7 +178,7 @@ export function ZonePicker({
                 </span>
                 <span className="flex-1">
                   <span className={`block text-body ${reason ? "text-secondary" : "text-primary"}`}>{side.name}</span>
-                  <span className={`block text-micro ${reason ? "text-tertiary" : tone}`}>
+                  <span className={`block text-micro ${reason ? reasonTone : tone}`}>
                     {reason ?? status.text}
                     {!reason && side.member_ids.length > 1 ? ` · ${side.member_ids.length} speakers` : ""}
                   </span>
@@ -194,6 +205,11 @@ export function ZonePicker({
         })}
       </ul>
       {rows.length === 0 ? <p className="py-4 text-body text-secondary">No rooms yet. The hub is still discovering players.</p> : null}
+      {pandoraNote ? (
+        <p id="pandora-note" className="pt-3 text-micro text-secondary" data-testid="pandora-note">
+          {pandoraNote}
+        </p>
+      ) : null}
       {playMode && eligibility.mode === "sync" ? (
         // Sync Play is the only amber-filled button in the app (design system §6.8): it creates a live audio state.
         <div className="flex flex-col items-center gap-2 pt-4">
@@ -203,7 +219,7 @@ export function ZonePicker({
             onClick={() => confirm()}
             data-testid="confirm-play"
             data-mode="sync"
-            aria-describedby="sync-note"
+            aria-describedby={pandoraNote ? "sync-note pandora-note" : "sync-note"}
           >
             {syncButtonLabel(playSel.length)}
           </button>
@@ -238,10 +254,16 @@ export function ZonePicker({
             onClick={() => confirm()}
             data-testid="confirm-play"
             data-mode="play"
+            aria-describedby={pandoraNote ? "pandora-note" : undefined}
           >
             {playButtonLabel(names)}
           </button>
-          {eligibility.mode === "play" && eligibility.syncReason ? (
+          {eligibility.mode === "play" && eligibility.syncReason && play!.content_ref.kind === "station" ? (
+            // Stations never sync (Pandora picks per room): one caption, no dead button (design §13 1.3).
+            <p className="text-center text-micro text-secondary" data-testid="station-sync-note">
+              {eligibility.syncReason}
+            </p>
+          ) : eligibility.mode === "play" && eligibility.syncReason ? (
             // Both vendors selected but the content cannot sync: say why instead of silently falling back.
             <div className="flex flex-col items-center gap-1">
               <button type="button" className="flex h-target w-full items-center justify-center rounded-control border border-stroke text-body text-secondary" disabled aria-disabled="true" data-testid="sync-play-disabled">

@@ -747,6 +747,28 @@
     }
    }
   },
+  "/api/browse/pandora/stations": {
+   "get": {
+    "tags": [
+     "browse"
+    ],
+    "summary": "Pandora Stations",
+    "description": "Merged station list (PAN-3): one item per station name, ``availability`` per side.",
+    "operationId": "pandora_stations_api_browse_pandora_stations_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BrowsePage"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/browse/refresh": {
    "post": {
     "tags": [
@@ -1178,6 +1200,22 @@
        "type": "string",
        "title": "Scenario"
       }
+     },
+     {
+      "name": "vendor",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Vendor"
+      }
      }
     ],
     "responses": {
@@ -1272,6 +1310,27 @@
        }
       ],
       "title": "Last Error"
+     },
+     "linked_by_vendor": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "anyOf": [
+          {
+           "type": "boolean"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Linked By Vendor"
      }
     },
     "type": "object",
@@ -1347,6 +1406,14 @@
       "title": "Session Id",
       "description": "Sync Play session id (sync_* acks)"
      },
+     "warnings": {
+      "items": {
+       "$ref": "#/components/schemas/AckWarning"
+      },
+      "type": "array",
+      "title": "Warnings",
+      "description": "non-fatal notes, e.g. pandora_concurrent"
+     },
      "resolved": {
       "additionalProperties": {
        "type": "string"
@@ -1364,6 +1431,37 @@
      "state_version"
     ],
     "title": "Ack"
+   },
+   "AckWarning": {
+    "properties": {
+     "code": {
+      "type": "string",
+      "const": "pandora_concurrent",
+      "title": "Code"
+     },
+     "message": {
+      "type": "string",
+      "title": "Message"
+     },
+     "target": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Target"
+     }
+    },
+    "type": "object",
+    "required": [
+     "code",
+     "message"
+    ],
+    "title": "AckWarning",
+    "description": "A non-fatal note about a command that still succeeded (e.g. a second Pandora stream)."
    },
    "ArtRef": {
     "properties": {
@@ -1567,6 +1665,27 @@
        }
       ],
       "title": "Next Offset"
+     },
+     "linked": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "anyOf": [
+          {
+           "type": "boolean"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Linked"
      }
     },
     "type": "object",
@@ -2036,6 +2155,16 @@
       "type": "boolean",
       "title": "Sync",
       "default": false
+     },
+     "availability": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/Availability"
+       },
+       {
+        "type": "null"
+       }
+      ]
      }
     },
     "type": "object",
@@ -2122,6 +2251,28 @@
       ],
       "title": "Error",
       "description": "section failed; others still render"
+     },
+     "linked": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "anyOf": [
+          {
+           "type": "boolean"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Linked",
+      "description": "per-ecosystem services (stations): vendor -> true | false | null (unknown)"
      }
     },
     "type": "object",

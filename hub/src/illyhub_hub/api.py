@@ -41,6 +41,7 @@ from .coalesce import Coalescer
 from .commands import Ack, CommandError, CommandRouter, ErrorEnvelope, http_status
 from .config import Settings, Vendor
 from .content import (
+    Availability,
     BrowseItem,
     BrowsePage,
     Container,
@@ -51,6 +52,8 @@ from .content import (
 from .discovery import DiscoveredDevice, DiscoveryService, Registry, SearchFn
 from .history import HistoryItem, PlayHistory
 from .logsetup import correlation_id, get_logger
+from .services.pandora import PAGE_MAX as STATIONS_PAGE_MAX
+from .services.pandora import PandoraService
 from .services.tidal import FakeTidalCatalog, TidalCatalog, TidalService
 from .state import ConnectionStatus, Player, Side, StateStore, SyncState, Zone
 from .static import StaticMounts, mount_static
@@ -164,6 +167,9 @@ class AccountStatus(BaseModel):
     expires_at: str | None = None
     pending: dict[str, Any] | None = None
     last_error: str | None = None
+    # Per-ecosystem services (Pandora): true = browse succeeded there, false = not linked /
+    # auth fault, null = vendor absent or its browse errored / not asked yet.
+    linked_by_vendor: dict[str, bool | None] | None = None
 
 
 class HistoryResponse(BaseModel):
@@ -174,6 +180,10 @@ class HomeSection(BaseModel):
     items: list[BrowseItem] = Field(default_factory=list)
     needs_link: str | None = Field(default=None, description="service to link, e.g. 'tidal'")
     error: str | None = Field(default=None, description="section failed; others still render")
+    linked: dict[str, bool | None] | None = Field(
+        default=None,
+        description="per-ecosystem services (stations): vendor -> true | false | null (unknown)",
+    )
 
 
 class HomeResponse(BaseModel):
@@ -255,6 +265,7 @@ class HubRuntime:
     tidal_auth: TidalAuth | None = None
     tidal: TidalService | None = None
     fake_tidal: FakeTidalCatalog | None = None
+    pandora: PandoraService | None = None
     history: PlayHistory | None = None
     sync: SyncEngine | None = None
     vault_error: str | None = None
@@ -374,6 +385,9 @@ def build_runtime(
             )
         else:
             tidal = _real_tidal_service(settings, router, tidal_auth, art)
+        fakes.pandora_enabled = settings.fake_pandora
+        pandora = _pandora_service(settings, router, art)
+        fakes.on_pandora_link = lambda: pandora.refresh()  # link state changed: cache is stale
         return HubRuntime(
             settings,
             store,
@@ -386,6 +400,7 @@ def build_runtime(
             tidal_auth=tidal_auth,
             tidal=tidal,
             fake_tidal=fake_catalog,
+            pandora=pandora,
             history=history,
             sync=_sync_engine(settings, store, router, tidal, history),
             vault_error=vault_error,
@@ -427,6 +442,7 @@ def build_runtime(
         vault=vault,
         tidal_auth=tidal_auth,
         tidal=tidal,
+        pandora=_pandora_service(settings, router, art),
         history=history,
         sync=_sync_engine(settings, store, router, tidal, history),
         vault_error=vault_error,
@@ -472,6 +488,19 @@ def _open_vault_or_memory(settings: Settings) -> tuple[Vault, str | None]:
             "vault open failed; accounts cannot be persisted", extra={"extra": {"error": msg}}
         )
         return Vault.in_memory(), msg
+
+
+def _pandora_service(settings: Settings, router: CommandRouter, art: ArtHelper) -> PandoraService:
+    """Stations are browsed per ecosystem through the adapters the router knows about (the HEOS
+    adapter may be adopted later from discovery, hence the callable)."""
+    return PandoraService(
+        lambda: router.playback,
+        art=art,
+        is_connected=lambda vendor: (
+            (a := router.playback.get(vendor)) is not None and a.status().state == "connected"
+        ),
+        cache_ttl_s=settings.browse_cache_s,
+    )
 
 
 def _real_tidal_service(
@@ -844,6 +873,24 @@ def create_app(
         assert runtime.history is not None
         return runtime.history
 
+    def _pandora() -> PandoraService:
+        assert runtime.pandora is not None
+        return runtime.pandora
+
+    def _pandora_account() -> AccountStatus:
+        """Pandora is linked per ecosystem; ``linked`` is "either vendor reports an account",
+        ``linked_by_vendor`` the per-side truth from the last browse, ``last_error`` an auth fault
+        or browse error the settings row should show."""
+        avail = router.service_availability("pandora")
+        linked = avail.heos or avail.sonos
+        return AccountStatus(
+            service="pandora",
+            linked=linked,
+            state="linked" if linked else "unlinked",
+            linked_by_vendor=_pandora().linked,
+            last_error=_pandora().last_error,
+        )
+
     def _tidal_account() -> AccountStatus:
         if runtime.fake_tidal is not None and runtime.fakes is not None:
             fakes = runtime.fakes
@@ -917,15 +964,52 @@ def create_app(
             ContentRef(service="tidal", kind="playlist", id=playlist_id)
         )
 
+    @app.get("/api/browse/pandora/stations", response_model=BrowsePage, tags=["browse"])
+    async def pandora_stations() -> BrowsePage:
+        """Merged station list (PAN-3): one item per station name, ``availability`` per side."""
+        pandora = _pandora()
+        items = await pandora.stations()
+        return BrowsePage(
+            items=items,
+            offset=0,
+            limit=STATIONS_PAGE_MAX,
+            total=len(items),
+            linked=pandora.linked,
+        )
+
     @app.post("/api/browse/refresh", response_model=RefreshResponse, tags=["browse"])
     async def browse_refresh() -> RefreshResponse:
-        return RefreshResponse(cleared=_tidal().refresh())
+        return RefreshResponse(cleared=_tidal().refresh() + _pandora().refresh())
 
     # -- play by canonical id (Phase 3) ---------------------------------------------
 
     @app.post("/api/play", response_model=Ack, tags=["play"])
     async def play_content(body: PlayBody) -> JSONResponse:
         ref = body.content_ref
+        if ref.service == "pandora":
+            if ref.kind != "station":
+                raise ContentNotFoundError(ref)
+            station = await _pandora().station(ref)
+            # Vendor-level availability (is Pandora linked in that app) is the router's; the
+            # station's own per-vendor presence is judged from ``vendor_stations``.
+            ack = await router.play_station(
+                body.target,
+                ref,
+                _pandora().vendor_stations(ref),
+                availability=router.service_availability(ref.service),
+                auth_faults=_pandora().auth_faults,
+            )
+            if ack.ok:
+                await _history().record(
+                    ref,
+                    title=station.title,
+                    subtitle=station.subtitle,
+                    art=station.art,
+                    targets=[body.target],
+                    side_ids=ack.applied,
+                    availability=station.availability,
+                )
+            return _respond(ack)
         if ref.service != "tidal":
             raise NeedsLinkError(
                 ref.service, f"{ref.service.title()} playback lands in a later phase."
@@ -946,6 +1030,7 @@ def create_app(
                 art=item.art,
                 targets=[body.target],
                 side_ids=ack.applied,
+                availability=item.availability,
             )
         return _respond(ack)
 
@@ -998,7 +1083,24 @@ def create_app(
 
     @app.get("/api/history", response_model=HistoryResponse, tags=["home"])
     async def history(limit: int = 20) -> HistoryResponse:
-        return HistoryResponse(items=await _history().recent(limit))
+        return HistoryResponse(items=_with_live_availability(await _history().recent(limit)))
+
+    def _with_live_availability(items: list[HistoryItem]) -> list[HistoryItem]:
+        """History rows carry the availability snapshotted at play time; when served, refresh it
+        from what the hub knows now (Tidal: which vendor apps have Tidal linked; stations: the
+        current merged station map), so the recents rail greys a vendor that lost the item."""
+        tidal_avail = router.service_availability("tidal")
+        for it in items:
+            ref = it.content_ref
+            if ref.service == "tidal":
+                it.availability = tidal_avail
+            elif ref.service == "pandora" and ref.kind == "station":
+                by_vendor = _pandora().vendor_stations(ref)
+                if by_vendor:
+                    it.availability = Availability(
+                        heos="heos" in by_vendor, sonos="sonos" in by_vendor
+                    )
+        return items
 
     async def _section(loader: Callable[[], Awaitable[list[BrowseItem]]]) -> HomeSection:
         try:
@@ -1009,12 +1111,19 @@ def create_app(
             log.exception("home section failed")
             return HomeSection(error=f"{exc.__class__.__name__}: {exc}")
 
+    async def _stations_section() -> HomeSection:
+        section = await _section(_pandora().stations)
+        section.linked = _pandora().linked
+        return section
+
     @app.get("/api/home", response_model=HomeResponse, tags=["home"])
     async def home() -> HomeResponse:
         started = time.perf_counter()
         tidal = _tidal()
         recents = await _history().recent(12)
         last_played = {r.content_ref.key: r.last_played_at for r in recents}
+        stations_section = await _stations_section()  # first: warms the station map for recents
+        recents = _with_live_availability(recents)
 
         async def playlists() -> list[BrowseItem]:
             mine = (await tidal.user_playlists(100, 0)).items
@@ -1046,7 +1155,7 @@ def create_app(
             recents=recents,
             playlists=await _section(playlists),
             favorite_albums=await _section(albums),
-            stations=HomeSection(),  # Phase 5
+            stations=stations_section,
         )
         log.info(
             "home", extra={"extra": {"home_ms": round((time.perf_counter() - started) * 1000, 1)}}
@@ -1070,11 +1179,7 @@ def create_app(
         accounts = [
             _tidal_account(),
             AccountStatus(service="ytmusic", linked=False),
-            AccountStatus(
-                service="pandora",
-                linked=router.service_availability("pandora").heos
-                or router.service_availability("pandora").sonos,
-            ),
+            _pandora_account(),
             AccountStatus(service="heos_account", linked=heos_linked, account_name=heos_name),
         ]
         hardware = [
@@ -1135,9 +1240,17 @@ def create_app(
         fakes = runtime.fakes
 
         @app.post("/api/dev/fake/{scenario}", response_model=ScenarioResponse, tags=["dev"])
-        async def fake_scenario(scenario: str) -> JSONResponse:
+        async def fake_scenario(scenario: str, vendor: str | None = None) -> JSONResponse:
             try:
-                result = fakes.run_scenario(scenario)
+                result = fakes.run_scenario(scenario, vendor=vendor)
+            except ValueError:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "code": "invalid_argument",
+                        "message": f"vendor must be heos or sonos, not {vendor!r}.",
+                    },
+                )
             except KeyError:
                 return JSONResponse(
                     status_code=404,

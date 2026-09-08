@@ -107,7 +107,7 @@ async def test_unknown_target_and_disconnected_adapter(rig) -> None:
     b.heos.drop()
     ack = await router.transport(HEOS_PLAYER, "play")
     assert ack.error is not None and ack.error.code == "adapter_disconnected"
-    assert "heos link is down" in ack.error.message
+    assert "HEOS link is down" in ack.error.message
     b.heos.restore()
     b.heos.store.update_player(HEOS_PLAYER, online=False)
     ack = await router.transport(HEOS_PLAYER, "play")

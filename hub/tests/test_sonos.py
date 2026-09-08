@@ -755,3 +755,361 @@ async def test_prime_content_positions_queue_without_playing(
             "sonos-RINCON_K", ContentRef(service="ytmusic", kind="album", id="x"), tracks, 0
         )
     await a.disconnect()
+
+
+# --------------------------------------------------------------------------------------
+# Phase 5: Pandora stations via SMAPI (SoCo MusicService) + programmed-radio URIs
+# --------------------------------------------------------------------------------------
+
+
+def test_discover_pandora_sn_maps_service_type_60423() -> None:
+    from illyhub_hub.adapters.sonos import PANDORA_SERVICE_TYPE, discover_pandora_sn
+
+    assert PANDORA_SERVICE_TYPE == "60423"
+
+    class Acct:
+        def __init__(self, service_type: str) -> None:
+            self.service_type = service_type
+
+    class Accounts:
+        @staticmethod
+        def get_accounts(zone):
+            return {"1": Acct("2311"), "4": Acct("60423"), "7": Acct("44551")}
+
+    assert discover_pandora_sn("zone", account_class=Accounts) == "4"
+    assert discover_pandora_sn(None, account_class=Accounts) is None
+
+
+def test_station_uri_and_didl_helpers() -> None:
+    from illyhub_hub.adapters.base import VendorStation
+    from illyhub_hub.adapters.sonos import (
+        PANDORA_DESC,
+        build_station_didl,
+        pandora_item_from_uri,
+        pandora_item_id,
+        pandora_station_uri,
+    )
+
+    uri = pandora_station_uri("ST:123 456", "4")
+    assert uri == "x-sonosapi-radio:ST%3A123%20456?sid=236&flags=8300&sn=4"
+    assert pandora_item_id("ST:1") == "F00092020ST%3A1"
+    assert pandora_item_from_uri(uri) == "ST%3A123%20456"
+    assert pandora_item_from_uri("x-sonos-http:track/1.flac?sid=174") is None
+    assert pandora_item_from_uri(None) is None
+    assert PANDORA_DESC == "SA_RINCON60423_X_#Svc60423-0-Token"
+    st = VendorStation(vendor="sonos", name="Chill Radio", ids={"id": "ST:1"})
+    got_uri, didl = build_station_didl(st, "4")
+    assert got_uri == pandora_station_uri("ST:1", "4")
+    assert didl.item_class == "object.item.audioItem.audioBroadcast"
+    assert didl.title == "Chill Radio" and didl.desc == PANDORA_DESC
+    assert didl.resources[0].uri == got_uri
+
+
+class SmapiService:
+    """Just enough ``MusicService`` for SoCo's own ``MusicServiceItem.from_music_service`` to
+    build real items (``desc`` and the id→uri helper)."""
+
+    service_id = 236
+    desc = "SA_RINCON60423_X_#Svc60423-0-Token"
+
+    def sonos_uri_from_id(self, item_id: str) -> str:  # pragma: no cover - tracks only
+        return f"soco://{item_id}?sid=236&sn=0"
+
+
+def smapi_item(class_key: str, **raw: Any) -> Any:
+    """A **real** SoCo music-service item (``MediaCollectionContainer``, ``MediaMetadataProgram``
+    …) parsed from the SOAP-shaped dict SoCo receives: fields end up snake_cased in
+    ``.metadata`` and booleans coerced, exactly as on hardware."""
+    from soco.music_services.data_structures import get_class
+
+    return get_class(class_key).from_music_service(SmapiService(), raw)
+
+
+def smapi_result(items: list[Any]) -> Any:
+    from soco.data_structures import SearchResult
+
+    return SearchResult(items, "browse", len(items), None, None)
+
+
+class FakeMusicService:
+    def __init__(self, name: str, device: Any) -> None:
+        LazyZone._guard()
+        self.name, self.device = name, device
+        self.calls: list[str] = []
+        self.fault: Exception | None = None
+        self.tree = {
+            "root": [
+                smapi_item(
+                    "MediaCollectionContainer",
+                    id="stations",
+                    title="My Stations",
+                    itemType="container",
+                    canEnumerate="true",
+                    canPlay="false",
+                ),
+                smapi_item(
+                    "MediaCollectionSearch",
+                    id="search",
+                    title="Search",
+                    itemType="search",
+                    canEnumerate="true",
+                ),
+                smapi_item(
+                    "MediaMetadataProgram",
+                    id="ST:9",
+                    title="Thumbprint Radio",
+                    itemType="program",
+                    mimeType="audio/mpeg",
+                ),
+                smapi_item(
+                    "MediaCollectionAlbum",
+                    id="quick",
+                    title="Quick play",
+                    itemType="album",
+                    canPlay="true",
+                    canEnumerate="false",
+                    albumArtURI="http://p/quick.jpg",
+                ),
+            ],
+            "stations": [
+                smapi_item(
+                    "MediaMetadataProgram",
+                    id="ST:1",
+                    title="Chill Radio",
+                    itemType="program",
+                    summary="Chill",
+                    trackMetadata={"albumArtURI": "http://p/chill.jpg", "artist": "Low Tide"},
+                ),
+                smapi_item(
+                    "MediaMetadataStream",
+                    id="ST:2",
+                    title="Jazz Nights",
+                    itemType="stream",
+                    streamMetadata={"logo": "http://p/jazz.jpg", "bitrate": "128"},
+                ),
+                smapi_item(
+                    "MediaMetadataProgram", id="ST:1", title="Chill Radio (dup)", itemType="program"
+                ),
+                smapi_item(
+                    "MediaCollectionContainer",
+                    id="deep",
+                    title="Folder",
+                    itemType="container",
+                    canEnumerate="true",
+                ),
+            ],
+            "search": [],
+            "deep": [
+                smapi_item("MediaMetadataProgram", id="ST:3", title="Too deep", itemType="program")
+            ],
+        }
+
+    def get_metadata(self, item_id: str, index: int = 0, count: int = 100) -> Any:
+        LazyZone._guard()
+        self.calls.append(item_id)
+        if self.fault is not None:
+            raise self.fault
+        return smapi_result(self.tree.get(item_id, []))
+
+
+def test_smapi_field_reads_match_soco_storage() -> None:
+    from illyhub_hub.adapters.sonos import _md, _station_art, snake
+
+    assert snake("albumArtURI") == "album_art_uri" and snake("canEnumerate") == "can_enumerate"
+    assert snake("itemType") == "item_type" and snake("streamMetadata") == "stream_metadata"
+    coll = smapi_item(
+        "MediaCollectionContainer",
+        id="x",
+        title="X",
+        itemType="container",
+        canEnumerate="true",
+        canPlay="false",
+        albumArtURI="http://a",
+    )
+    assert coll.metadata["can_enumerate"] is True  # SoCo coerced the SOAP string
+    assert _md(coll, "canEnumerate") is True and _md(coll, "canPlay") is False
+    assert _md(coll, "itemType") == "container" and _station_art(coll) == "http://a"
+    prog = smapi_item(
+        "MediaMetadataProgram",
+        id="p",
+        title="P",
+        itemType="program",
+        streamMetadata={"logo": "http://logo"},
+    )
+    assert _md(prog, "canEnumerate", False) is False  # MediaMetadata has no such field
+    assert _station_art(prog) == "http://logo"
+    assert _md({"itemType": "stream"}, "itemType") == "stream"
+    assert _md({"item_type": "stream"}, "itemType") == "stream"
+    assert _md(prog, "nope", "dflt") == "dflt"
+
+
+def test_collect_smapi_stations_walks_real_items_off_the_loop_thread() -> None:
+    from illyhub_hub.adapters.base import ServiceAuthError
+    from illyhub_hub.adapters.sonos import collect_smapi_stations
+
+    holder: dict[str, Any] = {}
+
+    def work() -> None:
+        svc = FakeMusicService("Pandora", "zone")
+        holder["stations"] = collect_smapi_stations(svc)
+        holder["calls"] = list(svc.calls)
+        from soco.exceptions import MusicServiceAuthException, MusicServiceException
+
+        svc.fault = MusicServiceAuthException("Client.AuthTokenExpired")
+        try:
+            collect_smapi_stations(svc)
+        except ServiceAuthError as exc:
+            holder["auth"] = str(exc)
+        svc.fault = MusicServiceException("Server.ServiceUnavailable")
+        try:
+            collect_smapi_stations(svc)
+        except RuntimeError as exc:
+            holder["soap"] = str(exc)
+
+    t = threading.Thread(target=work)
+    t.start()
+    t.join()
+    stations = holder["stations"]
+    # Depth-first; containers entered up to two levels below root; duplicate ids skipped;
+    # a playable non-enumerable collection counts as a station.
+    assert [s.name for s in stations] == [
+        "Chill Radio",
+        "Jazz Nights",
+        "Too deep",
+        "Thumbprint Radio",
+        "Quick play",
+    ]
+    assert stations[0].ids == {"id": "ST:1"} and stations[0].art_url == "http://p/chill.jpg"
+    assert stations[0].subtitle == "Chill" and stations[1].art_url == "http://p/jazz.jpg"
+    assert stations[4].art_url == "http://p/quick.jpg"
+    assert holder["calls"] == ["root", "stations", "deep", "search"]
+    assert "signed in again" in holder["auth"] and "browse fault" in holder["soap"]
+    with pytest.raises(AssertionError):
+        collect_smapi_stations(FakeMusicService.__new__(FakeMusicService))  # loop thread → guard
+
+
+async def test_list_and_play_station_run_soco_in_a_thread(
+    store: StateStore, settings: Settings
+) -> None:
+    from illyhub_hub.adapters.base import ContentUnavailableError
+    from illyhub_hub.adapters.sonos import SoCoAdapter
+    from illyhub_hub.content import ContentRef
+
+    h = Harness()
+    made: list[FakeMusicService] = []
+
+    def factory(name: str, device: Any) -> FakeMusicService:
+        svc = FakeMusicService(name, device)
+        made.append(svc)
+        return svc
+
+    a = SoCoAdapter(
+        store,
+        settings,
+        snapshot=h.snapshot,
+        groups=h.groups,
+        subscribe=h.subscribe,
+        music_service=factory,
+    )
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+    assert a.service_linked("pandora") is False
+    with pytest.raises(ContentUnavailableError):
+        await a.list_stations("pandora")
+    with pytest.raises(ContentUnavailableError):
+        await a.list_stations("tidal")
+    a.settings = settings.model_copy(update={"sonos_pandora_sn": "4"})
+    assert a.service_linked("pandora") is True
+    stations = await a.list_stations("pandora")
+    assert [s.name for s in stations][:3] == ["Chill Radio", "Jazz Nights", "Too deep"]
+    assert made and made[0].name == "Pandora" and made[0].device is h.zones[0]
+    await a.list_stations("pandora")
+    assert len(made) == 1  # the SoCo MusicService (SOAP session) is cached per adapter
+    # An auth fault surfaces as ServiceAuthError and drops the cached session.
+    from soco.exceptions import MusicServiceAuthException
+
+    from illyhub_hub.adapters.base import ServiceAuthError
+
+    made[0].fault = MusicServiceAuthException("Client.TokenRefreshRequired")
+    with pytest.raises(ServiceAuthError):
+        await a.list_stations("pandora")
+    assert len(made) == 1
+    await a.list_stations("pandora")  # a fresh MusicService is built on the next call
+    assert len(made) == 2
+
+    k = h.zones[0]
+    k.play_uri = lambda uri, meta="", title="", start=True: k._rec(
+        "play_uri", (uri, title, start, "audioBroadcast" in meta)
+    )  # type: ignore[attr-defined]
+    ref = ContentRef(service="pandora", kind="station", id="chill-radio")
+    await a.play_station("sonos-RINCON_K", ref, stations[0])
+    call = next(c for c in k.calls if c[0] == "play_uri")
+    assert call[1] == ("x-sonosapi-radio:ST%3A1?sid=236&flags=8300&sn=4", "Chill Radio", True, True)
+    side = "sonos:sonos-gG1"
+    np = store.state.now_playing[side]
+    assert np.title == "Chill Radio" and np.source == "pandora" and np.content_ref == ref
+    assert np.seekable is False and np.supports_prev is False and np.supports_next is True
+    assert store.state.positions[side].confidence == 0.5
+    assert store.state.players["sonos-RINCON_K"].play_state == "play"  # optimistic
+
+    # A transport event for the station keeps the station identity; another station chosen in
+    # the Sonos app (different id in the URI) or a Tidal URI drops it.
+    sub = h.sub("RINCON_K", "avTransport")
+    sub.callback(
+        Event(
+            {
+                "transport_state": "PLAYING",
+                "current_track_uri": "x-sonosapi-radio:ST%3A2?sid=236&flags=8300&sn=4",
+                "current_track_meta_data": {"title": "Other", "creator": "Someone"},
+            }
+        )
+    )
+    assert store.state.now_playing[side].content_ref is None
+    assert store.state.now_playing[side].source == "pandora"
+    await a.play_station("sonos-RINCON_K", ref, stations[0])
+    sub.callback(
+        Event(
+            {
+                "transport_state": "PLAYING",
+                "current_track_uri": "x-sonosapi-radio:ST%3A1?sid=236&flags=8300&sn=4",
+                "current_track_meta_data": {"title": "Ember", "creator": "Low Tide"},
+            }
+        )
+    )
+    np = store.state.now_playing[side]
+    assert np.title == "Ember" and np.content_ref == ref and np.seekable is False
+    sub.callback(
+        Event(
+            {
+                "transport_state": "PLAYING",
+                "current_track_uri": "x-sonos-http:track/77.flac?sid=174&sn=3",
+                "current_track_meta_data": {"title": "Signal", "creator": "Analog Heart"},
+            }
+        )
+    )
+    np = store.state.now_playing[side]
+    assert np.content_ref is not None and np.content_ref.service == "tidal"
+    assert side not in a._station_playing
+
+    # A vendor failure restores the previous now-playing and station map.
+    before = store.state.now_playing[side]
+
+    def boom(*_a, **_k):
+        LazyZone._guard()
+        raise OSError("player unreachable")
+
+    k.play_uri = boom  # type: ignore[attr-defined]
+    with pytest.raises(OSError):
+        await a.play_station("sonos-RINCON_K", ref, stations[1])
+    assert store.state.now_playing[side] == before
+    assert side not in a._station_playing  # the Tidal event had already cleared it
+    with pytest.raises(ContentUnavailableError):
+        await a.play_station("sonos-RINCON_K", ref, stations[0].model_copy(update={"ids": {}}))
+    with pytest.raises(ContentUnavailableError):
+        await a.play_station(
+            "sonos-RINCON_K", ContentRef(service="tidal", kind="track", id="1"), stations[0]
+        )
+    a.settings = settings
+    with pytest.raises(ContentUnavailableError):
+        await a.play_station("sonos-RINCON_K", ref, stations[0])
+    await a.disconnect()

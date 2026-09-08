@@ -75,6 +75,28 @@ export function sampleSync(over: Partial<HubState["sync"]> = {}): HubState["sync
   };
 }
 
+/**
+ * Now-playing for a Pandora station (docs/api.md "Stations"): the track on title/artist, the
+ * station on album, a real duration (possibly null), seekable false, prev disabled, next enabled,
+ * and `content_ref` = the station ref (the track has no canonical id).
+ */
+export function stationNowPlaying(over: Partial<HubState["now_playing"][string]> = {}): HubState["now_playing"][string] {
+  return {
+    title: "Neon Skyline 1",
+    artist: "Signal Bloom",
+    album: "Chill Radio",
+    art: { url: null, accent: null, accent_is_safe: false },
+    source: "pandora",
+    seekable: false,
+    supports_next: true,
+    supports_prev: false,
+    duration_ms: 180_000,
+    track_id: null,
+    content_ref: { service: "pandora", kind: "station", id: "chill-radio" },
+    ...over,
+  };
+}
+
 export function sampleState(nowMs = Date.now()): HubState {
   const reported = new Date(nowMs).toISOString();
   return {
@@ -109,19 +131,7 @@ export function sampleState(nowMs = Date.now()): HubState {
         track_id: "t1",
         content_ref: { service: "tidal", kind: "track", id: "1" },
       },
-      "sonos:sonos-gK": {
-        title: "Chill Station",
-        artist: "Pandora",
-        album: null,
-        art: { url: null, accent: null, accent_is_safe: false },
-        source: "pandora",
-        seekable: false,
-        supports_next: true,
-        supports_prev: false,
-        duration_ms: null,
-        track_id: null,
-        content_ref: null,
-      },
+      "sonos:sonos-gK": stationNowPlaying(),
     },
     positions: {
       "heos:heos-1": { position_ms: 60_000, reported_at: reported, confidence: 0.9 },

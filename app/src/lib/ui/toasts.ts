@@ -35,12 +35,20 @@ export function ttlOf(t: Toast): number {
   return t.action ? TOAST_ACTION_TTL_MS : TOAST_TTL_MS;
 }
 
-export const useToasts = create<ToastStore>((set) => ({
+export const useToasts = create<ToastStore>((set, get) => ({
   toasts: [],
   push(message, opts = {}) {
+    const now = opts.now ?? Date.now();
+    // The same statement twice in a row (two rooms, one warning each) refreshes the visible toast
+    // instead of stacking a duplicate.
+    const dup = get().toasts.find((t) => t.message === message);
+    if (dup) {
+      set((s) => ({ toasts: s.toasts.map((t) => (t.id === dup.id ? { ...t, createdAt: now, action: opts.action ?? t.action } : t)) }));
+      return dup.id;
+    }
     const id = ++seq;
     set((s) => {
-      const next = [...s.toasts, { id, message, createdAt: opts.now ?? Date.now(), action: opts.action ?? null }];
+      const next = [...s.toasts, { id, message, createdAt: now, action: opts.action ?? null }];
       return { toasts: next.slice(-TOAST_MAX) };
     });
     return id;

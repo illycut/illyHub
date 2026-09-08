@@ -135,6 +135,12 @@ class ContentUnavailableError(Exception):
     """This ecosystem cannot play the content: the service is not linked on that side."""
 
 
+class ServiceAuthError(ContentUnavailableError):
+    """The ecosystem is linked to the service but its session is broken (SMAPI auth fault,
+    expired token). Distinct from "not linked": the fix is re-signing in the vendor app, and the
+    hub must not report the account as empty."""
+
+
 class PlayableTrack(BaseModel):
     """One track resolved from a service, in the shape both ecosystems need to build a queue
     entry. Ids are the service's canonical ids (Tidal track/album ids are integers-as-strings)."""
@@ -148,6 +154,19 @@ class PlayableTrack(BaseModel):
     playlist_id: str | None = None
     duration_ms: int | None = None
     art_url: str | None = None
+
+
+class VendorStation(BaseModel):
+    """A radio station as one ecosystem sees it (Phase 5, Pandora). ``ids`` holds whatever that
+    vendor needs to start it again (HEOS: ``sid``/``cid``/``mid``; Sonos: the SMAPI item ``id``).
+    The hub merges stations across vendors by normalised ``name`` (docs/spikes/pandora-refs.md)."""
+
+    vendor: str
+    service: str = "pandora"
+    name: str
+    ids: dict[str, str] = Field(default_factory=dict)
+    art_url: str | None = None
+    subtitle: str | None = None
 
 
 class PrimedQueue(BaseModel):
@@ -226,6 +245,18 @@ class PlaybackAdapter(BaseAdapter, ABC):
         """Sync Play step 4: start the queue primed by :meth:`prime_content` from position 0 of
         ``start_index``. Default: plain ``play``."""
         await self.play(player_id)
+
+    async def list_stations(self, service: str) -> list[VendorStation]:
+        """Phase 5: the user's radio stations for ``service`` as this ecosystem lists them
+        (PRD PAN-1/PAN-2). Raises :class:`ContentUnavailableError` when the service is not
+        linked on this side. Default: nothing."""
+        raise ContentUnavailableError(f"{service} stations are not available on {self.name}")
+
+    async def play_station(self, player_id: str, ref: ContentRef, station: VendorStation) -> None:
+        """Phase 5: start a radio station natively on the coordinator. ``ref`` is the hub's
+        vendor-neutral station ref, stamped on now-playing so clients know which station plays;
+        ``station`` carries this vendor's own ids. Default: unsupported."""
+        raise ContentUnavailableError(f"{self.name} cannot play {ref.service} stations")
 
     async def snapshot_queue(self, player_id: str) -> Any | None:
         """Capture the coordinator's queue and transport so a failed Sync Play start can put the

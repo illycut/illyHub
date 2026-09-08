@@ -16,7 +16,7 @@ import asyncio
 import math
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -27,13 +27,15 @@ from .adapters.base import (
     DenonAdapter,
     PlayableTrack,
     PlaybackAdapter,
+    ServiceAuthError,
     UnsupportedCommandError,
+    VendorStation,
 )
 from .coalesce import Coalescer
 from .config import Vendor
 from .content import Availability, ContentRef
 from .logsetup import correlation_id, get_logger
-from .state import HubState, Player, Side, StateStore
+from .state import HubState, Player, Side, StateStore, vendor_label
 
 log = get_logger("commands")
 
@@ -103,6 +105,17 @@ class PartialFailure(BaseModel):
     message: str
 
 
+WarningCode = Literal["pandora_concurrent"]
+
+
+class AckWarning(BaseModel):
+    """A non-fatal note about a command that still succeeded (e.g. a second Pandora stream)."""
+
+    code: WarningCode
+    message: str
+    target: str | None = None
+
+
 class Ack(BaseModel):
     correlation_id: str
     ok: bool
@@ -115,6 +128,9 @@ class Ack(BaseModel):
         default_factory=list, description="targets (side or player ids) the command reached"
     )
     session_id: str | None = Field(default=None, description="Sync Play session id (sync_* acks)")
+    warnings: list[AckWarning] = Field(
+        default_factory=list, description="non-fatal notes, e.g. pandora_concurrent"
+    )
     resolved: dict[str, str] = Field(
         default_factory=dict,
         description="transport acks: side id -> the action actually sent (toggle resolved)",
@@ -244,6 +260,7 @@ class _Outcomes:
         self.failures: list[CommandError] = []
         self.applied: list[str] = []
         self.resolved: dict[str, str] = {}  # transport: side id -> action actually sent
+        self.warnings: list[AckWarning] = []
 
     async def attempt(self, target: str, coro: Awaitable[None]) -> bool:
         self.attempted += 1
@@ -493,7 +510,8 @@ class CommandRouter:
                 if p.vendor != vendor:
                     raise CommandError(
                         "invalid_argument",
-                        f"{p.name} can't join a {vendor} group; groups stay within one system.",
+                        f"{p.name} can't join a {vendor_label(vendor)} group; groups stay "
+                        "within one system.",
                         m,
                     )
                 if not p.capabilities.can_group:
@@ -548,6 +566,23 @@ class CommandRouter:
 
         return await self._execute("play_content", target, run)
 
+    def _side_ladder(
+        self, side: Side, service: str, avail: Availability, target: str
+    ) -> PlaybackAdapter:
+        """The checks every per-side content command runs, in order: adapter connected
+        (``adapter_disconnected``), service linked on that vendor (``not_available_on_side``),
+        coordinator online (``device_offline``)."""
+        adapter = self._adapter_for(side.vendor, target)
+        if not getattr(avail, side.vendor, False):
+            raise CommandError(
+                "not_available_on_side",
+                f"{side.name} can't play {service.title()}; link it in the "
+                f"{vendor_label(side.vendor)} app.",
+                side.id,
+            )
+        self._require_online(side.coordinator_player_id, target)
+        return adapter
+
     async def _play_on_side(
         self,
         side: Side,
@@ -557,21 +592,15 @@ class CommandRouter:
         avail: Availability,
         target: str,
     ) -> None:
-        adapter = self._adapter_for(side.vendor, target)  # adapter_disconnected first
-        if not getattr(avail, side.vendor, False):
-            raise CommandError(
-                "not_available_on_side",
-                f"{side.name} can't play {ref.service.title()}; link it in the {side.vendor} app.",
-                side.id,
-            )
-        self._require_online(side.coordinator_player_id, target)
+        adapter = self._side_ladder(side, ref.service, avail, target)
         coord = side.coordinator_player_id
         try:
             await adapter.play_content(coord, ref, tracks, start_index)
         except ContentUnavailableError as exc:
             raise CommandError(
                 "not_available_on_side",
-                f"{side.name} can't play {ref.service.title()}; link it in the {side.vendor} app.",
+                f"{side.name} can't play {ref.service.title()}; link it in the "
+                f"{vendor_label(side.vendor)} app.",
                 side.id,
             ) from exc
         except CommandError:
@@ -583,6 +612,118 @@ class CommandRouter:
             )
             raise CommandError(
                 "vendor_error", f"Play didn't happen on {side.name}.", side.id
+            ) from exc
+
+    # -- radio stations (Phase 5) ---------------------------------------------------------
+
+    PANDORA_CONCURRENT_MSG = (
+        "Pandora usually allows one stream per account; the other room may pause."
+    )
+
+    async def play_station(
+        self,
+        target: str,
+        ref: ContentRef,
+        stations: Mapping[str, VendorStation],
+        *,
+        availability: Availability | None = None,
+        auth_faults: Mapping[str, str] | None = None,
+    ) -> Ack:
+        """Start a radio station natively on each target side using that vendor's own ids
+        (``stations`` is vendor → :class:`VendorStation`). A side whose vendor lacks the station
+        or the service fails with ``not_available_on_side`` while the others start. When another
+        room already streams the service, or two target sides start it together, the ack carries
+        a ``pandora_concurrent`` warning (PRD §3.5: one stream per account)."""
+        avail = availability or self.service_availability(ref.service)
+
+        async def run(out: _Outcomes) -> None:
+            sides = resolve_sides(self.state, target)
+            target_ids = {s.id for s in sides}
+            # Rooms already holding a Pandora stream, judged BEFORE the attempts change state.
+            # A paused room still holds its session, so it counts.
+            others = [
+                s
+                for s in self.state.sides.values()
+                if s.id not in target_ids and self._holding(s.id, ref.service)
+            ]
+            for side in sides:
+                await out.attempt(
+                    side.id,
+                    self._station_on_side(
+                        side, ref, stations.get(side.vendor), avail, target, auth_faults or {}
+                    ),
+                )
+            if ref.service == "pandora" and out.applied and (others or len(out.applied) > 1):
+                applied_vendors = {
+                    self.state.sides[a].vendor for a in out.applied if a in self.state.sides
+                }
+                others.sort(key=lambda s: (s.vendor not in applied_vendors, s.name))
+                out.warnings.append(
+                    AckWarning(
+                        code="pandora_concurrent",
+                        message=self.PANDORA_CONCURRENT_MSG,
+                        target=others[0].id if others else None,
+                    )
+                )
+
+        return await self._execute("play_station", target, run)
+
+    def _holding(self, side_id: str, service: str) -> bool:
+        side = self.state.sides.get(side_id)
+        np = self.state.now_playing.get(side_id)
+        return bool(side and np and side.play_state in ("play", "pause") and np.source == service)
+
+    async def _station_on_side(
+        self,
+        side: Side,
+        ref: ContentRef,
+        station: VendorStation | None,
+        avail: Availability,
+        target: str,
+        auth_faults: Mapping[str, str],
+    ) -> None:
+        adapter = self._side_ladder(side, ref.service, avail, target)
+        pretty = ref.service.title()
+        if side.vendor in auth_faults:
+            # Linked, but that ecosystem's service session is broken: never say the station is
+            # missing from the account when the account could not be read at all.
+            raise CommandError(
+                "not_available_on_side",
+                f"{side.name} can't reach {pretty} right now; sign in again in the "
+                f"{vendor_label(side.vendor)} app.",
+                side.id,
+            )
+        if station is None:
+            raise CommandError(
+                "not_available_on_side",
+                f"That station isn't in the {vendor_label(side.vendor)} {pretty} account, so "
+                f"{side.name} can't play it.",
+                side.id,
+            )
+        try:
+            await adapter.play_station(side.coordinator_player_id, ref, station)
+        except ServiceAuthError as exc:
+            raise CommandError(
+                "not_available_on_side",
+                f"{side.name} can't reach {pretty} right now; sign in again in the "
+                f"{vendor_label(side.vendor)} app.",
+                side.id,
+            ) from exc
+        except ContentUnavailableError as exc:
+            raise CommandError(
+                "not_available_on_side",
+                f"{side.name} can't play {pretty}; link it in the {vendor_label(side.vendor)} app.",
+                side.id,
+            ) from exc
+        except CommandError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - vendor libraries raise their own types
+            log.warning(
+                "play_station failed",
+                extra={"extra": {"target": side.id, "content": ref.key, "error": str(exc)}},
+            )
+            raise CommandError(
+                "vendor_error", f"{station.name} didn't start on {side.name}.", side.id
             ) from exc
 
     def service_availability(self, service: str) -> Availability:
@@ -612,7 +753,8 @@ class CommandRouter:
         if adapter is None or adapter.status().state != "connected":
             raise CommandError(
                 "adapter_disconnected",
-                f"{_name(self.state, target)} didn't respond; the {vendor} link is down.",
+                f"{_name(self.state, target)} didn't respond; the {vendor_label(vendor)} link "
+                "is down.",
                 target,
             )
         return adapter
@@ -735,6 +877,7 @@ class CommandRouter:
             partial=partial,
             applied=list(out.applied),
             resolved=dict(out.resolved),
+            warnings=list(out.warnings),
         )
         log.info(
             "command",
@@ -792,6 +935,7 @@ def _verb(action: str) -> str:
         "group": "Grouping",
         "ungroup": "Ungrouping",
         "play_content": "Play",
+        "play_station": "Play",
         "sync_play": "Sync Play",
         "sync_stop": "Sync Play stop",
         "sync_retry": "Sync Play retry",

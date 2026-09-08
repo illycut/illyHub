@@ -69,7 +69,8 @@ describe("normalisers (documented shapes only)", () => {
     expect(h.playlists.items[0]?.title).toBe("Warm Glow");
     expect(h.favorite_albums.needs_link).toBe("tidal");
     expect(h.stations.error).toBe("Pandora timed out.");
-    expect(asSection(undefined, (x) => x)).toEqual({ items: [], needs_link: null, error: null });
+    expect(asSection(undefined, (x) => x)).toEqual({ items: [], needs_link: null, error: null, linked: null });
+    expect(asSection({ items: [], linked: { heos: false, sonos: "x" } }, (x) => x).linked).toEqual({ heos: false, sonos: null });
   });
 
   it("browse page carries next_offset and total", () => {

@@ -170,6 +170,23 @@ First LAN run checklist:
 - [ ] `ZMON`/`ZMOFF` via the hub turns the Denon on and off.
 - [ ] Ai-dev #9 concurrent-stream test and #10 Tidal ref spike.
 
+### Pandora (Phase 5) on the LAN
+
+Stations are browsed and played per ecosystem; nothing has touched hardware. Checklist and the
+assumed tree shapes live in `docs/spikes/pandora-refs.md`. Short form:
+
+- [ ] Both vendor apps are linked to Pandora. `GET /api/settings` shows `pandora.linked: true`.
+- [ ] `GET /api/browse/pandora/stations` lists every station from both apps once, with the right
+      `availability`, and `linked: {heos: true, sonos: true}`. A `false` with a `last_error` on the
+      Pandora settings row is an auth fault (sign in again in that app); a `false` without one is
+      not linked (HEOS: `get_music_sources`; Sonos: account serial type 60423, or set
+      `HUB_SONOS_PANDORA_SN`); `null` is a hub-side error worth an issue. Table in
+      `docs/spikes/pandora-refs.md`.
+- [ ] Play a station on the HEOS side, then on the Sonos side, via `POST /api/play`. `next` skips;
+      `prev` and seek are refused (409). Note whether Pandora pauses the first room when the second
+      starts (the ack carries a `pandora_concurrent` warning either way).
+- [ ] Record results on ai-dev #61 / #62 and correct the spike doc.
+
 ### Sync Play (Phase 4) on the LAN
 
 Sync Play has only ever run against the fakes. First real run, in this order:
