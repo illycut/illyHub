@@ -760,14 +760,28 @@ class FakeDenon(DenonAdapter):
         self._connected = False
         self._set_status("disconnected")
 
-    async def set_power(self, zone_id: str, on: bool) -> None:
+    def _resolve(self, zone_id: str) -> Zone:
         zone = self.store.state.zones.get(zone_id) or self.store.state.zones.get(
             fake_zone_id(zone_id)
         )
         if zone is None:
             raise ValueError(f"unknown zone {zone_id!r}")
+        return zone
+
+    async def set_power(self, zone_id: str, on: bool) -> None:
+        zone = self._resolve(zone_id)
         self.store.set_zone(zone.model_copy(update={"power": on}))
         self._emit("zone_power", zone_id=zone.id, power=on)
+
+    async def set_volume(self, zone_id: str, level: int) -> None:
+        zone = self._resolve(zone_id)
+        self.store.set_zone(zone.model_copy(update={"volume": max(0, min(level, 100))}))
+        self._emit("zone_volume", zone_id=zone.id, level=level)
+
+    async def set_mute(self, zone_id: str, on: bool) -> None:
+        zone = self._resolve(zone_id)
+        self.store.set_zone(zone.model_copy(update={"muted": on}))
+        self._emit("zone_mute", zone_id=zone.id, muted=on)
 
 
 class FakeBundle:

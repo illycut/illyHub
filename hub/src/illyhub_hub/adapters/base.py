@@ -280,4 +280,20 @@ class DenonAdapter(BaseAdapter, ABC):
 
     @abstractmethod
     async def set_power(self, zone_id: str, on: bool) -> None:
-        """Zone power (ZON-1). ``zone_id`` may be a bare key or the namespaced id."""
+        """Zone power (ZON-1). ``zone_id`` may be a bare key or the namespaced id.
+
+        Implementations read the receiver back rather than assuming: on an AVR-X3400H,
+        ``Z2OFF`` dropped the whole unit to standby and took the main zone with it.
+        """
+
+    @abstractmethod
+    async def set_volume(self, zone_id: str, level: int) -> None:
+        """VOL-1: zone volume from a hub 0-100 level.
+
+        This lives here, not on the playback adapter, because HEOS cannot set volume on an
+        AVR-hosted player: it returns success and applies nothing.
+        """
+
+    @abstractmethod
+    async def set_mute(self, zone_id: str, on: bool) -> None:
+        """VOL-3: zone mute."""

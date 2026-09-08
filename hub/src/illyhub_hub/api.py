@@ -406,7 +406,7 @@ def build_runtime(
             vault_error=vault_error,
         )
 
-    from .adapters.denon import HttpDenonAdapter
+    from .adapters.denon import DenonControlAdapter
     from .adapters.heos import PyHeosAdapter, default_heos_factory
     from .adapters.sonos import SoCoAdapter
 
@@ -425,7 +425,7 @@ def build_runtime(
         # Discovery hands the first HEOS device it finds to HubRuntime.adopt_discovered.
         store.set_connection("heos", "disabled", HEOS_DISABLED_MSG)
     if settings.denon_host:
-        denon = HttpDenonAdapter(store, settings, settings.denon_host)
+        denon = DenonControlAdapter(store, settings, settings.denon_host)
         adapters.append(denon)
         router.register(denon)
     else:

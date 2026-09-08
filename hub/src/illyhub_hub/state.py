@@ -123,7 +123,13 @@ class Zone(BaseModel):
     key: str  # "main" | "zone2"
     name: str
     power: bool = False
+    volume: int = Field(default=0, ge=0, le=100)
+    muted: bool = False
     online: bool = True
+    # A zone feeding an external amp on a fixed pre-out cannot be attenuated by the receiver.
+    # The UI must hide the slider rather than offer a control that does nothing.
+    supports_volume: bool = True
+    supports_mute: bool = True
     host: str | None = None
     device_id: str | None = None
     player_ids: list[str] = Field(default_factory=list)

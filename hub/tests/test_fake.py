@@ -76,6 +76,18 @@ async def test_scripting_methods(store: StateStore) -> None:
     assert store.state.zones[fake_zone_id("main")].power is False
     with pytest.raises(ValueError):
         await b.denon.set_power("nope", True)
+    await b.denon.set_volume("main", 42)
+    await b.denon.set_volume(fake_zone_id("zone2"), 150)  # clamps rather than overflowing
+    await b.denon.set_mute("main", True)
+    assert store.state.zones[fake_zone_id("main")].volume == 42
+    assert store.state.zones[fake_zone_id("zone2")].volume == 100
+    assert store.state.zones[fake_zone_id("main")].muted is True
+    await b.denon.set_mute("main", False)
+    assert store.state.zones[fake_zone_id("main")].muted is False
+    with pytest.raises(ValueError):
+        await b.denon.set_volume("nope", 10)
+    with pytest.raises(ValueError):
+        await b.denon.set_mute("nope", True)
     assert (
         "sonos:volume" in events and "heos:disconnected" in events and "denon:zone_power" in events
     )

@@ -50,7 +50,13 @@ class Settings(BaseSettings):
 
     heos_host: str | None = None
     denon_host: str | None = None
-    denon_telnet: bool = False
+    # Telnet is the control path: current firmware 403s every /goform/ endpoint.
+    denon_telnet: bool = True
+    # Hub volume 100 maps to this MV step, not to MV98 (+18 dB). Raise once trusted.
+    denon_max_volume: int = 60
+    # Zone keys whose output is a fixed pre-out to an external amp: the receiver cannot
+    # attenuate them, so the hub reports them as volume-incapable instead of pretending.
+    denon_fixed_zones: list[str] = Field(default_factory=list)
     denon_poll_s: float = 15.0
     denon_zone_fail_threshold: int = 3
     sonos_listener_host: str | None = None
