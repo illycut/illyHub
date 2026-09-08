@@ -424,11 +424,33 @@ class CommandRouter:
         async def run(out: _Outcomes) -> None:
             if not 0 <= level <= 100:
                 raise CommandError("invalid_argument", "Volume must be between 0 and 100.", target)
+            # An amplifier zone can be a volume target in its own right. A zone that drives an
+            # external amp has no player to address it by, so without this its level is
+            # unreachable even though the adapter can set it.
+            if target in self.state.zones:
+                await out.attempt(target, self._set_zone_volume(target, level))
+                return
             for player in resolve_players(self.state, target):
                 if await out.attempt(player.id, self._set_player_volume(player, level, target)):
                     self._linked_written.pop(player.id, None)  # user moved it: re-learn ratio
 
         return await self._execute("volume", target, run)
+
+    async def _set_zone_volume(self, zone_id: str, level: int) -> None:
+        zone = self.state.zones[zone_id]
+        if not zone.supports_volume:
+            raise CommandError(
+                "unsupported_action",
+                f"{zone.name} feeds an external amplifier; set the volume there.",
+                zone_id,
+            )
+        denon = self._require_denon(zone, zone_id)
+        await self.coalescer.submit(
+            f"volume:{zone_id}",
+            lambda: self._call(
+                lambda: denon.set_volume(zone_id, level), "volume", zone_id, zone.name
+            ),
+        )
 
     async def linked_volume(self, *, level: int | None = None, delta: int | None = None) -> Ack:
         async def run(out: _Outcomes) -> None:
@@ -451,16 +473,36 @@ class CommandRouter:
                     self._linked_written[player.id] = new
                     continue
                 if await out.attempt(player.id, self._set_player_volume(player, new, "all")):
-                    self._linked_written[player.id] = new
+                    # Record what the device ended up reporting, not what we asked for. An
+                    # amplifier zone quantises the hub's 0-100 onto its own step scale (0-60 by
+                    # default, so 61 values): asking for 96 lands on MV58 and reads back 97.
+                    # Storing the request would make the next linked call read that one-point
+                    # difference as the user having turned the knob and drop the learned ratio.
+                    settled = self.state.players.get(player.id)
+                    self._linked_written[player.id] = settled.volume if settled else new
 
         return await self._execute("linked_volume", "all", run)
 
     async def mute(self, target: str, muted: bool) -> Ack:
         async def run(out: _Outcomes) -> None:
+            if target in self.state.zones:
+                await out.attempt(target, self._set_zone_mute(target, muted))
+                return
             for player in resolve_players(self.state, target):
                 await out.attempt(player.id, self._mute_player(player, muted, target))
 
         return await self._execute("mute", target, run)
+
+    async def _set_zone_mute(self, zone_id: str, muted: bool) -> None:
+        zone = self.state.zones[zone_id]
+        if not zone.supports_mute:
+            raise CommandError(
+                "unsupported_action",
+                f"{zone.name} feeds an external amplifier; mute it there.",
+                zone_id,
+            )
+        denon = self._require_denon(zone, zone_id)
+        await self._call(lambda: denon.set_mute(zone_id, muted), "mute", zone_id, zone.name)
 
     async def _mute_player(self, player: Player, muted: bool, target: str) -> None:
         self._require_online(player.id, target)
