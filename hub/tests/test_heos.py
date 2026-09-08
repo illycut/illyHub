@@ -306,7 +306,9 @@ def test_helpers() -> None:
     class E:
         value = "pause"
 
-    assert heos_mod._play_state(E()) == "pause" and heos_mod._play_state("weird") == "unknown"
+    # An unrecognised report maps to None so callers hold the state they already have,
+    # rather than blanking a known state during the ~1s transient at stream start.
+    assert heos_mod._play_state(E()) == "pause" and heos_mod._play_state("weird") is None
 
 
 async def test_commands_map_to_pyheos_player_methods_and_seek_is_unsupported(
@@ -893,4 +895,32 @@ async def test_avr_owned_volume_is_not_overwritten_by_heos_reports(
     raw.volume = 12
     raw.fire(heos_mod.EVENT_PLAYER_VOLUME_CHANGED)
     assert store.state.players["heos-1"].volume == 12
+    await a.disconnect()
+
+
+async def test_transient_state_report_holds_the_known_play_state(
+    store: StateStore, settings: Settings
+) -> None:
+    """HEOS answers state=unknown for ~1s while a stream starts; that must not blank state.
+
+    Measured on an AVR-X3400H: `t+01s state=unknown`, `t+02s state=play`. Writing "unknown"
+    through would overwrite the client's optimistic play and make the button flick back.
+    """
+    gen = Generations()
+    a = make(store, settings, gen)
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+    raw = gen.players[1]
+
+    raw.state = "play"
+    raw.fire(heos_mod.EVENT_PLAYER_STATE_CHANGED)
+    assert store.state.players["heos-1"].play_state == "play"
+
+    raw.state = "unknown"  # the transient
+    raw.fire(heos_mod.EVENT_PLAYER_STATE_CHANGED)
+    assert store.state.players["heos-1"].play_state == "play"  # held, not blanked
+
+    raw.state = "pause"  # a real change still lands
+    raw.fire(heos_mod.EVENT_PLAYER_STATE_CHANGED)
+    assert store.state.players["heos-1"].play_state == "pause"
     await a.disconnect()

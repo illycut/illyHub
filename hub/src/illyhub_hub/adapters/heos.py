@@ -112,9 +112,15 @@ def _enum_value(raw: Any) -> str:
     return str(value) if value is not None else ""
 
 
-def _play_state(raw: Any) -> str:
+def _play_state(raw: Any) -> str | None:
+    """Map a HEOS play state, or None when it is not one of play/pause/stop.
+
+    HEOS answers ``state=unknown`` for about a second while a stream starts (measured on an
+    AVR-X3400H: ``t+01s unknown`` then ``t+02s play``). Callers hold the state they already
+    have rather than writing it through; see the Sonos adapter for the same reasoning.
+    """
     value = _enum_value(raw)
-    return value if value in ("play", "pause", "stop") else "unknown"
+    return value if value in ("play", "pause", "stop") else None
 
 
 def _controls(media: Any) -> set[str]:
@@ -507,7 +513,10 @@ class PyHeosAdapter(HeosAdapter):
             # so keep whatever the Denon adapter mirrored rather than overwriting it.
             volume=self._reported_volume(player_id(pid), int(getattr(raw, "volume", 0) or 0)),
             muted=self._reported_mute(player_id(pid), bool(getattr(raw, "is_muted", False))),
-            play_state=_play_state(getattr(raw, "state", "unknown")),  # type: ignore[arg-type]
+            play_state=(  # keep a known state across a transient report
+                _play_state(getattr(raw, "state", None))
+                or (existing.play_state if existing else "stop")
+            ),  # type: ignore[arg-type]
             group_id=existing.group_id if existing else None,
             # The HEOS CLI cannot seek; see module docstring.
             capabilities=Capabilities(supports_power=True, supports_seek=False),
@@ -661,7 +670,9 @@ class PyHeosAdapter(HeosAdapter):
     def _handle_player_event(self, pid: int, raw: Any, event: str) -> None:
         p_id = player_id(pid)
         if event == EVENT_PLAYER_STATE_CHANGED:
-            self.store.update_player(p_id, play_state=_play_state(getattr(raw, "state", "unknown")))
+            mapped = _play_state(getattr(raw, "state", None))
+            if mapped is not None:  # transient "unknown": hold the known state
+                self.store.update_player(p_id, play_state=mapped)
             self._emit("play_state", player_id=p_id)
         elif event == EVENT_PLAYER_VOLUME_CHANGED:
             self.store.update_player(

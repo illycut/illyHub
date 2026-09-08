@@ -1,6 +1,9 @@
 {
   "name": "illyhub-app",
   "version": "0.1.0",
+  "engines": {
+    "node": ">=20.9"
+  },
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",
