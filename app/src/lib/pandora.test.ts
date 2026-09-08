@@ -26,7 +26,7 @@ const station = (id: string, title: string, availability = { heos: true, sonos: 
   track_count: null,
   availability,
 });
-const section = (items: LibraryItem[], over: Partial<Section<LibraryItem>> = {}): Section<LibraryItem> => ({ items, needs_link: null, error: null, linked: { heos: true, sonos: true }, ...over });
+const section = (items: LibraryItem[], over: Partial<Section<LibraryItem>> = {}): Section<LibraryItem> => ({ items, needs_link: [], error: null, linked: { heos: true, sonos: true }, ...over });
 const rooms = { heos: ["Living Room Amp", "Den"], sonos: ["Kitchen + 1"] };
 
 describe("stationsSectionModel", () => {
@@ -41,7 +41,7 @@ describe("stationsSectionModel", () => {
   it("is hidden while empty (also with needs_link) and has no note without items", () => {
     expect(stationsSectionModel(null).visible).toBe(false);
     expect(stationsSectionModel(section([])).visible).toBe(false);
-    const unlinked = stationsSectionModel(section([], { needs_link: "pandora", linked: { heos: false, sonos: false } }), rooms);
+    const unlinked = stationsSectionModel(section([], { needs_link: ["pandora"], linked: { heos: false, sonos: false } }), rooms);
     expect(unlinked.visible).toBe(false);
     expect(unlinked.missing).toEqual(["heos", "sonos"]);
     expect(unlinked.note).toBeNull();
@@ -77,12 +77,16 @@ describe("copy", () => {
     expect(unlinkedVendors({ heos: false, sonos: true })).toEqual(["heos"]);
     expect(unlinkedVendors({ heos: null, sonos: false })).toEqual(["sonos"]);
     expect(unlinkedVendors(null)).toEqual([]);
-    expect(unavailableCopy("pandora", "heos", ["heos"])).toBe("Pandora is set up in the HEOS app.");
-    expect(unavailableCopy("pandora", "sonos", ["sonos"])).toBe("Pandora is set up in the Sonos app.");
-    expect(unavailableCopy("pandora", "heos", [])).toBe("Not in the HEOS Pandora account.");
+    expect(unavailableCopy("pandora", "heos", { unlinked: ["heos"] })).toBe("Pandora is set up in the HEOS app.");
+    expect(unavailableCopy("pandora", "sonos", { unlinked: ["sonos"] })).toBe("Pandora is set up in the Sonos app.");
+    expect(unavailableCopy("pandora", "heos", { unlinked: [] })).toBe("Not in the HEOS Pandora account.");
     expect(unavailableCopy("pandora", "sonos")).toBe("Not in the Sonos Pandora account.");
-    expect(unavailableCopy("tidal", "heos")).toBe("Not available on HEOS");
-    expect(unavailableCopy(undefined, "sonos")).toBe("Not available on Sonos");
+    // the hub's reason wins over the link-state fallback
+    expect(unavailableCopy("pandora", "sonos", { availability: { heos: true, sonos: false, reasons: { heos: null, sonos: "auth_fault" } } })).toBe("Sonos can't reach Pandora right now; sign in again in the Sonos app.");
+    // one sentence form for every service: no short "Not available on X"
+    expect(unavailableCopy("tidal", "heos")).toBe("Tidal is set up in the HEOS app.");
+    expect(unavailableCopy("ytmusic", "heos")).toBe("YouTube Music isn't available on HEOS.");
+    expect(unavailableCopy(undefined, "sonos")).toBe("Tidal is set up in the Sonos app.");
   });
 
   it("station subtitle comes from availability", () => {

@@ -10,10 +10,11 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from .state import ArtRef, ContentKind, ContentRef, Service
+from .state import ArtRef, ContentKind, ContentRef, Service, service_label
 
 __all__ = [
     "Availability",
+    "NeedsClientConfigError",
     "BrowseItem",
     "BrowsePage",
     "Container",
@@ -26,10 +27,41 @@ __all__ = [
 
 
 class Availability(BaseModel):
-    """Which ecosystems can play a service's content (the service is linked on that side)."""
+    """Which ecosystems can play a service's content, and why not when they cannot.
+
+    ``reasons[vendor]`` is ``null`` when available, else one of ``unsupported`` (the vendor cannot
+    play the service at all), ``not_linked`` (the vendor app lacks the service link) or
+    ``not_in_account`` (Pandora: the station is not in that vendor's account). The router's
+    messages remain the copy of record; the app uses the reason to pick the sentence before a
+    tap (``GET /api/meta/messages``)."""
 
     heos: bool = False
     sonos: bool = False
+    reasons: dict[str, str | None] = Field(
+        default_factory=lambda: {"heos": None, "sonos": None},
+        description="vendor -> null when available, else unsupported | not_linked | not_in_account",
+    )
+
+    @classmethod
+    def build(
+        cls, service: str, linked: dict[str, bool], *, present: dict[str, bool] | None = None
+    ) -> Availability:
+        """Derive flags and reasons for ``service``: unsupported vendors first, then link state,
+        then (stations) presence in the vendor account."""
+        from .messages import UNSUPPORTED_ON_VENDOR  # local import: messages imports state only
+
+        flags: dict[str, bool] = {}
+        reasons: dict[str, str | None] = {}
+        for vendor in ("heos", "sonos"):
+            if (vendor, service) in UNSUPPORTED_ON_VENDOR:
+                flags[vendor], reasons[vendor] = False, "unsupported"
+            elif not linked.get(vendor, False):
+                flags[vendor], reasons[vendor] = False, "not_linked"
+            elif present is not None and not present.get(vendor, False):
+                flags[vendor], reasons[vendor] = False, "not_in_account"
+            else:
+                flags[vendor], reasons[vendor] = True, None
+        return cls(heos=flags["heos"], sonos=flags["sonos"], reasons=reasons)
 
 
 class BrowseItem(BaseModel):
@@ -63,19 +95,32 @@ class Container(BaseModel):
 
     item: BrowseItem
     tracks: list[BrowseItem]
+    # True when the service returned more tracks than the hub's cap (HUB_YTMUSIC_MAX_TRACKS)
+    # and the list was cut; the client can say "first N tracks".
+    truncated: bool = False
 
 
 class NeedsLinkError(Exception):
     """The service is not linked to the hub (or not on that side)."""
 
+    code = "needs_link"
+
     def __init__(self, service: str, message: str | None = None) -> None:
-        super().__init__(message or f"{service.title()} is not connected.")
+        super().__init__(message or f"{service_label(service)} is not connected.")
         self.service = service
-        self.message = message or f"{service.title()} is not connected."
+        self.message = message or f"{service_label(service)} is not connected."
+
+
+class NeedsClientConfigError(NeedsLinkError):
+    """The hub itself lacks the OAuth client configuration for a service (owner action, not a
+    household member's): surfaces as ``needs_client_config`` instead of ``needs_link``."""
+
+    code = "needs_client_config"
 
 
 class ContentNotFoundError(Exception):
     def __init__(self, ref: ContentRef) -> None:
-        super().__init__(f"{ref.kind} {ref.id} was not found on {ref.service}.")
+        label = service_label(ref.service)
+        super().__init__(f"{ref.kind} {ref.id} was not found on {label}.")
         self.ref = ref
-        self.message = f"{ref.kind.title()} {ref.id} was not found on {ref.service}."
+        self.message = f"{ref.kind.title()} {ref.id} was not found on {label}."

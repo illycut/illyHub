@@ -10,34 +10,33 @@
 import type { Availability, LibraryItem, Section, VendorLinked } from "./hub/library";
 import type { HubState, Side } from "./hub/types";
 import { joinRooms } from "./sync";
+import { PANDORA_CONCURRENT_MSG, VENDOR_APP, VENDOR_LABEL, isService, reasonFor, roomsOnlyLabel, serviceUnavailableCopy, type AvailabilityReason, type Vendor } from "./services";
 
-export type Vendor = "heos" | "sonos";
-
-export const VENDOR_LABEL: Record<Vendor, string> = { heos: "HEOS", sonos: "Sonos" };
-export const VENDOR_APP: Record<Vendor, string> = { heos: "HEOS app", sonos: "Sonos app" };
+export { VENDOR_APP, VENDOR_LABEL, type Vendor };
 
 /** One sentence, fact and fix (§10): where Pandora gets linked for a vendor that lacks it. */
 export function pandoraSetupNote(missing: Vendor[]): string | null {
   if (missing.length === 0) return null;
-  if (missing.length === 1) return `Pandora is set up in the ${VENDOR_APP[missing[0]!]}.`;
-  return "Pandora is set up in the HEOS app and the Sonos app.";
+  if (missing.length === 1) return serviceUnavailableCopy("pandora", missing[0]!, "not_linked");
+  return `Pandora is set up in the ${VENDOR_APP.heos} and the ${VENDOR_APP.sonos}.`;
 }
 
 /** Vendors the hub reports as not linked (`linked[vendor] === false`); null/true never count. */
-export function unlinkedVendors(linked: VendorLinked | null | undefined): Vendor[] {
-  return (["heos", "sonos"] as Vendor[]).filter((v) => linked?.[v] === false);
+export function unlinkedVendors(linked: Record<string, boolean | null> | VendorLinked | null | undefined): Vendor[] {
+  return (["heos", "sonos"] as Vendor[]).filter((v) => (linked as Record<string, boolean | null> | null | undefined)?.[v] === false);
 }
 
 /**
- * Picker row reason for a side whose vendor cannot play this content (service-aware, §10). For
- * Pandora the hub says both whether the vendor is linked and whether it has this station: an
- * unlinked vendor gets the fix ("Pandora is set up in the HEOS app."), a linked vendor whose
- * account lacks the station gets the fact ("Not in the HEOS Pandora account.").
+ * Row reason for a side whose vendor cannot play this content (service-aware, §10): one sentence
+ * form for every service, from the hub's templates. The reason is the hub's (`reasons[vendor]`)
+ * when it sends one; otherwise an unlinked vendor gets the fix ("Pandora is set up in the HEOS
+ * app."), a linked vendor whose account lacks the station gets the fact ("Not in the HEOS Pandora
+ * account."), and any other service reads as not linked.
  */
-export function unavailableCopy(service: string | undefined, vendor: Vendor, unlinked: readonly Vendor[] = []): string {
-  if (service !== "pandora") return `Not available on ${VENDOR_LABEL[vendor]}`;
-  if (unlinked.includes(vendor)) return pandoraSetupNote([vendor])!;
-  return `Not in the ${VENDOR_LABEL[vendor]} Pandora account.`;
+export function unavailableCopy(service: string | undefined, vendor: Vendor, opts: { reason?: AvailabilityReason | string | null; unlinked?: readonly Vendor[]; availability?: Availability | null } = {}): string {
+  const svc = isService(service) ? service : "tidal";
+  const reason = opts.reason ?? reasonFor(opts.availability, vendor, svc, opts.unlinked ?? []);
+  return serviceUnavailableCopy(svc, vendor, reason);
 }
 
 /**
@@ -55,17 +54,14 @@ export function stationsNote(missing: readonly Vendor[], roomsByVendor: Partial<
     .join(" ");
 }
 
-/** Card subtitle from availability: both vendors → none; one-sided → "HEOS rooms only". */
+/** Card subtitle from availability: both vendors → none; one-sided → "HEOS rooms only"; neither → null (a card never says "Not available"). */
 export function stationSubtitle(availability: Availability | null | undefined): string | null {
-  if (!availability) return null;
-  if (availability.heos && availability.sonos) return null;
-  if (availability.heos) return `${VENDOR_LABEL.heos} rooms only`;
-  if (availability.sonos) return `${VENDOR_LABEL.sonos} rooms only`;
-  return null;
+  const label = roomsOnlyLabel(availability);
+  return label === "Not available" ? null : label;
 }
 
-/** Must equal the hub's PANDORA_CONCURRENT_MSG (docs/api.md, warnings table); a contract test checks it. */
-export const PANDORA_CONCURRENT_NOTE = "Pandora usually allows one stream per account; the other room may pause.";
+/** The hub's PANDORA_CONCURRENT_MSG, from messages.json. */
+export const PANDORA_CONCURRENT_NOTE = PANDORA_CONCURRENT_MSG;
 
 /** Toast for a hub warning: name the room the hub says may pause, else the hub's own sentence. */
 export function warningToast(w: { code: string; message: string; target?: string | null }, sides: Record<string, { name: string }> | undefined): string {

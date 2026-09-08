@@ -193,7 +193,8 @@ describe("ZonePicker in play mode: Sync Play button rule", () => {
     const state = sampleState();
     state.players["heos-1"]!.online = false;
     expect(initialSelection({ ...tidalReq, preferred: ["heos:heos-1", "sonos:sonos-gK"] }, state, null)).toEqual(["sonos:sonos-gK"]);
-    expect(initialSelection(tidalReq, state, "heos:heos-1")).toEqual([]);
+    // the active side is offline; Sonos is the only usable room left, so it is pre-selected (UX U2: two taps)
+    expect(initialSelection(tidalReq, state, "heos:heos-1")).toEqual(["sonos:sonos-gK"]);
   });
 });
 
@@ -384,9 +385,10 @@ describe("Now Playing and mini-player during a session", () => {
         { content_ref: { service: "tidal", kind: "track", id: "0" }, title: "So What", subtitle: null, art, index: 0, artist: null, album: null },
         { content_ref: { service: "tidal", kind: "track", id: "1" }, title: "Blue in Green", subtitle: null, art, index: 1, artist: null, album: null },
       ] as Detail["tracks"],
+      truncated: false,
     };
     useLibrary.setState({
-      home: { ...fresh(), data: { recents: { items: [album], needs_link: null, error: null }, playlists: { items: [], needs_link: null, error: null }, favorite_albums: { items: [], needs_link: null, error: null }, stations: { items: [], needs_link: null, error: null } } } as never,
+      home: { ...fresh(), data: { recents: { items: [album], needs_link: [], error: null }, playlists: { items: [], needs_link: [], error: null }, favorite_albums: { items: [], needs_link: [], error: null }, stations: { items: [], needs_link: [], error: null } } } as never,
       details: { "tidal:album:a-1": { ...fresh(), data: detail } } as never,
     });
     useHub.getState().selectSide("heos:heos-1");

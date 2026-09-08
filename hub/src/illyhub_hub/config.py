@@ -87,6 +87,15 @@ class Settings(BaseSettings):
     # Phase 5: Pandora stations, played natively per ecosystem (PRD §3.5)
     fake_pandora: bool = False  # canned stations on the fakes (needs HUB_FAKE_DEVICES=1)
     sonos_pandora_sn: str | None = None  # Sonos account serial for Pandora URIs (manual)
+    # Phase 6: YouTube Music (browse via ytmusicapi with a Google TV-type OAuth client; native
+    # playback on Sonos; HEOS has no YouTube Music source — docs/spikes/ytmusic-heos.md)
+    ytmusic_client_id: str | None = None
+    ytmusic_client_secret: str | None = None
+    fake_ytmusic: bool = False  # canned YouTube Music library (needs HUB_FAKE_DEVICES=1)
+    sonos_ytmusic_sn: str | None = None  # Sonos account serial for YouTube Music (type 72711)
+    sonos_ytmusic_uri: str | None = None  # override the assumed track URI template (LAN run)
+    ytmusic_max_tracks: int = 500  # cap per album/playlist fetch (Container.truncated when hit)
+    ytmusic_max_library_items: int = 1000  # cap on library playlists/albums paged from YouTube
     browse_cache_s: float = 300.0
     history_max_rows: int = 500
     allow_restart: bool = True

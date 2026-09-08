@@ -43,6 +43,7 @@ from .commands import Ack, CommandError, CommandRouter, ErrorEnvelope, resolve_s
 from .content import BrowseItem, ContentRef, NeedsLinkError
 from .history import PlayHistory
 from .logsetup import correlation_id, get_logger
+from .messages import SYNC_UNSUPPORTED_CONTENT
 from .state import NowPlaying, Side, StateStore, SyncState, SyncStatus, vendor_label
 from .tasks import spawn, stop_task
 
@@ -593,9 +594,7 @@ class SyncEngine:
         start_index: int,
     ) -> SyncSession:
         if ref.service != "tidal":
-            raise CommandError(
-                "unsupported_content", "Sync Play works with Tidal albums and playlists.", "sync"
-            )
+            raise CommandError("unsupported_content", SYNC_UNSUPPORTED_CONTENT, "sync")
         try:
             item, tracks = await self._tracks_for(ref)
         except NeedsLinkError as exc:

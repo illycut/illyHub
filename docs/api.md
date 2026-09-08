@@ -279,6 +279,79 @@ carries the canonical Tidal id. Playback on each ecosystem is built from that id
   pages are capped at 50 by Tidal; `next_offset` is null once a page comes back short.
 - `content_ref.id` must match `^[A-Za-z0-9_.:-]+$` (422 otherwise).
 
+## Accounts: YouTube Music (Phase 6)
+
+Same shape and states as Tidal (`AccountStatus`, `LinkStartResponse`), under `/api/auth/ytmusic/`:
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/api/auth/ytmusic/start` | Google device-code flow via `ytmusicapi`. Needs `HUB_YTMUSIC_CLIENT_ID` / `HUB_YTMUSIC_CLIENT_SECRET` (a Google Cloud OAuth client of the *TV and Limited Input* type with the YouTube Data API enabled). Without them: `409 needs_client_config` (an owner task, not a link task) whose message names the env vars; `status.last_error` carries the same sentence and `status.last_error_code == "needs_client_config"`, so the shared Settings row reads "Not connected · Hub setup needed" and the instruction stays in the owner's sheet. Returns `{service, user_code, verification_url, expires_in_s, interval_s}`; the user enters the code at the URL (normally `https://www.google.com/device`). The hub polls in the background, honours `slow_down`, and gives up at `expires_in_s`. |
+| `GET` | `/api/auth/ytmusic/status` | `AccountStatus` with `state` ∈ `linked | pending | restoring | unlinked`. |
+| `POST` | `/api/auth/ytmusic/unlink` | Cancels a pending flow, deletes the token, drops the browse cache. A late approval is never adopted. |
+
+Tokens live in the vault (`{"token": RefreshableTokenDict, "account_name"}`); access tokens are
+refreshed five minutes before expiry (single-flight). A refresh failure unlinks with
+`needs_link` "YouTube Music session expired. Link it again."
+
+## Browse (YouTube Music)
+
+Library-shaped like Tidal (`BrowsePage` / `Container`); ids are YouTube's: `videoId` (tracks),
+album `browseId` (`MPREb_…`), `playlistId` (`PL…`, `LM` for Liked Music).
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/browse/ytmusic/playlists?limit&offset` | The user's library playlists (owned and saved; ytmusicapi does not separate them). |
+| `GET` | `/api/browse/ytmusic/albums?limit&offset` | Library (liked) albums. |
+| `GET` | `/api/browse/ytmusic/album/{browseId}` | Album with tracks (`index`, `album_id`); unavailable tracks dropped; `truncated` when cut. |
+| `GET` | `/api/browse/ytmusic/playlist/{playlistId}` | Playlist with tracks; unavailable tracks are dropped and indexes renumbered. |
+| `GET` | `/api/stream/ytmusic/{videoId}` | Reserved for the HEOS bridge; **501 `not_implemented`** (spike verdict no-go, docs/spikes/ytmusic-heos.md). |
+
+`availability` on every item: `sonos` = the Sonos household has a YouTube Music account
+(service type 72711, or `HUB_SONOS_YTMUSIC_SN`); `heos` is always `false` — HEOS has no YouTube
+Music source. `POST /api/browse/refresh` clears this cache too. Unlinked → `409 needs_link`
+`{service: "ytmusic", message: "YouTube Music is not connected. Link it in Settings."}`.
+
+### `Availability.reasons` and the copy bundle
+
+Every `BrowseItem`, track and history item carries `availability {heos, sonos, reasons}`.
+`reasons[vendor]` is `null` when that vendor can play the item, else:
+
+| reason | meaning | template (`GET /api/meta/messages`) |
+|---|---|---|
+| `unsupported` | the vendor cannot play the service at all (`unsupported_on_vendor`, today HEOS × YouTube Music) | `{service} isn't available on {vendor}.` |
+| `not_linked` | the vendor app lacks the service link | `{side} can't play {service}; link it in the {vendor_app}.` |
+| `not_in_account` | Pandora: the station is not in that vendor's account | `That station isn't in the {vendor} {service} account, so {side} can't play it.` |
+
+The router's messages stay the copy of record; the app uses the reason to pick the sentence
+before a tap. `GET /api/meta/messages` (also `uv run python -m illyhub_hub.messages`) returns
+`{service_label, vendor_label, vendor_app, unsupported_on_vendor, reasons, templates}` so the
+app's copy tests compare against the hub, not against this document.
+
+### Home merge and the `HomeSection` contract
+
+`GET /api/home` merges YouTube Music into the same sections, badge disambiguates (PRD §3.4a):
+`playlists` = Tidal user + favorite playlists + YouTube Music library playlists; `favorite_albums`
+= Tidal favorites + YouTube Music library albums. Each section is one sort: recency of play (hub
+history) first, then title, case-folded; names are not deduped across services.
+
+Every contributing service is guarded on its own, so a single-service household is a supported
+configuration:
+
+```json
+{"items": [...], "needs_link": ["tidal"], "linked": {"tidal": false, "ytmusic": true}, "error": null}
+```
+
+- `needs_link` (list) names the hub-linked services that contribute to the section and are
+  currently unlinked; `[]` when none. Items from every linked service always render.
+- `linked` maps service → `true` (browse ok) | `false` (unlinked) | `null` (browse errored).
+  The stations section keeps its vendor-keyed map (`heos` / `sonos`).
+- `error` is set only when no service produced items and at least one failed.
+
+Album and playlist containers carry `truncated: true` when the service returned more tracks than
+`HUB_YTMUSIC_MAX_TRACKS` (default 500) and the list was cut; library listings page through
+YouTube continuations up to `HUB_YTMUSIC_MAX_LIBRARY_ITEMS` (default 1000). Unavailable tracks
+(`isAvailable: false`) are dropped from albums and playlists alike.
+
 ## Browse (Pandora stations)
 
 Pandora is not linked to the hub. Each ecosystem is linked to Pandora in its own app, and the hub
@@ -325,6 +398,13 @@ hardware**).
   link/unlink scenarios drop the cache immediately.
 
 ## Play
+
+`POST /api/play` accepts `tidal` and `ytmusic` album / playlist / track refs (queue built from
+canonical ids) and `pandora` station refs. A YouTube Music ref on a HEOS target fails that side
+with `not_available_on_side` "YouTube Music isn't available on HEOS." (other sides still play;
+`target: "all"` reports it in `partial`). Sync Play refuses `ytmusic` with `unsupported_content`.
+Services that a vendor cannot play at all are listed in `commands.UNSUPPORTED_ON_VENDOR`.
+
 
 `POST /api/play` `{target, content_ref, start_index = 0}` → **Ack** (`action: "play_content"`,
 or `"play_station"` for a Pandora station).
@@ -560,8 +640,6 @@ accounts). The recents rail greys a vendor whose flag is false. Rows written bef
 natively per ecosystem, PRD §3.5, so there is no hub-side Pandora account to link or unlink).
 The row also carries `linked_by_vendor: {heos, sonos}` (the same `true` / `false` / `null` map as
 the station browse) and `last_error` (an auth fault on either side, e.g. "Sonos: Pandora on Sonos
-needs to be signed in again in the Sonos app", or the latest browse error). `ytmusic` is a
-placeholder until Phase 6.
 
 `POST /api/hub/restart` (requires `X-Illyhub: 1`) → 202 `{restarting: true}`; the process exits
 with code 0 half a second later and launchd's `KeepAlive=true` relaunches it regardless of exit

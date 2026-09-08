@@ -3,7 +3,7 @@ import { LibraryError } from "../hub/library";
 import { jsonResponse } from "@/test/fixtures";
 
 const ref = { service: "tidal" as const, kind: "album" as const, id: "1" };
-const home = (items: unknown[] = []) => ({ recents: [], playlists: { items, needs_link: null }, favorite_albums: { items: [], needs_link: null }, stations: { items: [], needs_link: null } });
+const home = (items: unknown[] = []) => ({ recents: [], playlists: { items, needs_link: [] }, favorite_albums: { items: [], needs_link: [] }, stations: { items: [], needs_link: [] } });
 const item = { content_ref: ref, title: "A", subtitle: null, art: { url: null, accent: null, accent_is_safe: false }, availability: { heos: true, sonos: true } };
 
 function rig(responder: (url: string, init?: RequestInit) => Response | Promise<Response>, timeoutMs = 8000) {

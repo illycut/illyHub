@@ -332,8 +332,13 @@ describe("PlayerChrome", () => {
     );
     const heosRow = within(screen.getByTestId("zone-row-heos:heos-1")).getAllByRole("button")[0]!;
     expect(heosRow).toBeDisabled();
-    expect(heosRow).toHaveTextContent("Not available on HEOS");
+    // Phase 6: the reason is the hub's own sentence for the service (services.ts)
+    expect(heosRow).toHaveTextContent("YouTube Music isn't available on HEOS.");
     const confirm = screen.getByTestId("confirm-play");
+    // the Sonos group is the only room that can play it, so it is pre-selected (UX U2: two taps)
+    expect(confirm).toBeEnabled();
+    expect(confirm).toHaveTextContent("Play on Kitchen + 1");
+    await userEvent.click(within(screen.getByTestId("zone-row-sonos:sonos-gK")).getAllByRole("button")[0]!);
     expect(confirm).toBeDisabled();
     expect(confirm).toHaveTextContent("Choose a room");
     await userEvent.click(within(screen.getByTestId("zone-row-sonos:sonos-gK")).getAllByRole("button")[0]!);

@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChevronLeftIcon, PlayIcon } from "./icons";
@@ -14,22 +14,36 @@ import { useLibrary } from "@/lib/library/store";
 import { useChrome } from "@/lib/ui/chrome";
 import { readLastTarget } from "@/lib/prefs";
 import { refKey, type ContentRef, type TrackItem } from "@/lib/hub/library";
+import { unavailableCopy } from "@/lib/pandora";
+import { SERVICE_LABEL, isHubLinked, roomsOnlyLabel } from "@/lib/services";
+import type { LibraryItem } from "@/lib/hub/library";
 
 export const TRACK_ROW_PX = 56;
 
-/** Copy for a track the chosen side cannot play; null when playable everywhere we know about. */
+/**
+ * Copy for a track the chosen side cannot play; null when playable everywhere we know about. With a
+ * side chosen it is the hub's sentence for that vendor (the same one the picker row shows); with
+ * none it is the neutral one-sided label ("Sonos rooms only", design §13 1.3).
+ */
 export function trackAvailabilityNote(track: TrackItem, sideVendor: "heos" | "sonos" | null): string | null {
-  if (!sideVendor) {
-    if (!track.availability.heos && !track.availability.sonos) return "Not available";
-    if (!track.availability.heos) return "Sonos only";
-    if (!track.availability.sonos) return "HEOS only";
-    return null;
-  }
+  if (!sideVendor) return roomsOnlyLabel(track.availability);
   const ok = sideVendor === "heos" ? track.availability.heos : track.availability.sonos;
-  return ok ? null : `Not available on ${sideVendor === "heos" ? "HEOS" : "Sonos"}`;
+  return ok ? null : unavailableCopy(track.content_ref.service, sideVendor, { availability: track.availability });
 }
 
-const SERVICE_LABEL: Record<string, string> = { tidal: "Tidal", ytmusic: "YouTube Music", pandora: "Pandora" };
+/**
+ * Availability presentation for a track list (UX U1 / S3): when every track shares the container's
+ * one-sided availability, one caption in the header ("Sonos rooms only") and no row notes; when
+ * tracks differ, no header caption and a short non-truncating note only on the rows that differ
+ * from the container. Artists stay on every row either way.
+ */
+export function availabilityLayout(item: LibraryItem | null, tracks: readonly TrackItem[]): { header: string | null; rowNote: (t: TrackItem) => string | null } {
+  const base = item ? roomsOnlyLabel(item.availability) : null;
+  const notes = tracks.map((t) => roomsOnlyLabel(t.availability));
+  const uniform = notes.every((n) => n === (notes[0] ?? null));
+  if (tracks.length > 0 && uniform) return { header: notes[0] ?? base, rowNote: () => null };
+  return { header: tracks.length ? null : base, rowNote: (t) => (roomsOnlyLabel(t.availability) === base ? null : roomsOnlyLabel(t.availability)) };
+}
 
 /** The track now playing on the active side: by id when the hub reports one, else title + artist (UX U10). */
 export function isCurrentTrack(track: TrackItem, np: NowPlaying | null | undefined): boolean {
@@ -59,9 +73,10 @@ export function BrowseDetail({ contentRef }: { contentRef: ContentRef }) {
 
   const detail = entry?.data ?? null;
   const item = detail?.item ?? null;
-  const tracks = detail?.tracks ?? [];
+  const tracks = useMemo(() => detail?.tracks ?? [], [detail]);
   const hero = artUrl(item?.art, 1080);
   const needsLink = entry?.errorCode === "needs_link" ? contentRef.service : null;
+  const layout = useMemo(() => availabilityLayout(item, tracks), [item, tracks]);
 
   const play = useCallback(
     (track?: TrackItem) => {
@@ -93,6 +108,8 @@ export function BrowseDetail({ contentRef }: { contentRef: ContentRef }) {
             {hero ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={hero} alt="" draggable={false} className="aspect-square w-full rounded-art bg-overlay object-cover" data-testid="detail-art" />
+            ) : needsLink ? (
+              <div className="aspect-square w-full rounded-art bg-raised" aria-hidden="true" />
             ) : (
               <ArtSkeleton />
             )}
@@ -103,9 +120,14 @@ export function BrowseDetail({ contentRef }: { contentRef: ContentRef }) {
                 <h1 className="clamp-2 text-title-1 text-primary" data-testid="detail-title">
                   {item.title}
                 </h1>
-                <p className="mt-1 clamp-1 text-caption text-secondary">
-                  {[item.subtitle, item.track_count ? `${item.track_count} tracks` : tracks.length ? `${tracks.length} tracks` : null].filter(Boolean).join(" · ")}
+                <p className="mt-1 clamp-1 text-caption text-secondary" data-testid="detail-meta">
+                  {[item.subtitle, item.track_count ? `${item.track_count} tracks` : tracks.length ? `${tracks.length} tracks` : null, layout.header].filter(Boolean).join(" · ")}
                 </p>
+                {detail?.truncated ? (
+                  <p className="mt-1 text-micro text-tertiary" data-testid="detail-truncated">
+                    Showing the first {tracks.length} tracks.
+                  </p>
+                ) : null}
                 <button
                   type="button"
                   className="mt-4 inline-flex h-target items-center justify-center gap-2 rounded-control bg-overlay px-5 text-body text-primary"
@@ -119,9 +141,11 @@ export function BrowseDetail({ contentRef }: { contentRef: ContentRef }) {
             ) : needsLink ? (
               <div className="flex flex-col gap-3" data-testid="detail-needs-link">
                 <p className="text-body text-secondary">{SERVICE_LABEL[needsLink] ?? needsLink} isn&apos;t connected.</p>
-                <Link href={`/settings?link=${needsLink}`} className="inline-flex h-target items-center justify-center rounded-control bg-overlay px-5 text-body text-primary">
-                  Connect {SERVICE_LABEL[needsLink] ?? needsLink}
-                </Link>
+                {isHubLinked(needsLink) ? (
+                  <Link href={`/settings?link=${needsLink}`} className="inline-flex h-target items-center justify-center rounded-control bg-overlay px-5 text-body text-primary">
+                    Connect {SERVICE_LABEL[needsLink]}
+                  </Link>
+                ) : null}
               </div>
             ) : entry?.error ? (
               <p className="text-body text-error" role="alert">
@@ -142,7 +166,8 @@ export function BrowseDetail({ contentRef }: { contentRef: ContentRef }) {
               testId="track-list"
               rowTestId="track-li"
               render={(t) => {
-                const note = trackAvailabilityNote(t, activeVendor);
+                const note = layout.rowNote(t);
+                const cannot = !!trackAvailabilityNote(t, activeVendor);
                 const current = isCurrentTrack(t, activeNp);
                 return (
                   <button
@@ -158,9 +183,14 @@ export function BrowseDetail({ contentRef }: { contentRef: ContentRef }) {
                       {current ? <PlayIcon size={14} /> : t.index + 1}
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className={`clamp-1 block text-body ${current ? "text-signal" : note ? "text-secondary" : "text-primary"}`}>{t.title}</span>
-                      <span className="clamp-1 block text-caption text-secondary">{note ? note : (t.artist ?? t.subtitle ?? "")}</span>
+                      <span className={`clamp-1 block text-body ${current ? "text-signal" : cannot ? "text-secondary" : "text-primary"}`}>{t.title}</span>
+                      <span className="clamp-1 block text-caption text-secondary">{t.artist ?? t.subtitle ?? ""}</span>
                     </span>
+                    {note ? (
+                      <span className="shrink-0 whitespace-nowrap text-micro text-secondary" data-testid="track-note">
+                        {note}
+                      </span>
+                    ) : null}
                     <span className="numeric shrink-0 text-micro text-tertiary">{t.duration_ms != null ? formatTime(t.duration_ms) : ""}</span>
                   </button>
                 );

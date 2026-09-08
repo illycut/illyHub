@@ -72,6 +72,14 @@ def vendor_label(vendor: str) -> str:
     return VENDOR_LABEL.get(vendor, vendor.title())
 
 
+SERVICE_LABEL: dict[str, str] = {"tidal": "Tidal", "ytmusic": "YouTube Music", "pandora": "Pandora"}
+
+
+def service_label(service: str) -> str:
+    """User-facing name of a streaming service (never the raw id in copy)."""
+    return SERVICE_LABEL.get(service, service.title())
+
+
 ContentKind = Literal["album", "playlist", "track", "station"]
 
 

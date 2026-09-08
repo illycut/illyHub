@@ -17,7 +17,7 @@ const art = { url: "/api/art/aaaaaaaaaaaaaaaaaaaaaaaa", accent: null, accent_is_
 const album: LibraryItem = { content_ref: { service: "tidal", kind: "album", id: "a1" }, title: "Kind of Blue", subtitle: "Miles Davis", art, duration_ms: null, track_count: 9, availability: { heos: true, sonos: true } };
 const playlist: LibraryItem = { content_ref: { service: "ytmusic", kind: "playlist", id: "p1" }, title: "Focus", subtitle: "12 tracks", art, duration_ms: null, track_count: 12, availability: { heos: false, sonos: true } };
 const recent: HistoryItem = { content_ref: album.content_ref, title: album.title, subtitle: album.subtitle, art, last_targets: ["sonos:sonos-gK"], last_played_at: "2026-09-07T00:00:00Z", play_count: 1, availability: null };
-const homeBody = (over: Record<string, unknown> = {}) => ({ recents: [], playlists: { items: [], needs_link: null }, favorite_albums: { items: [], needs_link: null }, stations: { items: [], needs_link: null }, ...over });
+const homeBody = (over: Record<string, unknown> = {}) => ({ recents: [], playlists: { items: [], needs_link: [] }, favorite_albums: { items: [], needs_link: [] }, stations: { items: [], needs_link: [] }, ...over });
 
 function bootHome(responder: (calls: number) => unknown) {
   useHub.getState()._reset();
@@ -85,29 +85,31 @@ describe("RecentsRail", () => {
 });
 
 describe("CardGrid", () => {
-  it("renders connect cards when the section needs a link; YouTube Music is disabled without opacity and reads 'Coming later'", async () => {
+  it("renders connect cards for both hub-linked services when the section needs a link; each routes to its own flow (Phase 6)", async () => {
     const onConnect = vi.fn();
-    render(<CardGrid section={{ items: [], needs_link: "tidal", error: null, linked: null }} loading={false} connect={["tidal", "ytmusic"]} onPlay={() => {}} onDetail={() => {}} onConnect={onConnect} emptyCopy="x" testId="g" />);
+    render(<CardGrid section={{ items: [], needs_link: ["tidal"], error: null, linked: null }} loading={false} connect={["tidal", "ytmusic"]} onPlay={() => {}} onDetail={() => {}} onConnect={onConnect} emptyCopy="x" testId="g" />);
     const cards = screen.getAllByTestId("connect-card");
-    expect(cards.map((c) => c.textContent)).toEqual([expect.stringContaining("Connect Tidal"), expect.stringContaining("Connect YouTube MusicComing in a later phase")]);
+    expect(cards.map((c) => c.textContent)).toEqual(["Connect Tidal", "Connect YouTube Music"]);
     await userEvent.click(cards[0]!);
     expect(onConnect).toHaveBeenCalledWith("tidal");
-    expect(cards[1]).toHaveAttribute("aria-disabled", "true");
-    expect(cards[1]!.className).not.toContain("opacity");
+    await userEvent.click(cards[1]!);
+    expect(onConnect).toHaveBeenCalledWith("ytmusic");
+    expect(cards[1]).not.toHaveAttribute("aria-disabled");
+    expect(cards[1]!.tagName).toBe("BUTTON");
   });
   it("shows skeletons before data, empty copy with no items, and a section error as an alert", () => {
     const { rerender } = render(<CardGrid section={null} loading connect={[]} onPlay={() => {}} onDetail={() => {}} onConnect={() => {}} emptyCopy="Nothing here." testId="g" />);
     expect(document.querySelectorAll("[data-skeleton]").length).toBe(4);
-    rerender(<CardGrid section={{ items: [], needs_link: null, error: null, linked: null }} loading={false} connect={[]} onPlay={() => {}} onDetail={() => {}} onConnect={() => {}} emptyCopy="Nothing here." testId="g" />);
+    rerender(<CardGrid section={{ items: [], needs_link: [], error: null, linked: null }} loading={false} connect={[]} onPlay={() => {}} onDetail={() => {}} onConnect={() => {}} emptyCopy="Nothing here." testId="g" />);
     expect(screen.getByText("Nothing here.")).toBeInTheDocument();
-    rerender(<CardGrid section={{ items: [], needs_link: null, error: "Tidal timed out.", linked: null }} loading={false} connect={[]} onPlay={() => {}} onDetail={() => {}} onConnect={() => {}} emptyCopy="Nothing here." testId="g" />);
+    rerender(<CardGrid section={{ items: [], needs_link: [], error: "Tidal timed out.", linked: null }} loading={false} connect={[]} onPlay={() => {}} onDetail={() => {}} onConnect={() => {}} emptyCopy="Nothing here." testId="g" />);
     expect(screen.getByRole("alert")).toHaveTextContent("Tidal timed out.");
   });
 });
 
 describe("HomeScreen", () => {
   it("loads /api/home, renders rail + grids, stations hidden while empty; tap opens the picker in play mode with history targets; chevron routes to detail; passes axe", async () => {
-    const fetcher = bootHome(() => homeBody({ recents: [recent], playlists: { items: [playlist], needs_link: null }, favorite_albums: { items: [album], needs_link: null } }));
+    const fetcher = bootHome(() => homeBody({ recents: [recent], playlists: { items: [playlist], needs_link: [] }, favorite_albums: { items: [album], needs_link: [] } }));
     const { container } = render(<HomeScreen />);
     await waitFor(() => expect(screen.getByTestId("recents-rail")).toBeInTheDocument());
     expect(fetcher.mock.calls.some((c) => String(c[0]).includes("/api/home"))).toBe(true);
@@ -127,11 +129,18 @@ describe("HomeScreen", () => {
   });
 
   it("needs_link sections show connect cards that route to Settings with the service", async () => {
-    bootHome(() => homeBody({ playlists: { items: [], needs_link: "tidal" }, favorite_albums: { items: [], needs_link: "tidal" } }));
+    // both grids report both services unlinked; the screen still shows each card once, in the first grid
+    bootHome(() => homeBody({ playlists: { items: [], needs_link: ["tidal", "ytmusic"], linked: { tidal: false, ytmusic: false } }, favorite_albums: { items: [], needs_link: ["tidal", "ytmusic"], linked: { tidal: false, ytmusic: false } } }));
     render(<HomeScreen />);
-    await waitFor(() => expect(screen.getAllByTestId("connect-card").length).toBe(3));
+    // one card per unlinked hub-linked service, once per screen (in the first grid), never a duplicate across grids (B2)
+    await waitFor(() => expect(screen.getAllByTestId("connect-card").length).toBe(2));
+    expect(screen.getAllByTestId("connect-card").map((c) => c.textContent)).toEqual(["Connect Tidal", "Connect YouTube Music"]);
+    expect(within(screen.getByTestId("playlists-grid")).getAllByTestId("connect-card")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Connect YouTube Music" })).toBeInTheDocument();
     await userEvent.click(screen.getAllByTestId("connect-card")[0]!);
     expect(push).toHaveBeenCalledWith("/settings?link=tidal");
+    await userEvent.click(screen.getAllByTestId("connect-card")[1]!);
+    expect(push).toHaveBeenCalledWith("/settings?link=ytmusic");
     expect(screen.getByText("Play something and it lands here.")).toBeInTheDocument();
   });
 

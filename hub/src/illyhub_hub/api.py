@@ -37,11 +37,13 @@ from .art import (
 )
 from .auth.tidal import SessionFactory, TidalAuth, default_session_factory
 from .auth.vault import Vault, VaultError, open_vault
+from .auth.ytmusic import ClientFactory, CredentialsFactory, YTMusicAuth
+from .auth.ytmusic import default_client_factory as default_ytmusic_client_factory
+from .auth.ytmusic import default_credentials_factory as default_ytmusic_credentials_factory
 from .coalesce import Coalescer
 from .commands import Ack, CommandError, CommandRouter, ErrorEnvelope, http_status
 from .config import Settings, Vendor
 from .content import (
-    Availability,
     BrowseItem,
     BrowsePage,
     Container,
@@ -52,10 +54,12 @@ from .content import (
 from .discovery import DiscoveredDevice, DiscoveryService, Registry, SearchFn
 from .history import HistoryItem, PlayHistory
 from .logsetup import correlation_id, get_logger
+from .messages import export as messages_export
 from .services.pandora import PAGE_MAX as STATIONS_PAGE_MAX
 from .services.pandora import PandoraService
 from .services.tidal import FakeTidalCatalog, TidalCatalog, TidalService
-from .state import ConnectionStatus, Player, Side, StateStore, SyncState, Zone
+from .services.ytmusic import FakeYTMusicCatalog, YTMusicCatalog
+from .state import ConnectionStatus, Player, Side, StateStore, SyncState, Zone, service_label
 from .static import StaticMounts, mount_static
 from .sync import SyncConfig, SyncEngine, SyncReport, SyncSessionSummary
 from .tasks import spawn
@@ -167,6 +171,10 @@ class AccountStatus(BaseModel):
     expires_at: str | None = None
     pending: dict[str, Any] | None = None
     last_error: str | None = None
+    # Machine-readable companion to last_error: "needs_client_config" when the hub owner must add
+    # OAuth client credentials (the app renders "Hub setup needed" and keeps the env-var text for
+    # the owner's sheet).
+    last_error_code: str | None = None
     # Per-ecosystem services (Pandora): true = browse succeeded there, false = not linked /
     # auth fault, null = vendor absent or its browse errored / not asked yet.
     linked_by_vendor: dict[str, bool | None] | None = None
@@ -178,12 +186,28 @@ class HistoryResponse(BaseModel):
 
 class HomeSection(BaseModel):
     items: list[BrowseItem] = Field(default_factory=list)
-    needs_link: str | None = Field(default=None, description="service to link, e.g. 'tidal'")
+    needs_link: list[str] = Field(
+        default_factory=list,
+        description=(
+            "hub-linked services that contribute to this section and are currently unlinked "
+            "(e.g. ['tidal']); items from every linked service still render"
+        ),
+    )
     error: str | None = Field(default=None, description="section failed; others still render")
     linked: dict[str, bool | None] | None = Field(
         default=None,
-        description="per-ecosystem services (stations): vendor -> true | false | null (unknown)",
+        description=(
+            "per-source linkage: library sections map service -> true | false | null (browse "
+            "errored); the stations section maps vendor -> true | false | null (unknown)"
+        ),
     )
+
+
+class ErrorBody(BaseModel):
+    """Bare error envelope shape (non-command routes) for OpenAPI ``responses``."""
+
+    code: str
+    message: str
 
 
 class HomeResponse(BaseModel):
@@ -265,6 +289,9 @@ class HubRuntime:
     tidal_auth: TidalAuth | None = None
     tidal: TidalService | None = None
     fake_tidal: FakeTidalCatalog | None = None
+    ytmusic_auth: YTMusicAuth | None = None
+    ytmusic: TidalService | None = None  # same facade, service="ytmusic"
+    fake_ytmusic: FakeYTMusicCatalog | None = None
     pandora: PandoraService | None = None
     history: PlayHistory | None = None
     sync: SyncEngine | None = None
@@ -285,6 +312,8 @@ class HubRuntime:
         if self.tidal_auth is not None and self.fake_tidal is None:
             # Token validation is a network call; never block startup on it.
             spawn(self.tidal_auth.restore(), self._tasks)
+        if self.ytmusic_auth is not None and self.fake_ytmusic is None:
+            spawn(self.ytmusic_auth.restore(), self._tasks)
         # Discovery runs in the background so uvicorn serves immediately instead of waiting
         # out the SSDP window.
         await self.discovery.start()
@@ -309,6 +338,8 @@ class HubRuntime:
             await self.art.stop()
         if self.tidal_auth is not None:
             await self.tidal_auth.aclose()
+        if self.ytmusic_auth is not None:
+            await self.ytmusic_auth.aclose()
         from .tasks import cancel_all
 
         await cancel_all(self._tasks)
@@ -348,6 +379,8 @@ def build_runtime(
     sonos_snapshot: Callable[[], Any] | None = None,
     art_transport: Any | None = None,
     tidal_session_factory: SessionFactory | None = None,
+    ytmusic_credentials_factory: CredentialsFactory | None = None,
+    ytmusic_client_factory: ClientFactory | None = None,
 ) -> HubRuntime:
     """Wire adapters from settings. Fakes when ``HUB_FAKE_DEVICES=1``, else real adapters.
 
@@ -364,6 +397,13 @@ def build_runtime(
     art = ArtHelper(art_cache)
     vault, vault_error = _open_vault_or_memory(settings)
     tidal_auth = TidalAuth(vault, factory=tidal_session_factory or default_session_factory)
+    ytmusic_auth = YTMusicAuth(
+        vault,
+        client_id=settings.ytmusic_client_id,
+        client_secret=settings.ytmusic_client_secret,
+        credentials_factory=ytmusic_credentials_factory or default_ytmusic_credentials_factory,
+        client_factory=ytmusic_client_factory or default_ytmusic_client_factory,
+    )
     history = PlayHistory(settings.history_path, max_rows=settings.history_max_rows)
     if settings.fake_devices:
         fakes = FakeBundle(store, tick_interval_s=settings.position_poll_s, art=art)
@@ -385,6 +425,20 @@ def build_runtime(
             )
         else:
             tidal = _real_tidal_service(settings, router, tidal_auth, art)
+        fake_yt: FakeYTMusicCatalog | None = None
+        if settings.fake_ytmusic:
+            fake_yt = FakeYTMusicCatalog(art)
+            fakes.on_ytmusic_link = lambda linked: setattr(fake_yt, "linked", linked)
+            ytmusic = TidalService(
+                fake_yt,
+                is_linked=lambda: fake_yt.linked,
+                availability=lambda: router.service_availability("ytmusic"),
+                cache_ttl_s=settings.browse_cache_s,
+                service="ytmusic",
+            )
+        else:
+            fakes.set_ytmusic_linked(False)  # no canned library: Sonos side has no account
+            ytmusic = _real_ytmusic_service(settings, router, ytmusic_auth, art)
         fakes.pandora_enabled = settings.fake_pandora
         pandora = _pandora_service(settings, router, art)
         fakes.on_pandora_link = lambda: pandora.refresh()  # link state changed: cache is stale
@@ -400,6 +454,9 @@ def build_runtime(
             tidal_auth=tidal_auth,
             tidal=tidal,
             fake_tidal=fake_catalog,
+            ytmusic_auth=ytmusic_auth,
+            ytmusic=ytmusic,
+            fake_ytmusic=fake_yt,
             pandora=pandora,
             history=history,
             sync=_sync_engine(settings, store, router, tidal, history),
@@ -442,6 +499,8 @@ def build_runtime(
         vault=vault,
         tidal_auth=tidal_auth,
         tidal=tidal,
+        ytmusic_auth=ytmusic_auth,
+        ytmusic=_real_ytmusic_service(settings, router, ytmusic_auth, art),
         pandora=_pandora_service(settings, router, art),
         history=history,
         sync=_sync_engine(settings, store, router, tidal, history),
@@ -513,6 +572,25 @@ def _real_tidal_service(
         availability=lambda: router.service_availability("tidal"),
         cache_ttl_s=settings.browse_cache_s,
         before=auth.ensure_fresh,
+    )
+
+
+def _real_ytmusic_service(
+    settings: Settings, router: CommandRouter, auth: YTMusicAuth, art: ArtHelper
+) -> TidalService:
+    catalog = YTMusicCatalog(
+        auth.client_or_raise,
+        art,
+        max_tracks=settings.ytmusic_max_tracks,
+        max_library_items=settings.ytmusic_max_library_items,
+    )
+    return TidalService(
+        catalog,
+        is_linked=lambda: auth.linked,
+        availability=lambda: router.service_availability("ytmusic"),
+        cache_ttl_s=settings.browse_cache_s,
+        before=auth.ensure_fresh,
+        service="ytmusic",
     )
 
 
@@ -717,7 +795,7 @@ def create_app(
     async def _needs_link(_request: Request, exc: NeedsLinkError) -> JSONResponse:
         return JSONResponse(
             status_code=409,
-            content={"code": "needs_link", "message": exc.message, "service": exc.service},
+            content={"code": exc.code, "message": exc.message, "service": exc.service},
         )
 
     @app.exception_handler(ContentNotFoundError)
@@ -859,6 +937,13 @@ def create_app(
         assert variant.path is not None  # a non-fallback variant is always file-backed
         return FileResponse(variant.path, media_type=variant.media_type, headers=headers)
 
+    # -- copy bundle for the app (Phase 6) ----------------------------------------------
+
+    @app.get("/api/meta/messages", tags=["meta"])
+    async def meta_messages() -> dict[str, Any]:
+        """Labels, unsupported pairs and message templates the app's copy tests read."""
+        return messages_export()
+
     # -- auth (Phase 3) -------------------------------------------------------------
 
     def _auth() -> TidalAuth:
@@ -876,6 +961,35 @@ def create_app(
     def _pandora() -> PandoraService:
         assert runtime.pandora is not None
         return runtime.pandora
+
+    def _yt_auth() -> YTMusicAuth:
+        assert runtime.ytmusic_auth is not None
+        return runtime.ytmusic_auth
+
+    def _ytmusic() -> TidalService:
+        assert runtime.ytmusic is not None
+        return runtime.ytmusic
+
+    def _ytmusic_account() -> AccountStatus:
+        if runtime.fake_ytmusic is not None and runtime.fakes is not None:
+            fakes = runtime.fakes
+            state = fakes.ytmusic_state
+            return AccountStatus(
+                service="ytmusic",
+                linked=fakes.ytmusic_linked,
+                state=state,  # type: ignore[arg-type]
+                account_name="fake@ytmusic" if fakes.ytmusic_linked else None,
+                pending=(
+                    {"user_code": "FAKE-YT-1", "verification_url": "https://www.google.com/device"}
+                    if state == "pending"
+                    else None
+                ),
+                last_error=runtime.vault_error,
+            )
+        status = AccountStatus(**_yt_auth().status())
+        if runtime.vault_error and not status.last_error:
+            status.last_error = runtime.vault_error
+        return status
 
     def _pandora_account() -> AccountStatus:
         """Pandora is linked per ecosystem; ``linked`` is "either vendor reports an account",
@@ -964,6 +1078,72 @@ def create_app(
             ContentRef(service="tidal", kind="playlist", id=playlist_id)
         )
 
+    # -- YouTube Music (Phase 6) ---------------------------------------------------------
+
+    @app.post("/api/auth/ytmusic/start", response_model=LinkStartResponse, tags=["auth"])
+    async def ytmusic_link_start() -> JSONResponse:
+        if runtime.fake_ytmusic is not None and runtime.fakes is not None:
+            runtime.fakes.start_fake_ytmusic_link()
+            return JSONResponse(
+                content=LinkStartResponse(
+                    service="ytmusic",
+                    user_code="FAKE-YT-1",
+                    verification_url="https://www.google.com/device",
+                    expires_in_s=1800,
+                    interval_s=5.0,
+                ).model_dump()
+            )
+        return JSONResponse(content=(await _yt_auth().start_link()))
+
+    @app.get("/api/auth/ytmusic/status", response_model=AccountStatus, tags=["auth"])
+    async def ytmusic_link_status() -> AccountStatus:
+        return _ytmusic_account()
+
+    @app.post("/api/auth/ytmusic/unlink", response_model=AccountStatus, tags=["auth"])
+    async def ytmusic_unlink() -> AccountStatus:
+        if runtime.fake_ytmusic is not None and runtime.fakes is not None:
+            runtime.fakes.set_ytmusic_linked(False)
+        else:
+            await _yt_auth().unlink()
+        _ytmusic().refresh()
+        return _ytmusic_account()
+
+    @app.get("/api/browse/ytmusic/playlists", response_model=BrowsePage, tags=["browse"])
+    async def ytmusic_playlists(limit: int = 50, offset: int = 0) -> BrowsePage:
+        """The user's library playlists (owned and saved; ytmusicapi does not separate them)."""
+        return await _ytmusic().user_playlists(limit, offset)
+
+    @app.get("/api/browse/ytmusic/albums", response_model=BrowsePage, tags=["browse"])
+    async def ytmusic_albums(limit: int = 50, offset: int = 0) -> BrowsePage:
+        """Library (liked) albums."""
+        return await _ytmusic().favorite_albums(limit, offset)
+
+    @app.get("/api/browse/ytmusic/album/{album_id}", response_model=Container, tags=["browse"])
+    async def ytmusic_album(album_id: str) -> Container:
+        return await _ytmusic().container(ContentRef(service="ytmusic", kind="album", id=album_id))
+
+    @app.get(
+        "/api/browse/ytmusic/playlist/{playlist_id}", response_model=Container, tags=["browse"]
+    )
+    async def ytmusic_playlist(playlist_id: str) -> Container:
+        return await _ytmusic().container(
+            ContentRef(service="ytmusic", kind="playlist", id=playlist_id)
+        )
+
+    @app.get(
+        "/api/stream/ytmusic/{video_id}",
+        tags=["browse"],
+        responses={501: {"model": ErrorBody, "description": "HEOS bridge not implemented"}},
+    )
+    async def ytmusic_stream(video_id: str) -> JSONResponse:
+        """Reserved for the HEOS yt-dlp bridge (ai-dev #67). The spike verdict is no-go for now:
+        docs/spikes/ytmusic-heos.md. HEOS sides report YouTube Music as unavailable."""
+        return _envelope(
+            501,
+            "not_implemented",
+            "YouTube Music on HEOS is not implemented; see docs/spikes/ytmusic-heos.md.",
+        )
+
     @app.get("/api/browse/pandora/stations", response_model=BrowsePage, tags=["browse"])
     async def pandora_stations() -> BrowsePage:
         """Merged station list (PAN-3): one item per station name, ``availability`` per side."""
@@ -979,7 +1159,9 @@ def create_app(
 
     @app.post("/api/browse/refresh", response_model=RefreshResponse, tags=["browse"])
     async def browse_refresh() -> RefreshResponse:
-        return RefreshResponse(cleared=_tidal().refresh() + _pandora().refresh())
+        return RefreshResponse(
+            cleared=_tidal().refresh() + _ytmusic().refresh() + _pandora().refresh()
+        )
 
     # -- play by canonical id (Phase 3) ---------------------------------------------
 
@@ -1010,11 +1192,15 @@ def create_app(
                     availability=station.availability,
                 )
             return _respond(ack)
-        if ref.service != "tidal":
+        if ref.service == "tidal":
+            library = _tidal()
+        elif ref.service == "ytmusic":
+            library = _ytmusic()
+        else:
             raise NeedsLinkError(
-                ref.service, f"{ref.service.title()} playback lands in a later phase."
+                ref.service, f"{service_label(ref.service)} playback lands in a later phase."
             )
-        item, tracks = await _tidal().tracks_for(ref)
+        item, tracks = await library.tracks_for(ref)
         ack = await router.play_content(
             body.target,
             ref,
@@ -1090,26 +1276,82 @@ def create_app(
         from what the hub knows now (Tidal: which vendor apps have Tidal linked; stations: the
         current merged station map), so the recents rail greys a vendor that lost the item."""
         tidal_avail = router.service_availability("tidal")
+        yt_avail = router.service_availability("ytmusic")
         for it in items:
             ref = it.content_ref
             if ref.service == "tidal":
                 it.availability = tidal_avail
+            elif ref.service == "ytmusic":
+                it.availability = yt_avail
             elif ref.service == "pandora" and ref.kind == "station":
                 by_vendor = _pandora().vendor_stations(ref)
                 if by_vendor:
-                    it.availability = Availability(
-                        heos="heos" in by_vendor, sonos="sonos" in by_vendor
-                    )
+                    it.availability = _pandora().station_availability_for(by_vendor)
         return items
 
     async def _section(loader: Callable[[], Awaitable[list[BrowseItem]]]) -> HomeSection:
         try:
             return HomeSection(items=await loader())
         except NeedsLinkError as exc:
-            return HomeSection(needs_link=exc.service)
+            return HomeSection(needs_link=[exc.service])
         except Exception as exc:  # noqa: BLE001 - one broken section must not sink the home call
             log.exception("home section failed")
             return HomeSection(error=f"{exc.__class__.__name__}: {exc}")
+
+    async def _library_section(
+        sources: list[tuple[str, TidalService, Callable[[], Awaitable[list[BrowseItem]]]]],
+        last_played: dict[str, Any],
+    ) -> HomeSection:
+        """Merge one home section from several hub-linked library services (Tidal, YouTube
+        Music). Every service is guarded on its own: an unlinked one lands in ``needs_link``, a
+        failing one lands as ``linked[service] = null`` with the error, and items from every
+        working service always render — a single-service household is a launch configuration."""
+        items: list[BrowseItem] = []
+        linked: dict[str, bool | None] = {}
+        needs_link: list[str] = []
+        errors: list[str] = []
+        for name, svc, loader in sources:
+            if not svc.linked:
+                linked[name] = False
+                needs_link.append(name)
+                continue
+            try:
+                items.extend(await loader())
+                linked[name] = True
+            except NeedsLinkError:
+                linked[name] = False
+                needs_link.append(name)
+            except Exception as exc:  # noqa: BLE001 - one service must not sink the section
+                log.warning(
+                    "home: library source failed",
+                    extra={"extra": {"service": name, "error": str(exc)}},
+                )
+                linked[name] = None
+                errors.append(f"{service_label(name)}: {exc.__class__.__name__}: {exc}")
+        seen: set[str] = set()
+        merged: list[BrowseItem] = []
+        for it in items:
+            if it.content_ref.key in seen:
+                continue
+            seen.add(it.content_ref.key)
+            merged.append(it)
+        # Recency of play first (hub history), then alphabetical. Names are not deduped across
+        # services; the badge disambiguates (PRD §3.4a).
+        merged.sort(
+            key=lambda it: (
+                0 if it.content_ref.key in last_played else 1,
+                -(last_played[it.content_ref.key].timestamp())
+                if it.content_ref.key in last_played
+                else 0,
+                it.title.casefold(),
+            )
+        )
+        return HomeSection(
+            items=merged,
+            needs_link=needs_link,
+            linked=linked,
+            error="; ".join(errors) if errors and not merged else None,
+        )
 
     async def _stations_section() -> HomeSection:
         section = await _section(_pandora().stations)
@@ -1125,36 +1367,33 @@ def create_app(
         stations_section = await _stations_section()  # first: warms the station map for recents
         recents = _with_live_availability(recents)
 
-        async def playlists() -> list[BrowseItem]:
+        ytmusic = _ytmusic()
+
+        async def tidal_playlists() -> list[BrowseItem]:
             mine = (await tidal.user_playlists(100, 0)).items
             favs = (await tidal.favorite_playlists(100, 0)).items
-            seen: set[str] = set()
-            merged: list[BrowseItem] = []
-            for it in [*mine, *favs]:
-                if it.content_ref.key in seen:
-                    continue
-                seen.add(it.content_ref.key)
-                merged.append(it)
-            # Recency of play first (hub history), then alphabetical. Names are not deduped
-            # across services; the badge disambiguates (PRD §3.4a).
-            merged.sort(
-                key=lambda it: (
-                    0 if it.content_ref.key in last_played else 1,
-                    -(last_played[it.content_ref.key].timestamp())
-                    if it.content_ref.key in last_played
-                    else 0,
-                    it.title.casefold(),
-                )
-            )
-            return merged
+            return [*mine, *favs]
 
-        async def albums() -> list[BrowseItem]:
+        async def yt_playlists() -> list[BrowseItem]:
+            return (await ytmusic.user_playlists(100, 0)).items
+
+        async def tidal_albums() -> list[BrowseItem]:
             return (await tidal.favorite_albums(100, 0)).items
+
+        async def yt_albums() -> list[BrowseItem]:
+            return (await ytmusic.favorite_albums(100, 0)).items
+
+        playlists_section = await _library_section(
+            [("tidal", tidal, tidal_playlists), ("ytmusic", ytmusic, yt_playlists)], last_played
+        )
+        albums_section = await _library_section(
+            [("tidal", tidal, tidal_albums), ("ytmusic", ytmusic, yt_albums)], last_played
+        )
 
         response = HomeResponse(
             recents=recents,
-            playlists=await _section(playlists),
-            favorite_albums=await _section(albums),
+            playlists=playlists_section,
+            favorite_albums=albums_section,
             stations=stations_section,
         )
         log.info(
@@ -1178,7 +1417,7 @@ def create_app(
                 )
         accounts = [
             _tidal_account(),
-            AccountStatus(service="ytmusic", linked=False),
+            _ytmusic_account(),
             _pandora_account(),
             AccountStatus(service="heos_account", linked=heos_linked, account_name=heos_name),
         ]

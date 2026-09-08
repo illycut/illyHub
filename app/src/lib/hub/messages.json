@@ -1,0 +1,36 @@
+{
+  "reasons": [
+    "unsupported",
+    "not_linked",
+    "not_in_account"
+  ],
+  "service_label": {
+    "pandora": "Pandora",
+    "tidal": "Tidal",
+    "ytmusic": "YouTube Music"
+  },
+  "templates": {
+    "not_available": {
+      "auth_fault": "{side} can't reach {service} right now; sign in again in the {vendor_app}.",
+      "not_in_account": "That station isn't in the {vendor} {service} account, so {side} can't play it.",
+      "not_linked": "{side} can't play {service}; link it in the {vendor_app}.",
+      "unsupported": "{service} isn't available on {vendor}."
+    },
+    "pandora_concurrent": "Pandora usually allows one stream per account; the other room may pause.",
+    "sync_unsupported_content": "Sync Play works with Tidal content."
+  },
+  "unsupported_on_vendor": [
+    [
+      "heos",
+      "ytmusic"
+    ]
+  ],
+  "vendor_app": {
+    "heos": "HEOS app",
+    "sonos": "Sonos app"
+  },
+  "vendor_label": {
+    "heos": "HEOS",
+    "sonos": "Sonos"
+  }
+}

@@ -6,6 +6,7 @@ import { expect, test, type Page } from "@playwright/test";
  */
 async function ensureLinked(page: Page) {
   await page.request.post("/api/dev/fake/link_tidal");
+  await page.request.post("/api/dev/fake/link_ytmusic");
 }
 
 /** Select a side row in the play-mode picker without toggling it off if it is already pre-highlighted (Decision 4). */
@@ -24,8 +25,11 @@ test("home renders the playlists, albums and Pandora stations grids from the can
   await page.goto("/");
   await expect(page.getByTestId("home")).toBeVisible();
   await expect(page.getByTestId("playlists-grid").getByTestId("grid-card").first()).toBeVisible();
-  await expect(page.getByTestId("albums-grid").getByTestId("grid-card")).toHaveCount(6);
-  await expect(page.getByTestId("playlists-grid").getByTestId("grid-card")).toHaveCount(4);
+  // canned libraries: Tidal 6 albums + 4 playlists, YouTube Music 3 albums + 3 playlists (Phase 6, merged with badges)
+  await expect(page.getByTestId("albums-grid").getByTestId("grid-card")).toHaveCount(9);
+  await expect(page.getByTestId("playlists-grid").getByTestId("grid-card")).toHaveCount(7);
+  await expect(page.getByTestId("albums-grid").getByRole("img", { name: "YouTube Music" })).toHaveCount(3);
+  await expect(page.getByTestId("albums-grid").getByRole("img", { name: "Tidal" })).toHaveCount(6);
   // Phase 5: the fake hub runs with HUB_FAKE_PANDORA=1, so the stations section is present
   await expect(page.getByTestId("stations-section").getByTestId("grid-card").first()).toBeVisible();
   // every card carries a service badge chip

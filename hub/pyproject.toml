@@ -22,6 +22,8 @@ dependencies = [
     # the newest release with a CPython x86_64 macOS wheel, so anything above it forces a
     # source build needing OpenSSL 3 + Rust on the deployment target.
     "cryptography>=42,<43",
+    "ytmusicapi>=1.10,<2"
+
 ]
 
 [project.scripts]

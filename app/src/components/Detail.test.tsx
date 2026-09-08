@@ -75,9 +75,12 @@ describe("VirtualList", () => {
 describe("track helpers", () => {
   it("availability note names the side that cannot play, or the only side that can when none is chosen", () => {
     expect(trackAvailabilityNote(track(0), "heos")).toBeNull();
-    expect(trackAvailabilityNote(track(0, { availability: { heos: false, sonos: true } }), "heos")).toBe("Not available on HEOS");
-    expect(trackAvailabilityNote(track(0, { availability: { heos: false, sonos: true } }), null)).toBe("Sonos only");
-    expect(trackAvailabilityNote(track(0, { availability: { heos: true, sonos: false } }), null)).toBe("HEOS only");
+    // one sentence form per service (S4); the hub's reason picks it when present
+    expect(trackAvailabilityNote(track(0, { availability: { heos: false, sonos: true } }), "heos")).toBe("Tidal is set up in the HEOS app.");
+    expect(trackAvailabilityNote(track(0, { availability: { heos: false, sonos: true, reasons: { heos: "not_linked", sonos: null } } }), "heos")).toBe("Tidal is set up in the HEOS app.");
+    // one phrasing for the neutral form everywhere: "Sonos rooms only" (UX U1)
+    expect(trackAvailabilityNote(track(0, { availability: { heos: false, sonos: true } }), null)).toBe("Sonos rooms only");
+    expect(trackAvailabilityNote(track(0, { availability: { heos: true, sonos: false } }), null)).toBe("HEOS rooms only");
     expect(trackAvailabilityNote(track(0, { availability: { heos: false, sonos: false } }), null)).toBe("Not available");
   });
   it("current track matches by id when the hub reports one, else by title and artist (U10)", () => {
@@ -105,7 +108,13 @@ describe("BrowseDetail", () => {
     const rows = screen.getAllByTestId("track-row");
     expect(rows).toHaveLength(3);
     expect(rows[0]).toHaveTextContent("6"); // hub index 5 -> displayed 6
-    expect(rows[1]).toHaveTextContent("Not available on HEOS");
+    // mixed list: the one differing row carries a short non-truncating note and keeps its artist; no header caption
+    expect(rows[1]).toHaveTextContent("Sonos rooms only");
+    expect(rows[1]).toHaveTextContent("Miles Davis");
+    expect(within(rows[1]!).getByTestId("track-note").className).toContain("whitespace-nowrap");
+    expect(within(rows[1]!).getByText("Track 2").className).toContain("text-secondary");
+    expect(screen.queryAllByTestId("track-note")).toHaveLength(1);
+    expect(screen.getByTestId("detail-meta")).not.toHaveTextContent("rooms only");
     expect(rows[0]).toHaveTextContent("3:20");
     expect(screen.getAllByTestId("track-li")[0]!.style.height).toBe(`${TRACK_ROW_PX}px`);
     expect(rows[2]).toHaveAttribute("aria-current", "true");

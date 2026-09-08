@@ -275,6 +275,22 @@ assumed tree shapes live in `docs/spikes/pandora-refs.md`. Short form:
       starts (the ack carries a `pandora_concurrent` warning either way).
 - [ ] Record results on ai-dev #61 / #62 and correct the spike doc.
 
+### YouTube Music (Phase 6) on the LAN
+
+- [ ] Create the Google OAuth client (TV and Limited Input type, YouTube Data API v3 enabled) and
+      put its id/secret in `hub/.env` (`HUB_YTMUSIC_CLIENT_ID`, `HUB_YTMUSIC_CLIENT_SECRET`);
+      restart. Settings → Accounts → YouTube Music must no longer show the "needs a Google
+      OAuth client" line.
+- [ ] Link from the app: code + google.com/device → `GET /api/auth/ytmusic/status` reaches
+      `linked` with your account name.
+- [ ] `curl -s http://SONOS_IP:1400/status/accounts | grep 72711` shows a serial; browse items
+      report `availability.sonos: true`. If not, set `HUB_SONOS_YTMUSIC_SN`.
+- [ ] Play an album on a Sonos room from the app. Silence or "unable to play" means the URI
+      template is wrong: follow docs/spikes/ytmusic-sonos.md (try `HUB_SONOS_YTMUSIC_URI`
+      alternatives) and record what worked in an illyHub issue.
+- [ ] A HEOS room is disabled in the picker with "YouTube Music isn't available on HEOS."
+      (expected; docs/spikes/ytmusic-heos.md).
+
 ### Sync Play (Phase 4) on the LAN
 
 Sync Play has only ever run against the fakes. First real run, in this order:
