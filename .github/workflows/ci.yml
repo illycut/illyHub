@@ -27,9 +27,6 @@ env:
 
 jobs:
   hub:
-    env:
-      # The fake hub writes art cache, history, vault and sync logs here; keep them out of the checkout.
-      HUB_DATA_DIR: ${{ runner.temp }}/illyhub-data
     name: hub (ruff, pytest, coverage gate)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -51,6 +48,9 @@ jobs:
       - name: Format check
         run: uv run ruff format --check src tests
       - name: Tests with coverage gate (fail_under in pyproject)
+        env:
+          # The fake hub writes art cache, history, vault and sync logs here; keep them out of the checkout.
+          HUB_DATA_DIR: ${{ runner.temp }}/illyhub-data
         run: uv run pytest -q --cov=illyhub_hub --cov-report=xml --cov-report=term
       - uses: actions/upload-artifact@v4
         if: always()
@@ -60,9 +60,6 @@ jobs:
           if-no-files-found: ignore
 
   app:
-    env:
-      # The fake hub writes art cache, history, vault and sync logs here; keep them out of the checkout.
-      HUB_DATA_DIR: ${{ runner.temp }}/illyhub-data
     name: app (tsc, eslint, vitest, build)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -93,9 +90,6 @@ jobs:
           if-no-files-found: ignore
 
   e2e:
-    env:
-      # The fake hub writes art cache, history, vault and sync logs here; keep them out of the checkout.
-      HUB_DATA_DIR: ${{ runner.temp }}/illyhub-data
     name: e2e (Playwright, WebKit + Chromium, fake hub)
     runs-on: ubuntu-latest
     needs: [hub, app]
@@ -126,6 +120,8 @@ jobs:
       # (HUB_FAKE_* + HUB_AIRPLAY_ENABLED=1); CI=true disables reuseExistingServer.
       - name: Playwright
         working-directory: app
+        env:
+          HUB_DATA_DIR: ${{ runner.temp }}/illyhub-data
         run: npx playwright test
       - uses: actions/upload-artifact@v4
         if: failure()
