@@ -32,7 +32,13 @@ status running "update started"
 cd "$REPO" || { status failed "checkout not found at $REPO"; exit 2; }
 
 # Run the git/uv/npm work as the checkout's owner so a root daemon never leaves root-owned files.
-OWNER="$(stat -f %Su "$REPO" 2>/dev/null || stat -c %U "$REPO" 2>/dev/null || id -un)"
+# BSD stat (macOS) takes -f %Su; GNU stat (Linux) treats -f as filesystem mode and prints block
+# data instead of failing, so pick the form by platform rather than by fallback.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  OWNER="$(stat -f %Su "$REPO" 2>/dev/null || id -un)"
+else
+  OWNER="$(stat -c %U "$REPO" 2>/dev/null || id -un)"
+fi
 if [[ "$(id -un)" != "$OWNER" ]] && command -v sudo >/dev/null 2>&1; then
   AS_OWNER=(sudo -u "$OWNER" -H env "PATH=$PATH")
 else
