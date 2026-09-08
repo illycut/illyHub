@@ -126,6 +126,20 @@ to the ack. Sync Play refuses stations. Endpoints: `GET /api/browse/pandora/stat
 Offline dev: `HUB_FAKE_DEVICES=1 HUB_FAKE_TIDAL=1 HUB_FAKE_PANDORA=1 uv run hub`; scenarios
 `link_pandora` / `unlink_pandora` (`?vendor=heos|sonos`) and `station_track_change`.
 
+## Phase 6: YouTube Music
+
+- `auth/ytmusic.py`: Google device-code OAuth through `ytmusicapi` (`HUB_YTMUSIC_CLIENT_ID` /
+  `HUB_YTMUSIC_CLIENT_SECRET` required; the settings row tells the user when they are missing).
+- `services/ytmusic.py`: `YTMusicCatalog` behind the same `TidalService` facade
+  (`service="ytmusic"`): library playlists and albums, album/playlist tracks, single tracks.
+- Sonos plays YouTube Music natively: `build_ytmusic_didl` + `HUB_SONOS_YTMUSIC_SN` /
+  `HUB_SONOS_YTMUSIC_URI` (docs/spikes/ytmusic-sonos.md, unverified on hardware).
+- HEOS: no YouTube Music source. `commands.UNSUPPORTED_ON_VENDOR` refuses with
+  "YouTube Music isn't available on HEOS."; the yt-dlp bridge spike is a no-go
+  (docs/spikes/ytmusic-heos.md); `GET /api/stream/ytmusic/{id}` returns 501.
+- Fakes: `HUB_FAKE_YTMUSIC=1` (3 playlists, 3 albums) with `link_ytmusic` / `unlink_ytmusic` /
+  `approve_ytmusic` scenarios; the fake Sonos side has the account, the fake HEOS side never does.
+
 ## Phase 4: Sync Play
 
 `POST /api/sync/play {content_ref, heos_target, sonos_target, start_index}` plays one Tidal album,

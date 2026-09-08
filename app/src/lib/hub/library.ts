@@ -17,9 +17,13 @@ export interface ContentRef {
   id: string;
 }
 
+export type AvailabilityReasonCode = "unsupported" | "not_linked" | "not_in_account" | "auth_fault";
+
 export interface Availability {
   heos: boolean;
   sonos: boolean;
+  /** Why a vendor cannot play it, per vendor; null when it can (or the hub did not say). */
+  reasons?: { heos: AvailabilityReasonCode | null; sonos: AvailabilityReasonCode | null } | null;
 }
 
 export interface LibraryItem {
@@ -48,6 +52,8 @@ export interface Page<T> {
 export interface Detail {
   item: LibraryItem;
   tracks: TrackItem[];
+  /** The service returned more tracks than the hub's cap and the list was cut. */
+  truncated: boolean;
 }
 
 export interface HistoryItem {
@@ -63,7 +69,13 @@ export interface HistoryItem {
   availability: Availability | null;
 }
 
-/** Per-vendor link state: true = browse ok, false = not linked / auth fault, null = adapter absent or errored. */
+/**
+ * Link state per key: true = browse ok, false = not linked / auth fault, null = errored or absent.
+ * Library sections key by service (`tidal`, `ytmusic`); the stations section keys by vendor
+ * (`heos`, `sonos`).
+ */
+export type LinkedMap = Record<string, boolean | null>;
+/** Vendor-keyed view of a LinkedMap (stations section). */
 export interface VendorLinked {
   heos: boolean | null;
   sonos: boolean | null;
@@ -71,12 +83,12 @@ export interface VendorLinked {
 
 export interface Section<T> {
   items: T[];
-  /** Service that must be linked before this section has content, or null. */
-  needs_link: Service | null;
+  /** Hub-linked services that contribute to this section and are currently unlinked; [] when none. */
+  needs_link: Service[];
   /** Hub-side failure for this section only (the rest of home still rendered), or null. */
   error: string | null;
-  /** Per-vendor link state for services linked in the vendor apps (Pandora), else null. */
-  linked: VendorLinked | null;
+  /** Link state per service (library sections) or per vendor (stations); null when not reported. */
+  linked: LinkedMap | null;
 }
 
 export interface Home {
@@ -102,6 +114,8 @@ export interface AccountStatus {
   expires_at: string | null;
   pending: PendingLink | null;
   last_error: string | null;
+  /** Machine code for `last_error` (e.g. `needs_client_config`), or null. */
+  last_error_code: string | null;
   /** Pandora only: which vendor apps have it linked. */
   linked_by_vendor: VendorLinked | null;
 }
@@ -238,9 +252,15 @@ function asArt(x: unknown): ArtRef {
  * Availability defaults to true per ecosystem when the hub omits it: the hub only sends `false`
  * when it knows the ecosystem lacks the service, so a missing field must not grey out a room.
  */
+const REASONS = new Set(["unsupported", "not_linked", "not_in_account", "auth_fault"]);
+function asReason(x: unknown): AvailabilityReasonCode | null {
+  return typeof x === "string" && REASONS.has(x) ? (x as AvailabilityReasonCode) : null;
+}
+
 function asAvailability(x: unknown): Availability {
-  const a = (x ?? {}) as Partial<Availability>;
-  return { heos: a.heos ?? true, sonos: a.sonos ?? true };
+  const a = (x ?? {}) as { heos?: boolean; sonos?: boolean; reasons?: Record<string, unknown> | null };
+  const reasons = a.reasons && typeof a.reasons === "object" ? { heos: asReason(a.reasons.heos), sonos: asReason(a.reasons.sonos) } : null;
+  return { heos: a.heos ?? true, sonos: a.sonos ?? true, reasons };
 }
 
 const ITEM_KEYS = ["content_ref", "title", "subtitle", "art", "duration_ms", "track_count", "availability", "index", "album_id", "artist", "album"] as const;
@@ -276,23 +296,35 @@ export function asPage<T>(x: unknown, map: (v: unknown, i: number) => T): Page<T
   return { items, next_offset: (r.next_offset as number | null | undefined) ?? null, total: (r.total as number | null | undefined) ?? null };
 }
 
-function asVendorLinked(x: unknown): VendorLinked | null {
+function asLinked(x: unknown): LinkedMap | null {
   if (!x || typeof x !== "object") return null;
-  const l = x as Record<string, unknown>;
-  const one = (v: unknown) => (typeof v === "boolean" ? v : null);
-  return { heos: one(l.heos), sonos: one(l.sonos) };
+  const out: LinkedMap = {};
+  for (const [k, v] of Object.entries(x as Record<string, unknown>)) out[k] = typeof v === "boolean" ? v : null;
+  return out;
+}
+
+function asVendorLinked(x: unknown): VendorLinked | null {
+  const l = asLinked(x);
+  return l ? { heos: l.heos ?? null, sonos: l.sonos ?? null } : null;
+}
+
+const SERVICES = new Set(["tidal", "ytmusic", "pandora"]);
+/** `needs_link` is a list of services; a lone string (older hubs) and null both normalise. */
+function asNeedsLink(x: unknown): Service[] {
+  const arr = Array.isArray(x) ? x : x == null ? [] : [x];
+  return arr.filter((s): s is Service => typeof s === "string" && SERVICES.has(s));
 }
 
 /** Home sections: `recents` is a bare array, the others are `{items, needs_link, error, linked}`. */
 export function asSection<T>(x: unknown, map: (v: unknown, i: number) => T): Section<T> {
-  if (Array.isArray(x)) return { items: x.map(map), needs_link: null, error: null, linked: null };
+  if (Array.isArray(x)) return { items: x.map(map), needs_link: [], error: null, linked: null };
   const r = (x ?? {}) as Record<string, unknown>;
   warnUnknownKeys(r, ["items", "needs_link", "error", "linked"], "HomeSection");
   return {
     items: Array.isArray(r.items) ? (r.items as unknown[]).map(map) : [],
-    needs_link: (r.needs_link as Service | null | undefined) ?? null,
+    needs_link: asNeedsLink(r.needs_link),
     error: (r.error as string | null | undefined) ?? null,
-    linked: asVendorLinked(r.linked),
+    linked: asLinked(r.linked),
   };
 }
 
@@ -313,8 +345,8 @@ export function asHistoryItem(x: unknown): HistoryItem {
 
 export function asDetail(x: unknown): Detail {
   const r = (x ?? {}) as Record<string, unknown>;
-  warnUnknownKeys(r, ["item", "tracks"], "Container");
-  return { item: asItem(r.item), tracks: Array.isArray(r.tracks) ? (r.tracks as unknown[]).map(asTrack) : [] };
+  warnUnknownKeys(r, ["item", "tracks", "truncated"], "Container");
+  return { item: asItem(r.item), tracks: Array.isArray(r.tracks) ? (r.tracks as unknown[]).map(asTrack) : [], truncated: r.truncated === true };
 }
 
 export function asHome(x: unknown): Home {
@@ -336,7 +368,7 @@ function asPending(x: unknown): PendingLink | null {
 
 export function asAccountStatus(x: unknown): AccountStatus {
   const r = (x ?? {}) as Record<string, unknown>;
-  warnUnknownKeys(r, ["service", "state", "linked", "account_name", "expires_at", "pending", "last_error", "linked_by_vendor"], "AccountStatus");
+  warnUnknownKeys(r, ["service", "state", "linked", "account_name", "expires_at", "pending", "last_error", "last_error_code", "linked_by_vendor"], "AccountStatus");
   const linked = !!r.linked;
   const pending = asPending(r.pending);
   const state = (r.state as AccountState | undefined) ?? (linked ? "linked" : pending ? "pending" : "unlinked");
@@ -348,6 +380,7 @@ export function asAccountStatus(x: unknown): AccountStatus {
     expires_at: (r.expires_at as string | null | undefined) ?? null,
     pending,
     last_error: (r.last_error as string | null | undefined) ?? null,
+    last_error_code: (r.last_error_code as string | null | undefined) ?? null,
     linked_by_vendor: asVendorLinked(r.linked_by_vendor),
   };
 }

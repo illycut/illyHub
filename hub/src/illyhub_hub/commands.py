@@ -35,7 +35,16 @@ from .coalesce import Coalescer
 from .config import Vendor
 from .content import Availability, ContentRef
 from .logsetup import correlation_id, get_logger
-from .state import HubState, Player, Side, StateStore, vendor_label
+from .messages import (
+    NOT_AVAILABLE_NOT_LINKED,
+    NOT_AVAILABLE_UNSUPPORTED,
+    PANDORA_CONCURRENT_MSG,
+    STATION_AUTH_FAULT,
+    STATION_NOT_IN_ACCOUNT,
+    UNSUPPORTED_ON_VENDOR,
+    vendor_app,
+)
+from .state import HubState, Player, Side, StateStore, service_label, vendor_label
 
 log = get_logger("commands")
 
@@ -569,15 +578,27 @@ class CommandRouter:
     def _side_ladder(
         self, side: Side, service: str, avail: Availability, target: str
     ) -> PlaybackAdapter:
-        """The checks every per-side content command runs, in order: adapter connected
-        (``adapter_disconnected``), service linked on that vendor (``not_available_on_side``),
-        coordinator online (``device_offline``)."""
+        """The checks every per-side content command runs, in order: service playable on that
+        vendor at all (``not_available_on_side``, independent of connection state), adapter
+        connected (``adapter_disconnected``), service linked on that vendor
+        (``not_available_on_side``), coordinator online (``device_offline``)."""
+        if (side.vendor, service) in UNSUPPORTED_ON_VENDOR:
+            raise CommandError(
+                "not_available_on_side",
+                NOT_AVAILABLE_UNSUPPORTED.format(
+                    service=service_label(service), vendor=vendor_label(side.vendor)
+                ),
+                side.id,
+            )
         adapter = self._adapter_for(side.vendor, target)
         if not getattr(avail, side.vendor, False):
             raise CommandError(
                 "not_available_on_side",
-                f"{side.name} can't play {service.title()}; link it in the "
-                f"{vendor_label(side.vendor)} app.",
+                NOT_AVAILABLE_NOT_LINKED.format(
+                    side=side.name,
+                    service=service_label(service),
+                    vendor_app=vendor_app(side.vendor),
+                ),
                 side.id,
             )
         self._require_online(side.coordinator_player_id, target)
@@ -599,8 +620,11 @@ class CommandRouter:
         except ContentUnavailableError as exc:
             raise CommandError(
                 "not_available_on_side",
-                f"{side.name} can't play {ref.service.title()}; link it in the "
-                f"{vendor_label(side.vendor)} app.",
+                NOT_AVAILABLE_NOT_LINKED.format(
+                    side=side.name,
+                    service=service_label(ref.service),
+                    vendor_app=vendor_app(side.vendor),
+                ),
                 side.id,
             ) from exc
         except CommandError:
@@ -616,9 +640,7 @@ class CommandRouter:
 
     # -- radio stations (Phase 5) ---------------------------------------------------------
 
-    PANDORA_CONCURRENT_MSG = (
-        "Pandora usually allows one stream per account; the other room may pause."
-    )
+    PANDORA_CONCURRENT_MSG = PANDORA_CONCURRENT_MSG  # copy of record lives in messages.py
 
     async def play_station(
         self,
@@ -683,21 +705,23 @@ class CommandRouter:
         auth_faults: Mapping[str, str],
     ) -> None:
         adapter = self._side_ladder(side, ref.service, avail, target)
-        pretty = ref.service.title()
+        pretty = service_label(ref.service)
         if side.vendor in auth_faults:
             # Linked, but that ecosystem's service session is broken: never say the station is
             # missing from the account when the account could not be read at all.
             raise CommandError(
                 "not_available_on_side",
-                f"{side.name} can't reach {pretty} right now; sign in again in the "
-                f"{vendor_label(side.vendor)} app.",
+                STATION_AUTH_FAULT.format(
+                    side=side.name, service=pretty, vendor_app=vendor_app(side.vendor)
+                ),
                 side.id,
             )
         if station is None:
             raise CommandError(
                 "not_available_on_side",
-                f"That station isn't in the {vendor_label(side.vendor)} {pretty} account, so "
-                f"{side.name} can't play it.",
+                STATION_NOT_IN_ACCOUNT.format(
+                    vendor=vendor_label(side.vendor), service=pretty, side=side.name
+                ),
                 side.id,
             )
         try:
@@ -705,14 +729,17 @@ class CommandRouter:
         except ServiceAuthError as exc:
             raise CommandError(
                 "not_available_on_side",
-                f"{side.name} can't reach {pretty} right now; sign in again in the "
-                f"{vendor_label(side.vendor)} app.",
+                STATION_AUTH_FAULT.format(
+                    side=side.name, service=pretty, vendor_app=vendor_app(side.vendor)
+                ),
                 side.id,
             ) from exc
         except ContentUnavailableError as exc:
             raise CommandError(
                 "not_available_on_side",
-                f"{side.name} can't play {pretty}; link it in the {vendor_label(side.vendor)} app.",
+                NOT_AVAILABLE_NOT_LINKED.format(
+                    side=side.name, service=pretty, vendor_app=vendor_app(side.vendor)
+                ),
                 side.id,
             ) from exc
         except CommandError:
@@ -727,10 +754,11 @@ class CommandRouter:
             ) from exc
 
     def service_availability(self, service: str) -> Availability:
-        """Which ecosystems report the service as linked, per their adapters."""
-        return Availability(
-            heos=self._linked("heos", service),
-            sonos=self._linked("sonos", service),
+        """Which ecosystems can play the service, with reasons (``unsupported`` beats
+        ``not_linked``)."""
+        return Availability.build(
+            service,
+            {"heos": self._linked("heos", service), "sonos": self._linked("sonos", service)},
         )
 
     def _linked(self, vendor: str, service: str) -> bool:

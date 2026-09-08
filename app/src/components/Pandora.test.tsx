@@ -39,7 +39,7 @@ const stationReq = (availability = { heos: true, sonos: true }, unlinked_vendors
   availability,
   unlinked_vendors,
 });
-const homeBody = (stations: unknown) => ({ recents: [], playlists: { items: [], needs_link: null }, favorite_albums: { items: [], needs_link: null }, stations });
+const homeBody = (stations: unknown) => ({ recents: [], playlists: { items: [], needs_link: [] }, favorite_albums: { items: [], needs_link: [] }, stations });
 
 function boot(state = sampleState()) {
   // A confirm in one test remembers targets per content ref; the next test must start cold.
@@ -63,7 +63,7 @@ function bootHome(stations: unknown) {
 
 describe("Home: Pandora stations section (HOME-5)", () => {
   it("renders alphabetical station cards with the Pandora badge, availability subtitles, no chevron; tapping opens the picker with the link state; passes axe", async () => {
-    bootHome({ items: [station("z", "Zen Garden", { heos: false, sonos: true }), station("a", "Acoustic Morning")], needs_link: null, linked: { heos: true, sonos: true } });
+    bootHome({ items: [station("z", "Zen Garden", { heos: false, sonos: true }), station("a", "Acoustic Morning")], needs_link: [], linked: { heos: true, sonos: true } });
     const { container } = render(<HomeScreen />);
     const section = await screen.findByTestId("stations-section");
     expect(within(section).getByRole("heading", { name: "Pandora stations" })).toBeInTheDocument();
@@ -84,7 +84,7 @@ describe("Home: Pandora stations section (HOME-5)", () => {
   });
 
   it("is hidden while empty (needs_link) and shows no Connect card: Pandora is linked in the vendor apps", async () => {
-    bootHome({ items: [], needs_link: "pandora", linked: { heos: false, sonos: false } });
+    bootHome({ items: [], needs_link: ["pandora"], linked: { heos: false, sonos: false } });
     render(<HomeScreen />);
     await screen.findByTestId("home");
     await waitFor(() => expect(useLibrary.getState().home.data).not.toBeNull());
@@ -94,7 +94,7 @@ describe("Home: Pandora stations section (HOME-5)", () => {
   });
 
   it("names the rooms and the vendor app when the hub reports a vendor as not linked", async () => {
-    bootHome({ items: [station("a", "A", { heos: false, sonos: true })], needs_link: null, linked: { heos: false, sonos: true } });
+    bootHome({ items: [station("a", "A", { heos: false, sonos: true })], needs_link: [], linked: { heos: false, sonos: true } });
     render(<HomeScreen />);
     const note = await screen.findByTestId("stations-note");
     // sampleState has one HEOS side: "Living Room Amp"
@@ -103,7 +103,7 @@ describe("Home: Pandora stations section (HOME-5)", () => {
   });
 
   it("surfaces a hub-side section error in the section's place, with no note", async () => {
-    bootHome({ items: [], needs_link: null, error: "Pandora stations didn't load from HEOS.", linked: { heos: false, sonos: true } });
+    bootHome({ items: [], needs_link: [], error: "Pandora stations didn't load from HEOS.", linked: { heos: false, sonos: true } });
     render(<HomeScreen />);
     const section = await screen.findByTestId("stations-section");
     expect(within(section).getByRole("alert")).toHaveTextContent("Pandora stations didn't load from HEOS.");
@@ -115,10 +115,10 @@ describe("Home: Pandora stations section (HOME-5)", () => {
 describe("historyToPlayRequest for a station (UX U1)", () => {
   const recent: HistoryItem = { content_ref: { service: "pandora", kind: "station", id: "chill-radio" }, title: "Chill Radio", subtitle: "Pandora station", art, last_targets: ["sonos:sonos-gK"], last_played_at: "2026-09-07T00:00:00Z", play_count: 3, availability: null };
   const home: Home = {
-    recents: { items: [recent], needs_link: null, error: null, linked: null },
-    playlists: { items: [], needs_link: null, error: null, linked: null },
-    favorite_albums: { items: [], needs_link: null, error: null, linked: null },
-    stations: { items: [station("chill-radio", "Chill Radio", { heos: false, sonos: true })], needs_link: null, error: null, linked: { heos: false, sonos: true } },
+    recents: { items: [recent], needs_link: [], error: null, linked: null },
+    playlists: { items: [], needs_link: [], error: null, linked: null },
+    favorite_albums: { items: [], needs_link: [], error: null, linked: null },
+    stations: { items: [station("chill-radio", "Chill Radio", { heos: false, sonos: true })], needs_link: [], error: null, linked: { heos: false, sonos: true } },
   };
 
   it("uses the history item's availability when the hub sends it", () => {

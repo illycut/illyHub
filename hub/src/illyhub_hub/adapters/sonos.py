@@ -83,6 +83,7 @@ class Topology:
     raw: dict[str, Any] = field(default_factory=dict)  # uid -> SoCo object, for subscribing
     tidal_sn: str | None = None  # Sonos account serial for Tidal, from the household accounts
     pandora_sn: str | None = None  # same for Pandora (Phase 5)
+    ytmusic_sn: str | None = None  # same for YouTube Music (Phase 6)
 
 
 class SonosSubscription(Protocol):
@@ -158,6 +159,7 @@ async def default_snapshot(settings: Settings) -> Topology:  # pragma: no cover
         first = next(iter(zones), None) if zones else None
         topo.tidal_sn = discover_tidal_sn(first)
         topo.pandora_sn = discover_pandora_sn(first)
+        topo.ytmusic_sn = discover_ytmusic_sn(first)
         return topo
 
     return await asyncio.to_thread(work)
@@ -196,6 +198,11 @@ def discover_tidal_sn(zone: Any, account_class: Any | None = None) -> str | None
 def discover_pandora_sn(zone: Any, account_class: Any | None = None) -> str | None:
     """Pandora's ``sn`` (service type 60423); ``HUB_SONOS_PANDORA_SN`` is the manual fallback."""
     return discover_service_sn(zone, PANDORA_SERVICE_TYPE, account_class)
+
+
+def discover_ytmusic_sn(zone: Any, account_class: Any | None = None) -> str | None:
+    """YouTube Music's ``sn`` (service type 72711); ``HUB_SONOS_YTMUSIC_SN`` is the fallback."""
+    return discover_service_sn(zone, YTMUSIC_SERVICE_TYPE, account_class)
 
 
 # -- Tidal on Sonos: refs built from the canonical Tidal id (docs/spikes/tidal-refs.md) -------
@@ -245,6 +252,70 @@ def build_tidal_didl(track: PlayableTrack, sn: str) -> Any:
         item_id=tidal_item_id(track.track_id),
         resources=[res],
         desc=TIDAL_DESC,
+        creator=track.artist,
+        album=track.album,
+    )
+
+
+# -- YouTube Music on Sonos: refs built from the YouTube videoId (docs/spikes/ytmusic-sonos.md,
+# **unverified on hardware**). The URI template is a setting so the first LAN run can correct it
+# without a code change. ---------------------------------------------------------------------
+
+YTMUSIC_SID = 284
+YTMUSIC_SERVICE_TYPE = str(YTMUSIC_SID * 256 + 7)  # "72711"
+YTMUSIC_DESC = f"SA_RINCON{YTMUSIC_SERVICE_TYPE}_X_#Svc{YTMUSIC_SERVICE_TYPE}-0-Token"
+YTMUSIC_PROTOCOL_INFO = "sonos.com-http:*:audio/mp4:*"
+YTMUSIC_URI_TEMPLATE = (
+    "x-sonos-http:sonos-track:{id}.mp4?sid=" + str(YTMUSIC_SID) + "&flags=8232&sn={sn}"
+)
+
+
+def ytmusic_track_uri(video_id: str, sn: str, template: str = YTMUSIC_URI_TEMPLATE) -> str:
+    return template.format(id=quote(video_id, safe=""), sn=sn)
+
+
+def ytmusic_item_id(video_id: str) -> str:
+    return f"00032020sonos-track:{quote(video_id, safe='')}"
+
+
+def ytmusic_parent_id(album_id: str | None, playlist_id: str | None) -> str:
+    if playlist_id:
+        return f"0006206cplaylist:{quote(playlist_id, safe='')}"
+    if album_id:
+        return f"0004206calbum:{quote(album_id, safe='')}"
+    return "00032020"
+
+
+# scheme, optional "sonos-track" separator (":" or percent-encoded), exactly 11 id chars, then
+# the end of the path (".mp4", "?" or end of string) so a prefix is never captured as the id.
+YTMUSIC_URI_RE = re.compile(
+    r"^x-sonos(?:api)?-[a-z-]+:(?:sonos-track(?::|%3[aA]))?([A-Za-z0-9_-]{11})(?=\.|\?|$)"
+)
+YTMUSIC_SID_RE = re.compile(rf"[?&]sid={YTMUSIC_SID}(?:&|$)")
+
+
+def ytmusic_ref_from_uri(uri: str | None) -> ContentRef | None:
+    """Canonical identity of a Sonos YouTube Music track: the 11-char videoId in the URI, only
+    when the URI carries the YouTube Music service id (``sid=284`` as a whole parameter)."""
+    if not uri or not YTMUSIC_SID_RE.search(uri):
+        return None
+    m = YTMUSIC_URI_RE.match(uri)
+    return ContentRef(service="ytmusic", kind="track", id=m.group(1)) if m else None
+
+
+def build_ytmusic_didl(track: PlayableTrack, sn: str, template: str = YTMUSIC_URI_TEMPLATE) -> Any:
+    """A SoCo ``DidlMusicTrack`` for a YouTube Music track (``desc`` names the account)."""
+    from soco.data_structures import DidlMusicTrack, DidlResource
+
+    res = DidlResource(
+        uri=ytmusic_track_uri(track.track_id, sn, template), protocol_info=YTMUSIC_PROTOCOL_INFO
+    )
+    return DidlMusicTrack(
+        title=track.title,
+        parent_id=ytmusic_parent_id(track.album_id, track.playlist_id),
+        item_id=ytmusic_item_id(track.track_id),
+        resources=[res],
+        desc=YTMUSIC_DESC,
         creator=track.artist,
         album=track.album,
     )
@@ -677,12 +748,34 @@ class SoCoAdapter(SonosAdapter):
     def pandora_sn(self) -> str | None:
         return self._topology.pandora_sn or self.settings.sonos_pandora_sn
 
+    @property
+    def ytmusic_sn(self) -> str | None:
+        return self._topology.ytmusic_sn or self.settings.sonos_ytmusic_sn
+
     def service_linked(self, service: str) -> bool:
         if service == "tidal":
             return bool(self.tidal_sn)
         if service == "pandora":
             return bool(self.pandora_sn)
+        if service == "ytmusic":
+            return bool(self.ytmusic_sn)
         return False
+
+    def _queue_builder(self, service: str) -> Callable[[PlayableTrack], Any]:
+        """Per-service DIDL builder bound to the account serial; raises when the service is not
+        linked in the Sonos app (or the hub cannot play it there at all)."""
+        if service == "tidal":
+            sn = self.tidal_sn
+            if not sn:
+                raise ContentUnavailableError("Tidal is not linked in the Sonos app")
+            return lambda t: build_tidal_didl(t, sn)
+        if service == "ytmusic":
+            sn = self.ytmusic_sn
+            if not sn:
+                raise ContentUnavailableError("YouTube Music is not linked in the Sonos app")
+            template = self.settings.sonos_ytmusic_uri or YTMUSIC_URI_TEMPLATE
+            return lambda t: build_ytmusic_didl(t, sn, template)
+        raise ContentUnavailableError(f"{service} is not playable on Sonos from the hub")
 
     # -- radio stations (Phase 5) -----------------------------------------------------
 
@@ -763,14 +856,10 @@ class SoCoAdapter(SonosAdapter):
     async def play_content(
         self, player_id: str, ref: ContentRef, tracks: list[PlayableTrack], start_index: int = 0
     ) -> None:
-        """Replace the coordinator's queue with Tidal tracks built from canonical ids, then play
-        from ``start_index``. **Unverified on hardware** (ai-dev #10); every SoCo call runs in a
-        worker thread."""
-        if ref.service != "tidal":
-            raise ContentUnavailableError(f"{ref.service} is not playable on Sonos from the hub")
-        sn = self.tidal_sn
-        if not sn:
-            raise ContentUnavailableError("Tidal is not linked in the Sonos app")
+        """Replace the coordinator's queue with tracks built from canonical ids (Tidal or
+        YouTube Music), then play from ``start_index``. **Unverified on hardware** (ai-dev #10,
+        docs/spikes/ytmusic-sonos.md); every SoCo call runs in a worker thread."""
+        build = self._queue_builder(ref.service)
         raw = self._raw(player_id)
         self._station_playing.pop(side_id_for(self.store.state.players[player_id]), None)
 
@@ -778,7 +867,7 @@ class SoCoAdapter(SonosAdapter):
             raise IndexError(f"start_index {start_index} out of range for {len(tracks)} tracks")
 
         def work() -> None:
-            items = [build_tidal_didl(t, sn) for t in tracks]
+            items = [build(t) for t in tracks]
             raw.clear_queue()
             raw.add_multiple_to_queue(items)  # SoCo chunks the SOAP calls itself (16 per call)
             raw.play_from_queue(start_index)
@@ -794,18 +883,14 @@ class SoCoAdapter(SonosAdapter):
         """Sync Play priming: replace the queue, then ``play_from_queue(index, start=False)``,
         which selects the queue and positions it **without playing**. Returns the queued item's
         title for verification. **Unverified on hardware** (docs/sync-engine.md)."""
-        if ref.service != "tidal":
-            raise ContentUnavailableError(f"{ref.service} is not playable on Sonos from the hub")
-        sn = self.tidal_sn
-        if not sn:
-            raise ContentUnavailableError("Tidal is not linked in the Sonos app")
+        build = self._queue_builder(ref.service)
         raw = self._raw(player_id)
         self._station_playing.pop(side_id_for(self.store.state.players[player_id]), None)
         if not 0 <= start_index < len(tracks):
             raise IndexError(f"start_index {start_index} out of range for {len(tracks)} tracks")
 
         def work() -> Any:
-            items = [build_tidal_didl(t, sn) for t in tracks]
+            items = [build(t) for t in tracks]
             raw.clear_queue()
             raw.add_multiple_to_queue(items)
             raw.play_from_queue(start_index, start=False)
@@ -1037,7 +1122,7 @@ class SoCoAdapter(SonosAdapter):
             supports_prev=not radio,
             duration_ms=_hms_to_ms(duration) if duration else None,
             track_id=uri or None,
-            content_ref=tidal_ref_from_uri(uri) or station_ref,
+            content_ref=tidal_ref_from_uri(uri) or ytmusic_ref_from_uri(uri) or station_ref,
         )
 
     async def _refresh_groups(self, zone: ZoneSnapshot) -> None:

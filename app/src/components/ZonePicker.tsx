@@ -24,20 +24,20 @@ export function sideStatus(side: Side, coordinatorOnline: boolean, zones: Zone[]
 }
 
 /**
- * Why a side cannot play the requested content, or null when it can. Pandora copy comes from the
- * request's per-vendor link state: an unlinked vendor gets the fix, a linked one lacking the
- * station gets the fact (see `unavailableCopy`).
+ * Why a side cannot play the requested content, or null when it can. The sentence is the hub's
+ * (`availability.reasons[vendor]`, via the exported templates); without a reason the request's
+ * per-vendor link state decides (see `unavailableCopy`).
  */
 export function unavailableReason(side: Side, play: PlayRequest | null | undefined): string | null {
   if (!play?.availability) return null;
   const ok = side.vendor === "heos" ? play.availability.heos : play.availability.sonos;
-  return ok ? null : unavailableCopy(play.content_ref?.service, side.vendor, play.unlinked_vendors);
+  return ok ? null : unavailableCopy(play.content_ref?.service, side.vendor, { availability: play.availability, unlinked: play.unlinked_vendors });
 }
 
 /**
  * Pre-highlight rule (PRD Decision 4): history last targets first, localStorage per content ref
- * second, and on first use the side Now Playing is showing (or the first playing side), so the
- * common case is always two taps.
+ * second, then the side Now Playing is showing (or the first playing side), and finally, when only
+ * one room can play the content at all, that room (UX U2), so the common case is always two taps.
  */
 export function initialSelection(play: PlayRequest, state: HubState | null, activeSideId: string | null): string[] {
   const sideIds = Object.keys(state?.sides ?? {});
@@ -48,7 +48,9 @@ export function initialSelection(play: PlayRequest, state: HubState | null, acti
   const remembered = readLastTarget(refKey(play.content_ref))?.filter(usable) ?? [];
   if (remembered.length) return remembered;
   const active = resolveActiveSide(state, activeSideId);
-  return active && usable(active.id) ? [active.id] : [];
+  if (active && usable(active.id)) return [active.id];
+  const usableIds = sideIds.filter(usable);
+  return usableIds.length === 1 ? usableIds : [];
 }
 
 export function playButtonLabel(names: string[]): string {

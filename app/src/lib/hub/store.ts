@@ -18,8 +18,9 @@ import { applyDelta, emptyState, type DeltaMessage } from "./state";
 import type { Ack, ArtRef, HubState, Position, ServerMessage, TransportAction, Vendor } from "./types";
 import { interpolatePosition } from "../position";
 import { linkedVolumeLevels, sideForPlayer } from "../selectors";
-import { toast } from "../ui/toasts";
+import { toast, type ToastAction } from "../ui/toasts";
 import { warningToast } from "../pandora";
+import { SERVICE_LABEL, isHubLinked } from "../services";
 import { SYNC_UNSUPPORTED_TOAST, transportTargetFor } from "../sync";
 
 /** What `play()` needs from a library item to update the UI optimistically. */
@@ -36,7 +37,10 @@ export const ACK_TIMEOUT_MS = 5000;
 /** Error codes that mean "nothing on any side was touched" and end a multi-side play early. */
 export const PLAY_SHORT_CIRCUIT_CODES = new Set(["needs_link", "not_found", "invalid_argument", "unknown_target"]);
 
-const CONNECT_LABEL: Record<string, string> = { tidal: "Connect Tidal", ytmusic: "Connect YouTube Music", pandora: "Connect Pandora" };
+/** "Connect …" toast action, only for services the hub links itself (Pandora is linked in the vendor apps). */
+function connectAction(service: string): ToastAction | undefined {
+  return isHubLinked(service) ? { label: `Connect ${SERVICE_LABEL[service]}`, href: `/settings?link=${service}` } : undefined;
+}
 
 type Patch = (s: HubState) => HubState;
 export type TimerHandle = unknown;
@@ -404,7 +408,7 @@ export const useHub = create<HubStore>((set, get) => ({
         set((s) => ({ state: s.state ? revertFor(id, before)(s.state) : s.state }));
         toast(
           ack.error?.message ?? `${item.title} didn't start.`,
-          code === "needs_link" ? { label: CONNECT_LABEL[service] ?? "Connect", href: `/settings?link=${service}` } : undefined,
+          code === "needs_link" ? connectAction(service) : undefined,
         );
         break;
       }
@@ -458,7 +462,7 @@ export const useHub = create<HubStore>((set, get) => ({
     const code: string = ack.error?.code ?? "vendor_error";
     const service = item.content_ref.service;
     if (code === "needs_link") {
-      toast(ack.error?.message ?? `${item.title} didn't start.`, { label: CONNECT_LABEL[service] ?? "Connect", href: `/settings?link=${service}` });
+      toast(ack.error?.message ?? `${item.title} didn't start.`, connectAction(service));
     } else if (code === "unsupported_content") {
       toast(SYNC_UNSUPPORTED_TOAST);
     } else {

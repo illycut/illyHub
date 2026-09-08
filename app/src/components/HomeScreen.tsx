@@ -11,13 +11,12 @@ import { useLibrary, onRefocus } from "@/lib/library/store";
 import { useChrome, type PlayRequest } from "@/lib/ui/chrome";
 import { stationSubtitle, stationsSectionModel, unlinkedVendors } from "@/lib/pandora";
 import { useHub } from "@/lib/hub/store";
-import { refKey, type ContentRef, type Home, type HistoryItem, type LibraryItem, type Section, type Service } from "@/lib/hub/library";
+import { refKey, type AccountStatus, type ContentRef, type Home, type HistoryItem, type LibraryItem, type Section, type Service } from "@/lib/hub/library";
+import { HUB_LINKED_SERVICES, SERVICE_LABEL, isHubLinked } from "@/lib/services";
 
 export function detailHref(ref: ContentRef): string {
   return `/browse?ref=${encodeURIComponent(refKey(ref))}`;
 }
-
-const SERVICE_LABEL: Record<Service, string> = { tidal: "Tidal", ytmusic: "YouTube Music", pandora: "Pandora" };
 
 export function toPlayRequest(item: LibraryItem, preferred: string[] = [], unlinked_vendors?: PlayRequest["unlinked_vendors"]): PlayRequest {
   return { content_ref: item.content_ref, title: item.title, subtitle: item.subtitle, art: item.art, preferred, availability: item.availability, unlinked_vendors };
@@ -33,6 +32,20 @@ export function historyToPlayRequest(item: HistoryItem, home?: Home | null): Pla
   const availability = item.availability ?? fromHome?.availability;
   const unlinked = item.content_ref.service === "pandora" ? unlinkedVendors(home?.stations.linked) : undefined;
   return { content_ref: item.content_ref, title: item.title, subtitle: item.subtitle, art: item.art, preferred: item.last_targets, availability, unlinked_vendors: unlinked };
+}
+
+/**
+ * Which "Connect …" cards home shows, once per screen (UX U3 / B2): every hub-linked service that a
+ * library section reports in `needs_link`, plus, belt and braces, any hub-linked account that
+ * `/api/settings` reports unlinked. Never a card for a service a section reports as linked.
+ */
+export function connectServices(home: Home | null | undefined, accounts: readonly AccountStatus[] | null | undefined): Service[] {
+  const out = new Set<Service>();
+  const sections = home ? [home.playlists, home.favorite_albums] : [];
+  for (const sec of sections) for (const svc of sec.needs_link) if (isHubLinked(svc)) out.add(svc);
+  for (const a of accounts ?? []) if (isHubLinked(a.service) && !a.linked && a.state !== "restoring" && a.state !== "pending") out.add(a.service);
+  for (const sec of sections) for (const [svc, linked] of Object.entries(sec.linked ?? {})) if (linked === true && isHubLinked(svc)) out.delete(svc);
+  return HUB_LINKED_SERVICES.filter((s) => out.has(s));
 }
 
 /** Room names per vendor from the hub's sides, as primitives so a shallow selector stays stable. */
@@ -61,7 +74,7 @@ export function CardGrid({
 }: {
   section: Section<LibraryItem> | null;
   loading: boolean;
-  /** Services to offer "Connect …" cards for when the section needs a link. */
+  /** "Connect …" cards to render in this grid (the screen decides which grid carries them, once). */
   connect: Service[];
   onPlay: (item: LibraryItem) => void;
   onDetail: (item: LibraryItem) => void;
@@ -70,7 +83,7 @@ export function CardGrid({
   testId: string;
 }) {
   const items = section?.items ?? [];
-  const needs = section?.needs_link ?? null;
+  const needs = connect.length > 0;
   if (loading && !section) {
     return (
       <div className="grid grid-cols-2 gap-3 tablet:grid-cols-4" aria-hidden="true">
@@ -102,16 +115,17 @@ export function CardGrid({
           testId="grid-card"
         />
       ))}
-      {needs
-        ? connect.map((svc) => <ConnectCard key={svc} service={SERVICE_LABEL[svc]} onPress={svc === "ytmusic" ? undefined : () => onConnect(svc)} note={svc === "ytmusic" ? "Coming in a later phase" : undefined} />)
-        : null}
+      {connect.map((svc) => (
+        <ConnectCard key={svc} service={SERVICE_LABEL[svc]} onPress={() => onConnect(svc)} />
+      ))}
     </div>
   );
 }
 
 /**
  * Home screen (PRD §3.4a, §7a; design system §6.1, §6.2, §8). Sections: Recently played rail,
- * Your playlists (merged across services), Favorite albums, Pandora stations (Phase 5, hidden
+ * Your playlists (merged across Tidal and YouTube Music), Favorite albums (both services fold in,
+ * badge tells them apart), Pandora stations (Phase 5, hidden
  * while empty). Every card plays through the target picker (Decision 4); the chevron opens the
  * detail view. Home refetches on focus and after any play. Nothing here subscribes to the hub's
  * 1 Hz position stream; the rail reads only side vendors through a shallow selector.
@@ -120,16 +134,22 @@ export function HomeScreen() {
   const router = useRouter();
   const home = useLibrary((s) => s.home);
   const loadHome = useLibrary((s) => s.loadHome);
+  const accounts = useLibrary((s) => s.settings.data?.accounts);
+  const loadSettings = useLibrary((s) => s.loadSettings);
   const requestPlay = useChrome((s) => s.requestPlay);
   const setZonesOpen = useChrome((s) => s.setZonesOpen);
 
   useEffect(() => {
     void loadHome();
+    // Account link state backs the Connect cards when a section cannot say (belt and braces).
+    void loadSettings();
     return onRefocus(() => void loadHome());
-  }, [loadHome]);
+  }, [loadHome, loadSettings]);
 
   const data = home.data;
   const loading = home.loading && !data;
+  // Connect cards render once, in the first library grid.
+  const connect = useMemo(() => connectServices(data, accounts), [data, accounts]);
   const roomsByVendor = useRoomsByVendor();
   const stations = useMemo(() => stationsSectionModel(data?.stations, roomsByVendor), [data?.stations, roomsByVendor]);
   // Station cards: subtitle says which vendor's rooms can play it (UX U9); none when both can.
@@ -176,7 +196,7 @@ export function HomeScreen() {
             <CardGrid
               section={data?.playlists ?? null}
               loading={loading}
-              connect={["tidal", "ytmusic"]}
+              connect={connect}
               onPlay={playItem}
               onDetail={goDetail}
               onConnect={goConnect}
@@ -191,11 +211,11 @@ export function HomeScreen() {
             <CardGrid
               section={data?.favorite_albums ?? null}
               loading={loading}
-              connect={["tidal"]}
+              connect={[]}
               onPlay={playItem}
               onDetail={goDetail}
               onConnect={goConnect}
-              emptyCopy="Favorite an album in Tidal and it shows up here."
+              emptyCopy="Favorite an album in Tidal or YouTube Music and it shows up here."
               testId="albums-grid"
             />
           </div>

@@ -29,6 +29,7 @@ from ..content import (
     NeedsLinkError,
 )
 from ..logsetup import get_logger
+from ..state import service_label
 
 log = get_logger("services.tidal")
 
@@ -396,7 +397,10 @@ class FakeTidalCatalog:
 
 
 class TidalService:
-    """Facade the API uses: link check, short-TTL cache, availability stamping, track lists."""
+    """Facade the API uses: link check, short-TTL cache, availability stamping, track lists.
+
+    Written for Tidal; ``service`` lets the same facade front another library-shaped catalog
+    (YouTube Music in Phase 6) so browse/play/history behave identically across services."""
 
     def __init__(
         self,
@@ -407,7 +411,9 @@ class TidalService:
         cache_ttl_s: float = 300.0,
         clock: Callable[[], float] = time.monotonic,
         before: Callable[[], Awaitable[Any]] | None = None,
+        service: str = SERVICE,
     ) -> None:
+        self.service = service
         self.catalog = catalog
         self._is_linked = is_linked
         self._availability = availability
@@ -422,7 +428,8 @@ class TidalService:
 
     def _require_linked(self) -> None:
         if not self._is_linked():
-            raise NeedsLinkError(SERVICE, "Tidal is not connected. Link it in Settings.")
+            label = service_label(self.service)
+            raise NeedsLinkError(self.service, f"{label} is not connected. Link it in Settings.")
 
     def refresh(self) -> int:
         n = len(self._cache)
@@ -504,7 +511,7 @@ class TidalService:
             self._stamp([item])
             return item, [
                 PlayableTrack(
-                    service=SERVICE,
+                    service=self.service,
                     track_id=ref.id,
                     title=item.title,
                     artist=item.artist,
@@ -516,7 +523,7 @@ class TidalService:
         c = await self.container(ref)
         playable = [
             PlayableTrack(
-                service=SERVICE,
+                service=self.service,
                 track_id=t.content_ref.id,
                 title=t.title,
                 artist=t.artist,

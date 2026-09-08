@@ -27,6 +27,11 @@ def fake_settings(tmp_path: Path, **kw) -> Settings:
     )
 
 
+def flags(avail: dict) -> dict:
+    """Vendor flags only; `reasons` are asserted where the reason matters."""
+    return {"heos": avail["heos"], "sonos": avail["sonos"]}
+
+
 @pytest.fixture
 async def client(tmp_path: Path) -> AsyncIterator[tuple[httpx.AsyncClient, HubRuntime]]:
     app = create_app(fake_settings(tmp_path))
@@ -56,11 +61,11 @@ async def test_auth_status_and_fake_link_toggle(client) -> None:
     home = (await c.get("/api/home")).json()
     assert home["playlists"] == {
         "items": [],
-        "needs_link": "tidal",
+        "needs_link": ["tidal", "ytmusic"],
         "error": None,
-        "linked": None,
+        "linked": {"tidal": False, "ytmusic": False},
     }
-    assert home["favorite_albums"]["needs_link"] == "tidal" and home["recents"] == []
+    assert home["favorite_albums"]["needs_link"] == ["tidal", "ytmusic"] and home["recents"] == []
     assert (await c.get("/api/auth/tidal/status")).json()["state"] == "unlinked"
     rt.fakes.fake_link_delay_s = 0.05
     r = await c.post("/api/auth/tidal/start")
@@ -82,7 +87,10 @@ async def test_browse_pages_and_containers(client) -> None:
     page = (await c.get("/api/browse/tidal/favorites/albums?limit=4")).json()
     assert len(page["items"]) == 4 and page["next_offset"] == 4 and page["total"] == 6
     item = page["items"][0]
-    assert item["content_ref"] == ALBUM and item["availability"] == {"heos": True, "sonos": True}
+    assert item["content_ref"] == ALBUM and flags(item["availability"]) == {
+        "heos": True,
+        "sonos": True,
+    }
     assert item["art"]["url"].startswith("/api/art/")
     album = (await c.get("/api/browse/tidal/album/101")).json()
     assert album["item"]["title"] == "Warm Glow" and len(album["tracks"]) == 9
@@ -222,7 +230,7 @@ async def test_real_tidal_wiring_without_fake_tidal(tmp_path: Path) -> None:
             assert st["linked"] is False and st["pending"] is None and st["state"] == "unlinked"
             assert (await c.get("/api/browse/tidal/playlists")).status_code == 409
             home = (await c.get("/api/home")).json()
-            assert home["playlists"]["needs_link"] == "tidal"
+            assert home["playlists"]["needs_link"] == ["tidal", "ytmusic"]
             r = await c.post("/api/auth/tidal/start")
             assert r.status_code == 200 and r.json()["user_code"] == "ABCDE"
             assert (await c.get("/api/auth/tidal/status")).json()["pending"]["user_code"] == "ABCDE"

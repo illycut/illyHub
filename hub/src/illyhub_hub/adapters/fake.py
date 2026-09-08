@@ -392,8 +392,8 @@ class FakeVendorMixin:
         self._ticker.set_playing(side, state == "play")
         self._emit("play_state", player_id=player_id)
 
-    def vendor_track_id(self, canonical_id: str) -> str:
-        """Vendor-native id for a canonical Tidal track id, matching the real adapters' shapes
+    def vendor_track_id(self, canonical_id: str, service: str = "tidal") -> str:
+        """Vendor-native id for a canonical service track id, matching the real adapters' shapes
         (HEOS: bare media id; Sonos: the track URI). Overridden per fake."""
         return canonical_id
 
@@ -421,11 +421,11 @@ class FakeVendorMixin:
                 supports_next=True,  # stations skip forward on both ecosystems
                 supports_prev=track.source != "pandora",
                 duration_ms=track.duration_ms,
-                track_id=self.vendor_track_id(track_id) if track_id else None,
+                track_id=self.vendor_track_id(track_id, track.source) if track_id else None,
                 content_ref=content_ref
                 or (
-                    ContentRef(service="tidal", kind="track", id=track_id)
-                    if track_id and track.source == "tidal"
+                    ContentRef(service=track.source, kind="track", id=track_id)  # type: ignore[arg-type]
+                    if track_id and track.source in ("tidal", "ytmusic")
                     else None
                 ),
             ),
@@ -501,8 +501,8 @@ class FakeVendorMixin:
 class FakeHeos(FakeVendorMixin, HeosAdapter):
     vendor = "heos"
 
-    def vendor_track_id(self, canonical_id: str) -> str:
-        return canonical_id  # HEOS media_id is the bare Tidal id
+    def vendor_track_id(self, canonical_id: str, service: str = "tidal") -> str:
+        return canonical_id  # HEOS media_id is the bare service id
 
     def __init__(self, store: StateStore, ticker: _Ticker, art: ArtHelper | None = None) -> None:
         super().__init__(store, art=art)
@@ -597,7 +597,9 @@ class FakeHeos(FakeVendorMixin, HeosAdapter):
 class FakeSonos(FakeVendorMixin, SonosAdapter):
     vendor = "sonos"
 
-    def vendor_track_id(self, canonical_id: str) -> str:
+    def vendor_track_id(self, canonical_id: str, service: str = "tidal") -> str:
+        if service == "ytmusic":
+            return f"x-sonos-http:sonos-track:{canonical_id}.mp4?sid=284&flags=8232&sn=1"
         return f"x-sonos-http:track/{canonical_id}.flac?sid=174&flags=8224&sn=1"
 
     async def snapshot_queue(self, player_id: str) -> dict[str, object] | None:
@@ -785,6 +787,10 @@ class FakeBundle:
         self.tidal_linked = True
         self.tidal_pending = False  # fake device-code flow in progress
         self.on_tidal_link: Callable[[bool], None] | None = None  # flips the fake catalog
+        self.ytmusic_linked = True
+        self.ytmusic_pending = False
+        self.on_ytmusic_link: Callable[[bool], None] | None = None
+        self._ytmusic_link_task: asyncio.Task[None] | None = None
         self.on_pandora_link: Callable[[], None] | None = None  # drops the station cache
         self._link_task: asyncio.Task[None] | None = None
         self.fake_link_delay_s = 1.0
@@ -801,6 +807,46 @@ class FakeBundle:
                 a.linked_services.discard("tidal")
         if self.on_tidal_link is not None:
             self.on_tidal_link(linked)
+
+    def set_ytmusic_linked(self, linked: bool) -> None:
+        """Simulate linking/unlinking YouTube Music: the hub account (catalog) and the Sonos app.
+        HEOS never gains it (no YouTube Music source on HEOS, PRD §3.1)."""
+        self.ytmusic_linked = linked
+        self.ytmusic_pending = False
+        if linked:
+            self.sonos.linked_services.add("ytmusic")
+        else:
+            self.sonos.linked_services.discard("ytmusic")
+        self.heos.linked_services.discard("ytmusic")
+        if self.on_ytmusic_link is not None:
+            self.on_ytmusic_link(linked)
+
+    def start_fake_ytmusic_link(self) -> None:
+        self.ytmusic_pending = True
+        if self._ytmusic_link_task is not None:
+            self._ytmusic_link_task.cancel()
+
+        async def approve_later() -> None:
+            await asyncio.sleep(self.fake_link_delay_s)
+            if self.ytmusic_pending:
+                self.set_ytmusic_linked(True)
+
+        self._ytmusic_link_task = asyncio.get_running_loop().create_task(approve_later())
+
+    def approve_fake_ytmusic_link(self) -> bool:
+        if not self.ytmusic_pending:
+            return False
+        if self._ytmusic_link_task is not None:
+            self._ytmusic_link_task.cancel()
+            self._ytmusic_link_task = None
+        self.set_ytmusic_linked(True)
+        return True
+
+    @property
+    def ytmusic_state(self) -> str:
+        if self.ytmusic_linked:
+            return "linked"
+        return "pending" if self.ytmusic_pending else "unlinked"
 
     @property
     def pandora_enabled(self) -> bool:
@@ -881,6 +927,9 @@ class FakeBundle:
         if self._link_task is not None:
             self._link_task.cancel()
             self._link_task = None
+        if self._ytmusic_link_task is not None:
+            self._ytmusic_link_task.cancel()
+            self._ytmusic_link_task = None
         for a in self.adapters:
             await a.disconnect()
 
@@ -895,6 +944,9 @@ class FakeBundle:
         "link_tidal",
         "unlink_tidal",
         "approve_tidal",
+        "link_ytmusic",
+        "unlink_ytmusic",
+        "approve_ytmusic",
         "sync_drift",
         "sync_lose_sonos",
         "sync_track_change",
@@ -962,6 +1014,15 @@ class FakeBundle:
         if name == "approve_tidal":
             approved = self.approve_fake_link()
             return {"tidal_linked": self.tidal_linked, "approved": approved}
+        if name == "link_ytmusic":
+            self.set_ytmusic_linked(True)
+            return {"ytmusic_linked": True}
+        if name == "unlink_ytmusic":
+            self.set_ytmusic_linked(False)
+            return {"ytmusic_linked": False}
+        if name == "approve_ytmusic":
+            approved = self.approve_fake_ytmusic_link()
+            return {"ytmusic_linked": self.ytmusic_linked, "approved": approved}
         if name == "sync_drift":
             side = self.sonos.side_id()
             self.ticker.nudge(side, 800)

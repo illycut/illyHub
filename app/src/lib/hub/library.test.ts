@@ -64,12 +64,16 @@ describe("ref keys", () => {
 
 describe("normalisers (documented shapes only)", () => {
   it("home: recents is a bare array; other sections are {items, needs_link, error}", () => {
-    const h = asHome({ recents: [historyItem], playlists: { items: [browseItem], needs_link: null }, favorite_albums: { items: [], needs_link: "tidal" }, stations: { items: [], needs_link: null, error: "Pandora timed out." } });
+    const h = asHome({ recents: [historyItem], playlists: { items: [browseItem], needs_link: [] }, favorite_albums: { items: [], needs_link: ["tidal"] }, stations: { items: [], needs_link: [], error: "Pandora timed out." } });
     expect(h.recents.items[0]?.last_targets).toEqual(["heos:heos-1"]);
     expect(h.playlists.items[0]?.title).toBe("Warm Glow");
-    expect(h.favorite_albums.needs_link).toBe("tidal");
+    expect(h.favorite_albums.needs_link).toEqual(["tidal"]);
+    // a lone string from an older hub and null both normalise to a list
+    expect(asSection({ items: [], needs_link: "tidal" }, (x) => x).needs_link).toEqual(["tidal"]);
+    expect(asSection({ items: [], needs_link: null }, (x) => x).needs_link).toEqual([]);
+    expect(asSection({ items: [], linked: { tidal: true, ytmusic: null } }, (x) => x).linked).toEqual({ tidal: true, ytmusic: null });
     expect(h.stations.error).toBe("Pandora timed out.");
-    expect(asSection(undefined, (x) => x)).toEqual({ items: [], needs_link: null, error: null, linked: null });
+    expect(asSection(undefined, (x) => x)).toEqual({ items: [], needs_link: [], error: null, linked: null });
     expect(asSection({ items: [], linked: { heos: false, sonos: "x" } }, (x) => x).linked).toEqual({ heos: false, sonos: null });
   });
 
@@ -91,8 +95,9 @@ describe("normalisers (documented shapes only)", () => {
   it("availability defaults to true per ecosystem only when the hub omits the field", () => {
     const { availability, ...noAvail } = browseItem;
     void availability;
-    expect(asHome({ recents: [], playlists: { items: [noAvail], needs_link: null }, favorite_albums: { items: [], needs_link: null }, stations: { items: [], needs_link: null } }).playlists.items[0]?.availability).toEqual({ heos: true, sonos: true });
-    expect(asHome({ recents: [], playlists: { items: [{ ...browseItem, availability: { heos: false, sonos: true } }], needs_link: null }, favorite_albums: { items: [], needs_link: null }, stations: { items: [], needs_link: null } }).playlists.items[0]?.availability).toEqual({ heos: false, sonos: true });
+    expect(asHome({ recents: [], playlists: { items: [noAvail], needs_link: [] }, favorite_albums: { items: [], needs_link: [] }, stations: { items: [], needs_link: [] } }).playlists.items[0]?.availability).toEqual({ heos: true, sonos: true, reasons: null });
+    expect(asHome({ recents: [], playlists: { items: [{ ...browseItem, availability: { heos: false, sonos: true } }], needs_link: [] }, favorite_albums: { items: [], needs_link: [] }, stations: { items: [], needs_link: [] } }).playlists.items[0]?.availability).toEqual({ heos: false, sonos: true, reasons: null });
+    expect(asHome({ recents: [], playlists: { items: [{ ...browseItem, availability: { heos: false, sonos: true, reasons: { heos: "unsupported", sonos: null } } }], needs_link: [] }, favorite_albums: { items: [], needs_link: [] }, stations: { items: [], needs_link: [] } }).playlists.items[0]?.availability).toEqual({ heos: false, sonos: true, reasons: { heos: "unsupported", sonos: null } });
   });
 
   it("account status: state from the hub, pending as an object, last_error surfaced; derives state when absent", () => {
@@ -134,7 +139,7 @@ describe("calls", () => {
   const fetcher = (async (url: RequestInfo | URL, init?: RequestInit) => {
     const u = String(url).replace(/^https?:\/\/[^/]+/, "");
     calls.push({ m: init?.method ?? "GET", url: u, headers: (init?.headers ?? {}) as Record<string, string> });
-    if (u === "/api/home") return jsonResponse({ recents: [], playlists: { items: [browseItem], needs_link: null }, favorite_albums: { items: [], needs_link: null }, stations: { items: [], needs_link: null } });
+    if (u === "/api/home") return jsonResponse({ recents: [], playlists: { items: [browseItem], needs_link: [] }, favorite_albums: { items: [], needs_link: [] }, stations: { items: [], needs_link: [] } });
     if (u === "/api/browse/tidal/album/101") return jsonResponse({ item: browseItem, tracks: [track] });
     if (u === "/api/browse/tidal/album/missing") return jsonResponse({ code: "needs_link", message: "Tidal is not connected. Link it in Settings.", service: "tidal" }, 409);
     if (u === "/api/settings") return jsonResponse(settingsBody);

@@ -18,6 +18,7 @@ dependencies = [
     "pillow>=10.4",
     "tidalapi>=0.8,<1",
     "cryptography>=42",
+    "ytmusicapi>=1.10,<2",
 ]
 
 [project.scripts]

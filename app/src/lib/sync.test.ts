@@ -164,6 +164,7 @@ describe("offerContent (what the offer plays)", () => {
   const detail = (id: string, trackIds: string[]): Detail => ({
     item: { content_ref: { service: "tidal", kind: "album", id }, title: "x", subtitle: null, art } as Detail["item"],
     tracks: trackIds.map((tid, i) => ({ content_ref: { service: "tidal", kind: "track", id: tid }, title: `T${i}`, subtitle: null, art, index: i, artist: null, album: null })) as Detail["tracks"],
+    truncated: false,
   });
   const key = (r: { service: string; kind: string; id: string }) => `${r.service}:${r.kind}:${r.id}`;
   it("prefers the room's most recent container whose cached detail holds the current track, starting at that track", () => {

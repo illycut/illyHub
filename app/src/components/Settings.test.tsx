@@ -17,8 +17,8 @@ vi.mock("framer-motion", async () => {
   return { ...actual, AnimatePresence: ({ children }: { children: React.ReactNode }) => <>{children}</> };
 });
 
-type Acct = { service: string; state: string; linked: boolean; account_name: string | null; expires_at: string | null; pending: unknown; last_error: string | null };
-const acct = (service: string, over: Partial<Acct> = {}): Acct => ({ service, state: "unlinked", linked: false, account_name: null, expires_at: null, pending: null, last_error: null, ...over });
+type Acct = { service: string; state: string; linked: boolean; account_name: string | null; expires_at: string | null; pending: unknown; last_error: string | null; last_error_code?: string | null };
+const acct = (service: string, over: Partial<Acct> = {}): Acct => ({ service, state: "unlinked", linked: false, account_name: null, expires_at: null, pending: null, last_error: null, last_error_code: null, ...over });
 
 const settings = (tidal: Partial<Acct>) => ({
   accounts: [acct("tidal", tidal), acct("ytmusic"), acct("pandora", { state: "linked", linked: true }), acct("heos_account", { state: "linked", linked: true, account_name: "james@home" })],
@@ -61,7 +61,7 @@ function boot(opts: Opts = {}) {
       const st = opts.restartStatus ?? 202;
       return st === 409 ? jsonResponse({ code: "restart_disabled", message: "Restarting from the app is turned off on this hub." }, 409) : jsonResponse({ restarting: true }, 202);
     }
-    return jsonResponse({ recents: [], playlists: { items: [], needs_link: null }, favorite_albums: { items: [], needs_link: null }, stations: { items: [], needs_link: null } });
+    return jsonResponse({ recents: [], playlists: { items: [], needs_link: [] }, favorite_albums: { items: [], needs_link: [] }, stations: { items: [], needs_link: [] } });
   }) as unknown as typeof fetch;
   let now = 1_000_000;
   useHub.getState()._reset();
@@ -74,7 +74,7 @@ function boot(opts: Opts = {}) {
 
 describe("helpers", () => {
   it("status line, uptime copy, and the restart state machine", () => {
-    const base: AccountStatus = { service: "tidal", state: "unlinked", linked: false, account_name: null, expires_at: null, pending: null, last_error: null, linked_by_vendor: null };
+    const base: AccountStatus = { service: "tidal", state: "unlinked", linked: false, account_name: null, expires_at: null, pending: null, last_error: null, last_error_code: null, linked_by_vendor: null };
     expect(accountStatusLine(base)).toBe("Not connected");
     expect(accountStatusLine({ ...base, last_error: "Token refresh failed" })).toBe("Not connected · Token refresh failed");
     expect(accountStatusLine({ ...base, state: "linked", linked: true, account_name: "james" })).toBe("Connected · james");
@@ -96,19 +96,20 @@ describe("helpers", () => {
 });
 
 describe("SettingsScreen", () => {
-  it("renders the three groups from /api/settings; later-phase rows are disabled without opacity and read 'Coming later' (U5–U7); offline hardware is muted with a trailing Offline label (U8); passes axe", async () => {
+  it("renders the three groups from /api/settings; the YouTube Music row is live (Phase 6); the Pandora row is disabled without opacity and reads 'Coming later' (U5–U7); offline hardware is muted with a trailing Offline label (U8); passes axe", async () => {
     boot({ linked: true });
     const { container } = render(<SettingsScreen />);
     await waitFor(() => expect(screen.getByTestId("account-tidal")).toHaveTextContent("Connected · james"));
     const yt = screen.getByTestId("account-ytmusic");
-    expect(yt).toBeDisabled();
-    expect(yt).toHaveAttribute("aria-disabled", "true");
-    expect(yt).toHaveTextContent(COMING_LATER);
-    expect(yt.className).not.toContain("opacity");
-    expect(within(yt).queryByText("Connected")).toBeNull();
-    // Pandora is "linked" per the hub but disabled this phase: the line is the reason, never "Connected" (U6)
+    expect(yt).not.toBeDisabled();
+    expect(yt).toHaveTextContent("Not connected");
+    expect(yt).not.toHaveTextContent(COMING_LATER);
+    // Pandora is "linked" per the hub but linked in the vendor apps, not here: the line is the reason, never "Connected" (U6)
     const pandora = screen.getByTestId("account-pandora");
+    expect(pandora).toBeDisabled();
+    expect(pandora).toHaveAttribute("aria-disabled", "true");
     expect(pandora).toHaveTextContent(COMING_LATER);
+    expect(pandora.className).not.toContain("opacity");
     expect(pandora).not.toHaveTextContent("Connected");
     expect(screen.getByTestId("account-heos_account")).toHaveTextContent("Connected · james@home");
     expect(screen.getByTestId("hub-status")).toHaveTextContent("10.0.0.5:8080");

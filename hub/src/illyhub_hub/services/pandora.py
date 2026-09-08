@@ -257,11 +257,15 @@ class PandoraService:
             art=self.art.ref(
                 ArtHints(service=SERVICE, content_id=f"station:{key}", device_url=art_url)
             ),
-            availability=Availability(
-                heos="heos" in by_vendor,
-                sonos="sonos" in by_vendor,
-            ),
+            availability=self.station_availability_for(by_vendor),
         )
+
+    def station_availability_for(self, by_vendor: Mapping[str, Any]) -> Availability:
+        """Per-vendor flags with reasons: a vendor without Pandora is ``not_linked``; a linked
+        vendor whose account lacks the station is ``not_in_account``."""
+        linked = {v: bool(self.linked.get(v)) for v in VENDORS}
+        present = {v: v in by_vendor for v in VENDORS}
+        return Availability.build(SERVICE, linked, present=present)
 
     # -- lookups ------------------------------------------------------------------------
 

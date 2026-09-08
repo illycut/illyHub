@@ -39,6 +39,11 @@ async def client(tmp_path: Path) -> AsyncIterator[tuple[httpx.AsyncClient, HubRu
             yield c, app.state.runtime
 
 
+def flags(avail: dict) -> dict:
+    """Vendor flags only; `reasons` are asserted where the reason matters."""
+    return {"heos": avail["heos"], "sonos": avail["sonos"]}
+
+
 def ref(key: str) -> dict[str, str]:
     return {"service": "pandora", "kind": "station", "id": key}
 
@@ -57,15 +62,19 @@ async def test_merged_station_list_and_home_section(client) -> None:
     ]
     by_title = {i["title"]: i for i in page["items"]}
     assert by_title["Chill Radio"]["content_ref"] == ref("chill-radio")
-    assert by_title["Chill Radio"]["availability"] == {"heos": True, "sonos": True}
-    assert by_title["Living Room Mix"]["availability"] == {"heos": True, "sonos": False}
-    assert by_title["Patio Party"]["availability"] == {"heos": False, "sonos": True}
+    assert flags(by_title["Chill Radio"]["availability"]) == {"heos": True, "sonos": True}
+    assert flags(by_title["Living Room Mix"]["availability"]) == {"heos": True, "sonos": False}
+    assert flags(by_title["Patio Party"]["availability"]) == {"heos": False, "sonos": True}
+    assert by_title["Living Room Mix"]["availability"]["reasons"] == {
+        "heos": None,
+        "sonos": "not_in_account",
+    }
     assert by_title["Jazz Nights"]["art"]["url"].startswith("/api/art/")
     assert page["total"] == 6 and page["next_offset"] is None and page["limit"] == 500
     assert page["linked"] == {"heos": True, "sonos": True}
     home = (await c.get("/api/home")).json()
     assert [i["title"] for i in home["stations"]["items"]] == titles
-    assert home["stations"]["needs_link"] is None
+    assert home["stations"]["needs_link"] == []
     assert home["stations"]["linked"] == {"heos": True, "sonos": True}
 
 
@@ -160,7 +169,7 @@ async def test_unlink_per_vendor_then_everywhere(client) -> None:
     home = (await c.get("/api/home")).json()
     assert home["stations"] == {
         "items": [],
-        "needs_link": "pandora",
+        "needs_link": ["pandora"],
         "error": None,
         "linked": {"heos": False, "sonos": False},
     }
@@ -205,7 +214,7 @@ async def test_without_fake_pandora_the_section_is_empty_but_linked(tmp_path: Pa
             home = (await c.get("/api/home")).json()
             assert home["stations"] == {
                 "items": [],
-                "needs_link": None,
+                "needs_link": [],
                 "error": None,
                 "linked": {"heos": True, "sonos": True},
             }
@@ -236,7 +245,7 @@ async def test_auth_fault_on_one_vendor_is_distinct_from_not_linked_and_empty(cl
     assert r.status_code == 409 and r.json()["code"] == "needs_link"
     assert "signed in again" in r.json()["message"]
     home = (await c.get("/api/home")).json()
-    assert home["stations"]["needs_link"] == "pandora"
+    assert home["stations"]["needs_link"] == ["pandora"]
     assert home["stations"]["linked"] == {"heos": False, "sonos": False}
     await c.post("/api/dev/fake/pandora_auth_ok")
     assert (await c.get("/api/browse/pandora/stations")).json()["linked"] == {
@@ -302,13 +311,13 @@ async def test_history_rows_carry_availability_refreshed_from_the_live_map(clien
     )
     hist = (await c.get("/api/history")).json()["items"]
     by_kind = {h["content_ref"]["kind"]: h for h in hist}
-    assert by_kind["station"]["availability"] == {"heos": True, "sonos": False}
-    assert by_kind["album"]["availability"] == {"heos": True, "sonos": True}
+    assert flags(by_kind["station"]["availability"]) == {"heos": True, "sonos": False}
+    assert flags(by_kind["album"]["availability"]) == {"heos": True, "sonos": True}
     # Unlink Tidal on Sonos-only? Tidal is linked everywhere at once in fake mode; unlinking it
     # updates the album row's live availability on the next read.
     await c.post("/api/dev/fake/unlink_tidal")
     hist = (await c.get("/api/history")).json()["items"]
-    assert next(h for h in hist if h["content_ref"]["kind"] == "album")["availability"] == {
+    assert flags(next(h for h in hist if h["content_ref"]["kind"] == "album")["availability"]) == {
         "heos": False,
         "sonos": False,
     }
@@ -317,15 +326,21 @@ async def test_history_rows_carry_availability_refreshed_from_the_live_map(clien
     await c.post("/api/dev/fake/unlink_pandora?vendor=heos")
     home = (await c.get("/api/home")).json()
     station_recent = next(r for r in home["recents"] if r["content_ref"]["kind"] == "station")
-    assert station_recent["availability"] == {"heos": True, "sonos": False}  # snapshot: not in map
+    assert flags(station_recent["availability"]) == {
+        "heos": True,
+        "sonos": False,
+    }  # snapshot: not in map
     await c.post("/api/dev/fake/link_pandora?vendor=heos")
     await c.post("/api/dev/fake/unlink_pandora?vendor=sonos")
     await c.post("/api/play", json={"target": HEOS_SIDE, "content_ref": ref("chill-radio")})
     hist = (await c.get("/api/history")).json()["items"]
     chill = next(h for h in hist if h["content_ref"]["id"] == "chill-radio")
-    assert chill["availability"] == {"heos": True, "sonos": False}
+    assert flags(chill["availability"]) == {"heos": True, "sonos": False}
     await c.post("/api/dev/fake/link_pandora?vendor=sonos")
     await c.get("/api/home")  # warms the map with both vendors
     hist = (await c.get("/api/history")).json()["items"]
     chill = next(h for h in hist if h["content_ref"]["id"] == "chill-radio")
-    assert chill["availability"] == {"heos": True, "sonos": True}  # refreshed from the live map
+    assert flags(chill["availability"]) == {
+        "heos": True,
+        "sonos": True,
+    }  # refreshed from the live map

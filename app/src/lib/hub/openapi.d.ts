@@ -197,6 +197,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/meta/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Meta Messages
+         * @description Labels, unsupported pairs and message templates the app's copy tests read.
+         */
+        get: operations["meta_messages_api_meta_messages_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/tidal/start": {
         parameters: {
             query?: never;
@@ -325,6 +345,152 @@ export interface paths {
         };
         /** Tidal Playlist */
         get: operations["tidal_playlist_api_browse_tidal_playlist__playlist_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/ytmusic/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ytmusic Link Start */
+        post: operations["ytmusic_link_start_api_auth_ytmusic_start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/ytmusic/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ytmusic Link Status */
+        get: operations["ytmusic_link_status_api_auth_ytmusic_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/ytmusic/unlink": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ytmusic Unlink */
+        post: operations["ytmusic_unlink_api_auth_ytmusic_unlink_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/browse/ytmusic/playlists": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ytmusic Playlists
+         * @description The user's library playlists (owned and saved; ytmusicapi does not separate them).
+         */
+        get: operations["ytmusic_playlists_api_browse_ytmusic_playlists_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/browse/ytmusic/albums": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ytmusic Albums
+         * @description Library (liked) albums.
+         */
+        get: operations["ytmusic_albums_api_browse_ytmusic_albums_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/browse/ytmusic/album/{album_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ytmusic Album */
+        get: operations["ytmusic_album_api_browse_ytmusic_album__album_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/browse/ytmusic/playlist/{playlist_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ytmusic Playlist */
+        get: operations["ytmusic_playlist_api_browse_ytmusic_playlist__playlist_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/stream/ytmusic/{video_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ytmusic Stream
+         * @description Reserved for the HEOS yt-dlp bridge (ai-dev #67). The spike verdict is no-go for now:
+         *     docs/spikes/ytmusic-heos.md. HEOS sides report YouTube Music as unavailable.
+         */
+        get: operations["ytmusic_stream_api_stream_ytmusic__video_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -618,6 +784,8 @@ export interface components {
             } | null;
             /** Last Error */
             last_error?: string | null;
+            /** Last Error Code */
+            last_error_code?: string | null;
             /** Linked By Vendor */
             linked_by_vendor?: {
                 [key: string]: boolean | null;
@@ -699,7 +867,13 @@ export interface components {
         };
         /**
          * Availability
-         * @description Which ecosystems can play a service's content (the service is linked on that side).
+         * @description Which ecosystems can play a service's content, and why not when they cannot.
+         *
+         *     ``reasons[vendor]`` is ``null`` when available, else one of ``unsupported`` (the vendor cannot
+         *     play the service at all), ``not_linked`` (the vendor app lacks the service link) or
+         *     ``not_in_account`` (Pandora: the station is not in that vendor's account). The router's
+         *     messages remain the copy of record; the app uses the reason to pick the sentence before a
+         *     tap (``GET /api/meta/messages``).
          */
         Availability: {
             /**
@@ -712,6 +886,13 @@ export interface components {
              * @default false
              */
             sonos: boolean;
+            /**
+             * Reasons
+             * @description vendor -> null when available, else unsupported | not_linked | not_in_account
+             */
+            reasons?: {
+                [key: string]: string | null;
+            };
         };
         /** BrowseItem */
         BrowseItem: {
@@ -816,6 +997,11 @@ export interface components {
             item: components["schemas"]["BrowseItem"];
             /** Tracks */
             tracks: components["schemas"]["BrowseItem"][];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
         };
         /**
          * ContentRef
@@ -848,6 +1034,16 @@ export interface components {
             discovered: {
                 [key: string]: unknown;
             }[];
+        };
+        /**
+         * ErrorBody
+         * @description Bare error envelope shape (non-command routes) for OpenAPI ``responses``.
+         */
+        ErrorBody: {
+            /** Code */
+            code: string;
+            /** Message */
+            message: string;
         };
         /** ErrorEnvelope */
         ErrorEnvelope: {
@@ -1006,9 +1202,9 @@ export interface components {
             items?: components["schemas"]["BrowseItem"][];
             /**
              * Needs Link
-             * @description service to link, e.g. 'tidal'
+             * @description hub-linked services that contribute to this section and are currently unlinked (e.g. ['tidal']); items from every linked service still render
              */
-            needs_link?: string | null;
+            needs_link?: string[];
             /**
              * Error
              * @description section failed; others still render
@@ -1016,7 +1212,7 @@ export interface components {
             error?: string | null;
             /**
              * Linked
-             * @description per-ecosystem services (stations): vendor -> true | false | null (unknown)
+             * @description per-source linkage: library sections map service -> true | false | null (browse errored); the stations section maps vendor -> true | false | null (unknown)
              */
             linked?: {
                 [key: string]: boolean | null;
@@ -1795,6 +1991,28 @@ export interface operations {
             };
         };
     };
+    meta_messages_api_meta_messages_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
     tidal_link_start_api_auth_tidal_start_post: {
         parameters: {
             query?: never;
@@ -2009,6 +2227,232 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ytmusic_link_start_api_auth_ytmusic_start_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LinkStartResponse"];
+                };
+            };
+        };
+    };
+    ytmusic_link_status_api_auth_ytmusic_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountStatus"];
+                };
+            };
+        };
+    };
+    ytmusic_unlink_api_auth_ytmusic_unlink_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountStatus"];
+                };
+            };
+        };
+    };
+    ytmusic_playlists_api_browse_ytmusic_playlists_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrowsePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ytmusic_albums_api_browse_ytmusic_albums_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrowsePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ytmusic_album_api_browse_ytmusic_album__album_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                album_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Container"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ytmusic_playlist_api_browse_ytmusic_playlist__playlist_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                playlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Container"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ytmusic_stream_api_stream_ytmusic__video_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                video_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description HEOS bridge not implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
         };

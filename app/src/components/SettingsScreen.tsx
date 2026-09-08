@@ -1,34 +1,35 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AmpIcon, ChevronLeftIcon, ChevronRightIcon, ExternalLinkIcon, HubIcon, RefreshIcon, SpeakerIcon } from "./icons";
+import { AmpIcon, ChevronLeftIcon, ChevronRightIcon, HubIcon, RefreshIcon, SpeakerIcon } from "./icons";
 import { ServiceBadge } from "./ServiceBadge";
 import { Sheet } from "./Sheet";
 import { TextSkeleton } from "./Skeleton";
-import { library, LibraryError, type AccountStatus, type AuthStart, type Service } from "@/lib/hub/library";
+import { LinkSheet, NEEDS_CLIENT_CONFIG, type LinkPhase } from "./LinkSheet";
+import { library, LibraryError, type AccountStatus, type Service } from "@/lib/hub/library";
+import { SERVICE_LABEL, isHubLinked } from "@/lib/services";
 import { useLibrary, errorMessage } from "@/lib/library/store";
 import { useHub } from "@/lib/hub/store";
 import { toast } from "@/lib/ui/toasts";
 
-/** Fallback poll interval when the hub does not say (the start response carries `interval_s`). */
-export const AUTH_POLL_FALLBACK_MS = 2000;
 /** How long the reconnecting notice waits for the socket before giving up. */
 export const RESTART_TIMEOUT_MS = 20_000;
 export const RESTART_FAILED_COPY = "The hub didn't come back. Check the Mac.";
 
-const LABEL: Record<AccountStatus["service"], string> = {
-  tidal: "Tidal",
-  ytmusic: "YouTube Music",
-  pandora: "Pandora",
-  heos_account: "HEOS account",
-};
+const LABEL: Record<AccountStatus["service"], string> = { ...SERVICE_LABEL, heos_account: "HEOS account" };
 
 export const COMING_LATER = "Coming later";
+
+export const HUB_SETUP_NEEDED = "Hub setup needed";
 
 export function accountStatusLine(a: AccountStatus): string {
   if (a.state === "restoring") return "Reconnecting…";
   if (a.state === "pending") return "Waiting for approval…";
-  if (!a.linked) return a.last_error ? `Not connected · ${a.last_error}` : "Not connected";
+  if (!a.linked) {
+    // Missing OAuth client credentials on the hub: a short row line; the full sentence lives in the sheet (UX U4).
+    if (a.last_error_code === NEEDS_CLIENT_CONFIG) return `Not connected · ${HUB_SETUP_NEEDED}`;
+    return a.last_error ? `Not connected · ${a.last_error}` : "Not connected";
+  }
   return a.account_name ? `Connected · ${a.account_name}` : "Connected";
 }
 
@@ -42,13 +43,7 @@ export function formatUptime(s: number | null): string {
   return `${m}m`;
 }
 
-export type LinkPhase =
-  | { kind: "idle" }
-  | { kind: "starting" }
-  | { kind: "code"; start: AuthStart }
-  | { kind: "expired" }
-  | { kind: "linked"; name: string | null }
-  | { kind: "error"; message: string };
+export type { LinkPhase };
 
 /**
  * Restart notice state machine: armed on confirm, waits for the socket to leave "open" and come
@@ -138,19 +133,12 @@ function Group({ title, children }: { title: string; children: React.ReactNode }
   );
 }
 
-function hostOf(url: string): string {
-  try {
-    const u = new URL(url);
-    return u.host.replace(/^www\./, "") + (u.pathname !== "/" ? u.pathname : "");
-  } catch {
-    return url;
-  }
-}
 
 /**
  * Settings (design system §6.9, PRD SET-1..3): Accounts, Hub, Zones. Full-screen push; grouped
- * cards; destructive actions confirm in a bottom sheet, never a modal. `initialLink` starts the
- * Tidal device-code flow immediately (deep link from a "Connect Tidal" card).
+ * cards; destructive actions confirm in a bottom sheet, never a modal. `initialLink` starts that
+ * service's device-code flow immediately (deep link from a "Connect …" card). Tidal and YouTube
+ * Music share the one flow and the one sheet (`LinkSheet`); Pandora is linked in the vendor apps.
  */
 export function SettingsScreen({ initialLink = null }: { initialLink?: Service | null }) {
   const router = useRouter();
@@ -217,30 +205,42 @@ export function SettingsScreen({ initialLink = null }: { initialLink?: Service |
         };
         pollTimer.current = setTimeout(() => void poll(), intervalMs);
       } catch (e) {
-        if (alive()) setLink({ kind: "error", message: errorMessage(e) });
+        if (alive()) setLink({ kind: "error", message: errorMessage(e), code: e instanceof LibraryError ? e.code : null });
       }
     },
     [callOptions, invalidateHome, loadSettings, now, stopPolling],
   );
 
+  // Deep link from a "Connect …" card: once settings are known, start the flow as if the row were
+  // tapped, unless the account is already linked (then the row simply reads Connected).
+  const deepLinked = useRef(false);
+  const accountsData = settings.data?.accounts;
   useEffect(() => {
-    // Deep link from a "Connect …" card: start the flow after mount, as if the row were tapped.
-    const t = initialLink ? setTimeout(() => void startLink(initialLink), 0) : null;
-    return () => {
-      if (t) clearTimeout(t);
-      stopPolling();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once for the deep link
-  }, []);
+    if (!initialLink || deepLinked.current || !accountsData) return;
+    const account = accountsData.find((a) => a.service === initialLink);
+    if (account?.linked) {
+      deepLinked.current = true;
+      return;
+    }
+    const t = setTimeout(() => {
+      deepLinked.current = true;
+      void startLink(initialLink);
+    }, 0);
+    return () => clearTimeout(t);
+  }, [initialLink, accountsData, startLink]);
+
+  useEffect(() => () => stopPolling(), [stopPolling]);
 
   const closeLink = () => {
     stopPolling();
     setLink({ kind: "idle" });
-    setLinkService(null);
+    // `linkService` stays set so the sheet keeps its title through the exit animation.
   };
 
   const unlink = async (service: Service) => {
     setConfirmUnlink(null);
+    // Unlinking ends any pending code flow for the service and clears the sheet.
+    closeLink();
     try {
       await library.authUnlink(service, callOptions());
       await loadSettings(true);
@@ -297,6 +297,7 @@ export function SettingsScreen({ initialLink = null }: { initialLink?: Service |
         expires_at: null,
         pending: null,
         last_error: null,
+        last_error_code: null,
         linked_by_vendor: null,
       }));
 
@@ -333,7 +334,10 @@ export function SettingsScreen({ initialLink = null }: { initialLink?: Service |
             accounts.map((a) => {
               const svc = a.service;
               const isService = svc === "tidal" || svc === "ytmusic" || svc === "pandora";
-              const laterPhase = svc === "ytmusic" || svc === "pandora";
+              // Live rows are the hub-linked services (Tidal, YouTube Music). Pandora is linked in the
+              // vendor apps, so its row is informational until a later phase.
+              const live = isService && isHubLinked(svc);
+              const laterPhase = isService && !live;
               const restoring = a.state === "restoring";
               // A disabled row reads its reason, never "Connected" (UX U6, U7).
               const line = laterPhase ? COMING_LATER : accountStatusLine(a);
@@ -345,7 +349,7 @@ export function SettingsScreen({ initialLink = null }: { initialLink?: Service |
                   line={line}
                   skeleton={restoring}
                   disabled={laterPhase || svc === "heos_account" || restoring}
-                  onPress={isService && !laterPhase ? () => (a.linked ? setConfirmUnlink(svc) : void startLink(svc)) : undefined}
+                  onPress={live ? () => (a.linked ? setConfirmUnlink(svc) : void startLink(svc)) : undefined}
                   testId={`account-${svc}`}
                 />
               );
@@ -389,61 +393,8 @@ export function SettingsScreen({ initialLink = null }: { initialLink?: Service |
         </Group>
       </main>
 
-      {/* Link flow: device code + URL; polls status at the hub's interval until linked or expired. */}
-      <Sheet open={link.kind !== "idle"} onClose={closeLink} title={`Connect ${linkService ? LABEL[linkService] : ""}`} testId="link-sheet">
-        {link.kind === "starting" ? <TextSkeleton lines={3} /> : null}
-        {link.kind === "code" ? (
-          <div className="flex flex-col gap-4 pb-2">
-            <p className="text-body text-secondary">Enter this code at the link below, then come back here. This sheet updates on its own.</p>
-            <p className="numeric text-center text-display text-primary tracking-wide" data-testid="user-code">
-              {link.start.user_code}
-            </p>
-            <a
-              className="flex h-target items-center justify-center gap-2 rounded-control bg-overlay text-body text-primary"
-              href={link.start.verification_url}
-              target="_blank"
-              rel="noreferrer"
-              data-testid="open-verification"
-            >
-              Open {hostOf(link.start.verification_url)}
-              <ExternalLinkIcon size={18} />
-            </a>
-            <p className="text-center text-micro text-tertiary" role="status">
-              Waiting for {linkService ? LABEL[linkService] : "the service"}…
-            </p>
-          </div>
-        ) : null}
-        {link.kind === "expired" ? (
-          <div className="flex flex-col gap-4 pb-2">
-            <p className="text-body text-secondary" role="alert" data-testid="link-expired">
-              This code expired.
-            </p>
-            <button type="button" className="flex h-target items-center justify-center rounded-control bg-overlay text-body text-primary" onClick={() => linkService && void startLink(linkService)} data-testid="new-code">
-              Get a new code
-            </button>
-          </div>
-        ) : null}
-        {link.kind === "linked" ? (
-          <div className="flex flex-col gap-4 pb-2">
-            <p className="text-body text-primary" role="status" data-testid="link-done">
-              Connected{link.name ? ` · ${link.name}` : ""}
-            </p>
-            <button type="button" className="flex h-target items-center justify-center rounded-control bg-overlay text-body text-primary" onClick={closeLink}>
-              Done
-            </button>
-          </div>
-        ) : null}
-        {link.kind === "error" ? (
-          <div className="flex flex-col gap-4 pb-2">
-            <p className="text-body text-error" role="alert">
-              {link.message}
-            </p>
-            <button type="button" className="flex h-target items-center justify-center rounded-control bg-overlay text-body text-primary" onClick={() => linkService && void startLink(linkService)}>
-              Try again
-            </button>
-          </div>
-        ) : null}
-      </Sheet>
+      {/* Link flow (shared by Tidal and YouTube Music): device code + URL; polls at the hub's interval until linked or expired. */}
+      <LinkSheet service={linkService} phase={link} onClose={closeLink} onRetry={() => linkService && void startLink(linkService)} />
 
       <Sheet open={confirmUnlink !== null} onClose={() => setConfirmUnlink(null)} title={`Disconnect ${confirmUnlink ? LABEL[confirmUnlink] : ""}?`} testId="unlink-sheet">
         <p className="pb-4 text-body text-secondary">Playlists and albums from this account leave the home screen until you connect it again.</p>

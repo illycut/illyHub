@@ -441,6 +441,30 @@
     }
    }
   },
+  "/api/meta/messages": {
+   "get": {
+    "tags": [
+     "meta"
+    ],
+    "summary": "Meta Messages",
+    "description": "Labels, unsupported pairs and message templates the app's copy tests read.",
+    "operationId": "meta_messages_api_meta_messages_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response Meta Messages Api Meta Messages Get"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/auth/tidal/start": {
    "post": {
     "tags": [
@@ -730,6 +754,312 @@
        "application/json": {
         "schema": {
          "$ref": "#/components/schemas/Container"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/auth/ytmusic/start": {
+   "post": {
+    "tags": [
+     "auth"
+    ],
+    "summary": "Ytmusic Link Start",
+    "operationId": "ytmusic_link_start_api_auth_ytmusic_start_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/LinkStartResponse"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/auth/ytmusic/status": {
+   "get": {
+    "tags": [
+     "auth"
+    ],
+    "summary": "Ytmusic Link Status",
+    "operationId": "ytmusic_link_status_api_auth_ytmusic_status_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AccountStatus"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/auth/ytmusic/unlink": {
+   "post": {
+    "tags": [
+     "auth"
+    ],
+    "summary": "Ytmusic Unlink",
+    "operationId": "ytmusic_unlink_api_auth_ytmusic_unlink_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AccountStatus"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/browse/ytmusic/playlists": {
+   "get": {
+    "tags": [
+     "browse"
+    ],
+    "summary": "Ytmusic Playlists",
+    "description": "The user's library playlists (owned and saved; ytmusicapi does not separate them).",
+    "operationId": "ytmusic_playlists_api_browse_ytmusic_playlists_get",
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 50,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0,
+       "title": "Offset"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BrowsePage"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/browse/ytmusic/albums": {
+   "get": {
+    "tags": [
+     "browse"
+    ],
+    "summary": "Ytmusic Albums",
+    "description": "Library (liked) albums.",
+    "operationId": "ytmusic_albums_api_browse_ytmusic_albums_get",
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 50,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0,
+       "title": "Offset"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BrowsePage"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/browse/ytmusic/album/{album_id}": {
+   "get": {
+    "tags": [
+     "browse"
+    ],
+    "summary": "Ytmusic Album",
+    "operationId": "ytmusic_album_api_browse_ytmusic_album__album_id__get",
+    "parameters": [
+     {
+      "name": "album_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Album Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Container"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/browse/ytmusic/playlist/{playlist_id}": {
+   "get": {
+    "tags": [
+     "browse"
+    ],
+    "summary": "Ytmusic Playlist",
+    "operationId": "ytmusic_playlist_api_browse_ytmusic_playlist__playlist_id__get",
+    "parameters": [
+     {
+      "name": "playlist_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Playlist Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Container"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/stream/ytmusic/{video_id}": {
+   "get": {
+    "tags": [
+     "browse"
+    ],
+    "summary": "Ytmusic Stream",
+    "description": "Reserved for the HEOS yt-dlp bridge (ai-dev #67). The spike verdict is no-go for now:\ndocs/spikes/ytmusic-heos.md. HEOS sides report YouTube Music as unavailable.",
+    "operationId": "ytmusic_stream_api_stream_ytmusic__video_id__get",
+    "parameters": [
+     {
+      "name": "video_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Video Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "501": {
+      "description": "HEOS bridge not implemented",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorBody"
         }
        }
       }
@@ -1311,6 +1641,17 @@
       ],
       "title": "Last Error"
      },
+     "last_error_code": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Error Code"
+     },
      "linked_by_vendor": {
       "anyOf": [
        {
@@ -1519,11 +1860,26 @@
       "type": "boolean",
       "title": "Sonos",
       "default": false
+     },
+     "reasons": {
+      "additionalProperties": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "type": "object",
+      "title": "Reasons",
+      "description": "vendor -> null when available, else unsupported | not_linked | not_in_account"
      }
     },
     "type": "object",
     "title": "Availability",
-    "description": "Which ecosystems can play a service's content (the service is linked on that side)."
+    "description": "Which ecosystems can play a service's content, and why not when they cannot.\n\n``reasons[vendor]`` is ``null`` when available, else one of ``unsupported`` (the vendor cannot\nplay the service at all), ``not_linked`` (the vendor app lacks the service link) or\n``not_in_account`` (Pandora: the station is not in that vendor's account). The router's\nmessages remain the copy of record; the app uses the reason to pick the sentence before a\ntap (``GET /api/meta/messages``)."
    },
    "BrowseItem": {
     "properties": {
@@ -1770,6 +2126,11 @@
       },
       "type": "array",
       "title": "Tracks"
+     },
+     "truncated": {
+      "type": "boolean",
+      "title": "Truncated",
+      "default": false
      }
     },
     "type": "object",
@@ -1857,6 +2218,25 @@
      "discovered"
     ],
     "title": "DevicesResponse"
+   },
+   "ErrorBody": {
+    "properties": {
+     "code": {
+      "type": "string",
+      "title": "Code"
+     },
+     "message": {
+      "type": "string",
+      "title": "Message"
+     }
+    },
+    "type": "object",
+    "required": [
+     "code",
+     "message"
+    ],
+    "title": "ErrorBody",
+    "description": "Bare error envelope shape (non-command routes) for OpenAPI ``responses``."
    },
    "ErrorEnvelope": {
     "properties": {
@@ -2229,16 +2609,12 @@
       "title": "Items"
      },
      "needs_link": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
       "title": "Needs Link",
-      "description": "service to link, e.g. 'tidal'"
+      "description": "hub-linked services that contribute to this section and are currently unlinked (e.g. ['tidal']); items from every linked service still render"
      },
      "error": {
       "anyOf": [
@@ -2272,7 +2648,7 @@
        }
       ],
       "title": "Linked",
-      "description": "per-ecosystem services (stations): vendor -> true | false | null (unknown)"
+      "description": "per-source linkage: library sections map service -> true | false | null (browse errored); the stations section maps vendor -> true | false | null (unknown)"
      }
     },
     "type": "object",
