@@ -291,6 +291,33 @@ class HubState(BaseModel):
     connections: dict[str, ConnectionStatus] = Field(default_factory=dict)
 
 
+def queue_state_for(
+    entries: list[QueueEntry], total: int | None, now_playing: NowPlaying | None
+) -> QueueState:
+    """Assemble a :class:`QueueState` from one native queue read.
+
+    Three call sites build this -- the router's on-demand read and each adapter's event-driven
+    re-read -- and they must agree. They did not: the same six lines were copied three times, so
+    a correction applied to one of them silently did nothing to the endpoint's answer.
+
+    ``source`` comes from the playing item only when that item is actually *in* the queue. A HEOS
+    player keeps its queue while a station plays over the top: a 674-track Tidal queue was
+    observed sitting behind a playing Pandora station, which labelled the whole queue "pandora"
+    and would have badged Tidal tracks with the wrong service.
+    """
+    current = None
+    if now_playing is not None and now_playing.track_id:
+        current = next((e.index for e in entries if e.track_id == now_playing.track_id), None)
+    in_queue = now_playing is not None and current is not None
+    return QueueState(
+        items=list(entries),
+        current_index=current,
+        source=now_playing.source if in_queue else None,
+        total=total,
+        truncated=total is None or total > len(entries),
+    )
+
+
 def zone_for_player(state: HubState, player_id: str) -> Zone | None:
     """The Denon zone that owns ``player_id``'s volume, if any.
 

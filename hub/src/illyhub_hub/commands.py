@@ -55,6 +55,7 @@ from .state import (
     Side,
     StateStore,
     Zone,
+    queue_state_for,
     service_label,
     vendor_label,
     zone_for_player,
@@ -875,17 +876,7 @@ class CommandRouter:
             raise CommandError(
                 "vendor_error", f"{side.name} didn't return its queue.", side_id
             ) from exc
-        np = self.state.now_playing.get(side_id)
-        current = None
-        if np is not None and np.track_id:
-            current = next((e.index for e in entries if e.track_id == np.track_id), None)
-        queue = QueueState(
-            items=entries,
-            current_index=current,
-            source=np.source if np else None,
-            total=total,
-            truncated=total is None or total > len(entries),
-        )
+        queue = queue_state_for(entries, total, self.state.now_playing.get(side_id))
         self.store.set_queue(side_id, queue)
         return queue
 

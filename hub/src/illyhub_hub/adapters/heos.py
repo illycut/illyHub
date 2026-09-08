@@ -28,9 +28,9 @@ from ..state import (
     Player,
     PlayMode,
     QueueEntry,
-    QueueState,
     StateStore,
     optimistic_position,
+    queue_state_for,
     side_id_for,
     zone_for_player,
 )
@@ -614,9 +614,15 @@ class PyHeosAdapter(HeosAdapter):
         self, player_id: str, limit: int = 200
     ) -> tuple[list[QueueEntry], int | None]:
         """``player/get_queue`` (pyheos ``get_queue(range_start, range_end)``, 0-based). HEOS
-        returns at most 100 items per range, so the read pages up to ``limit``. The CLI has no
-        total: when the last page came back short the total is known (the item count); when it
-        came back full there may be more, and the total is ``None`` (unknown, truncated)."""
+        returns at most 100 items per range, so the read pages up to ``limit``.
+
+        The total is derived from paging: known when the last page came back short (the item
+        count), ``None`` when it came back full because there may be more. Not because the
+        protocol lacks a total -- ``player/get_queue`` reports ``count`` in its response message
+        (CLI spec 4.2.15; observed ``count=674`` on an AVR-X3400H while this returned ``None``).
+        ``pyheos.player_get_queue`` returns only ``result.payload`` and drops ``result.message``,
+        so the count is not reachable through its public API. Fixing this properly means either a
+        pyheos change or paging to exhaustion; do not "fix" it by reading ``heos._connection``."""
         raw = self._raw(player_id)
         get_queue = getattr(raw, "get_queue", None)
         if get_queue is None:
@@ -632,14 +638,19 @@ class PyHeosAdapter(HeosAdapter):
                 complete = True
                 break
             start = end + 1
-        source_id = getattr(getattr(raw, "now_playing_media", None), "source_id", None)
+        # Same trap as the queue-level source: a station playing over the top of a queue says
+        # nothing about what is *in* the queue, so its source is not a usable fallback.
+        media = getattr(raw, "now_playing_media", None)
+        is_station = (getattr(media, "type", None) or "") == "station"
+        source_id = None if is_station else getattr(media, "source_id", None)
         entries = [self._queue_entry(i, item, source_id) for i, item in enumerate(items[:limit])]
         self._queue_ids[player_id] = [_queue_id(item, i) for i, item in enumerate(items)]
         return entries, (len(items) if complete else None)
 
     def _queue_entry(self, index: int, item: Any, source_id: Any = None) -> QueueEntry:
         """A queue item does not name its source; the playing media's ``source_id`` is the best
-        signal for which service the queue came from (never assume Tidal)."""
+        signal for which service the queue came from (never assume Tidal), but only when that
+        media came from the queue -- a station is passed as ``None`` by the caller."""
         media_id = getattr(item, "media_id", None)
         sid = getattr(item, "source_id", None)
         sid = source_id if sid is None else sid
@@ -712,19 +723,7 @@ class PyHeosAdapter(HeosAdapter):
         if side not in self.store.state.sides:
             return
         np = self.store.state.now_playing.get(side)
-        current = None
-        if np is not None and np.track_id:
-            current = next((e.index for e in entries if e.track_id == np.track_id), None)
-        self.store.set_queue(
-            side,
-            QueueState(
-                items=entries,
-                current_index=current,
-                source=np.source if np else None,
-                total=total,
-                truncated=total is None or total > len(entries),
-            ),
-        )
+        self.store.set_queue(side, queue_state_for(entries, total, np))
         self._emit("queue", player_id=p_id)
 
     def _apply_now_playing(self, p: Player, raw: Any) -> None:

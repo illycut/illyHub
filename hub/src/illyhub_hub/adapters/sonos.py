@@ -34,9 +34,9 @@ from ..state import (
     Player,
     PlayMode,
     QueueEntry,
-    QueueState,
     StateStore,
     optimistic_position,
+    queue_state_for,
     side_id_for,
 )
 from ..tasks import stop_task
@@ -1106,19 +1106,7 @@ class SoCoAdapter(SonosAdapter):
         if side not in self.store.state.sides:
             return
         np = self.store.state.now_playing.get(side)
-        current = None
-        if np is not None and np.track_id:
-            current = next((e.index for e in entries if e.track_id == np.track_id), None)
-        self.store.set_queue(
-            side,
-            QueueState(
-                items=entries,
-                current_index=current,
-                source=np.source if np else None,
-                total=total,
-                truncated=total > len(entries),
-            ),
-        )
+        self.store.set_queue(side, queue_state_for(entries, total, np))
         self._emit("queue", player_id=p_id)
 
     def _sync_pollers(self) -> None:

@@ -72,7 +72,8 @@ async def test_heos_queue_pages_by_100_flags_truncation_and_maps_items(
     await a.connect()
     await heos_wait(lambda: a.status().state == "connected")
     entries, total = await a.get_queue("heos-1", limit=200)
-    # The CLI has no total. The last page came back full, so there may be more: total unknown.
+    # The last page came back full, so there may be more: total unknown. (The CLI itself does
+    # report `count`; pyheos drops it -- see HeosAdapter.get_queue.)
     assert total is None and len(entries) == 200
     assert gen.players[1].queue_calls[:2] == [(0, 99), (100, 199)]
     first = entries[0]
@@ -360,3 +361,37 @@ async def test_sonos_jump_bounds_and_upnp_refusal_map_to_index_error(
     finally:
         del type(k).queue_size  # type: ignore[attr-defined]
         await a.disconnect()
+
+
+async def test_a_station_playing_over_a_queue_does_not_label_the_queue(
+    store: StateStore, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A HEOS player keeps its queue while a station plays over the top.
+
+    Observed on an AVR-X3400H: a 674-track Tidal queue sitting behind a playing Pandora station.
+    The station's source describes what is playing, not what is in the queue, so borrowing it
+    labelled the whole queue "pandora" and would have badged Tidal tracks with the wrong service.
+    """
+    monkeypatch.setattr(heos_mod, "QUEUE_DEBOUNCE_S", 0.02)
+    gen = Generations()
+    p = QueuePlayer("Living Room Amp", 1, queue=big_queue(3))
+    p.now_playing_media.source_id = 1  # Pandora
+    p.now_playing_media.type = "station"
+    p.now_playing_media.media_id = "150519845455144797"  # a station id, not a queue track
+    gen.players = {1: p}
+    a = make(store, settings, gen)
+    await a.connect()
+    await heos_wait(lambda: a.status().state == "connected")
+
+    entries, _total = await a.get_queue("heos-1")
+    # No canonical ref invented from a station's service.
+    assert entries[0].content_ref is None
+    assert entries[0].title == "Song 1"  # the items themselves still read fine
+
+    # And the queue-level source stays unset, because the playing track is not in the queue.
+    p.fire(heos_mod.EVENT_QUEUE_CHANGED)
+    await heos_wait(lambda: "heos:heos-1" in store.state.queues)
+    q = store.state.queues["heos:heos-1"]
+    assert q.source is None, f"queue mislabelled as {q.source!r}"
+    assert q.current_index is None  # the station is not a queue position
+    await a.disconnect()
