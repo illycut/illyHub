@@ -1,6 +1,7 @@
 "use client";
 import { useShallow } from "zustand/react/shallow";
 import { ArtCard } from "./ArtCard";
+import { Rail, RailItem, RailSkeleton } from "./Rail";
 import { ArtSkeleton, EmptyState } from "./Skeleton";
 import { useHub } from "@/lib/hub/store";
 import type { HistoryItem } from "@/lib/hub/library";
@@ -35,9 +36,6 @@ function useSideInfo(): SideInfoMap {
   );
 }
 
-/** Bleed the rail to the screen edge using the same token as the screen margin (UX U11). */
-const BLEED = "-mx-[var(--screen-margin)] px-[var(--screen-margin)]";
-
 /**
  * Recently played rail (design system §6.2): horizontal scroll of art cards at --size-card with
  * the next card always peeking, a small target glyph per card, resume through the target picker.
@@ -57,22 +55,18 @@ export function RecentsRail({
   const sides = useSideInfo();
   if (loading && items.length === 0) {
     return (
-      <div className={`${BLEED} flex gap-3 overflow-hidden`} aria-hidden="true">
-        {[0, 1, 2].map((i) => (
-          <div key={i} className="w-card shrink-0">
-            <ArtSkeleton />
-          </div>
-        ))}
-      </div>
+      <RailSkeleton count={3}>
+        <ArtSkeleton />
+      </RailSkeleton>
     );
   }
   if (items.length === 0) return <EmptyState>Play something and it lands here.</EmptyState>;
   return (
-    <ul className={`no-scrollbar ${BLEED} flex snap-x snap-mandatory gap-3 overflow-x-auto pb-1`} style={{ scrollPaddingLeft: "var(--screen-margin)" }} data-testid="recents-rail">
+    <Rail testId="recents-rail">
       {items.map((it) => {
         const last = lastSideOf(it, sides);
         return (
-          <li key={`${it.content_ref.service}:${it.content_ref.kind}:${it.content_ref.id}`} className="w-card shrink-0 snap-start">
+          <RailItem key={`${it.content_ref.service}:${it.content_ref.kind}:${it.content_ref.id}`}>
             <ArtCard
               payload={it}
               title={it.title}
@@ -85,9 +79,9 @@ export function RecentsRail({
               onDetail={it.content_ref.kind === "album" || it.content_ref.kind === "playlist" ? onDetail : undefined}
               testId="recent-card"
             />
-          </li>
+          </RailItem>
         );
       })}
-    </ul>
+    </Rail>
   );
 }

@@ -4,6 +4,7 @@ import { useShallow } from "zustand/react/shallow";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArtCard } from "./ArtCard";
+import { Rail, RailItem, RailSkeleton } from "./Rail";
 import { RecentsRail } from "./RecentsRail";
 import { SearchBar, SearchResultsView, type SearchState } from "./Search";
 import { GearIcon, LayersIcon } from "./icons";
@@ -62,7 +63,13 @@ function useRoomsByVendor(): { heos: string[]; sonos: string[] } {
   }, [flat]);
 }
 
-/** Grid of art cards with skeletons, connect cards for unlinked services, and the §8 empty copy. */
+/**
+ * Rail of art cards with skeletons, connect cards for unlinked services, and the §8 empty copy.
+ *
+ * Was a 2-column grid. Stacked grids made the phone page as long as the library, so every
+ * section is a horizontal rail now (see Rail.tsx for the reasoning and the touch mechanics).
+ * The name is kept so call sites and tests do not churn; `CardGrid` is a rail.
+ */
 export function CardGrid({
   section,
   loading,
@@ -87,11 +94,9 @@ export function CardGrid({
   const needs = connect.length > 0;
   if (loading && !section) {
     return (
-      <div className="grid grid-cols-2 gap-3 tablet:grid-cols-4" aria-hidden="true">
-        {[0, 1, 2, 3].map((i) => (
-          <ArtSkeleton key={i} />
-        ))}
-      </div>
+      <RailSkeleton count={3}>
+        <ArtSkeleton />
+      </RailSkeleton>
     );
   }
   if (items.length === 0 && !needs) {
@@ -102,24 +107,27 @@ export function CardGrid({
     );
   }
   return (
-    <div className="grid grid-cols-2 gap-3 tablet:grid-cols-4" data-testid={testId}>
+    <Rail testId={testId}>
       {items.map((it) => (
-        <ArtCard
-          key={refKey(it.content_ref)}
-          payload={it}
-          title={it.title}
-          subtitle={it.subtitle}
-          art={it.art}
-          service={it.content_ref.service}
-          onPress={onPlay}
-          onDetail={it.content_ref.kind === "station" ? undefined : onDetail}
-          testId="grid-card"
-        />
+        <RailItem key={refKey(it.content_ref)}>
+          <ArtCard
+            payload={it}
+            title={it.title}
+            subtitle={it.subtitle}
+            art={it.art}
+            service={it.content_ref.service}
+            onPress={onPlay}
+            onDetail={it.content_ref.kind === "station" ? undefined : onDetail}
+            testId="grid-card"
+          />
+        </RailItem>
       ))}
       {connect.map((svc) => (
-        <ConnectCard key={svc} service={SERVICE_LABEL[svc]} onPress={() => onConnect(svc)} />
+        <RailItem key={svc}>
+          <ConnectCard service={SERVICE_LABEL[svc]} onPress={() => onConnect(svc)} />
+        </RailItem>
       ))}
-    </div>
+    </Rail>
   );
 }
 

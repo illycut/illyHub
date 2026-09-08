@@ -21,6 +21,14 @@ export const STOP_SYNC = "Stop sync";
 export const RETRY = "Retry";
 /** Picker note when Sync Play was launched from the Now Playing offer (UX S6). */
 export const SYNC_OFFER_NOTE = "Restarts from the current track on both.";
+/**
+ * Why there is no Sync Play button. The button simply vanishing is the least discoverable state
+ * there is: the owner went looking for it while playing Pandora in one room and YouTube Music in
+ * the other, neither of which can sync, and concluded the feature was unclear rather than
+ * unavailable. Facts and fixes, no apology (design system §10).
+ */
+export const SYNC_NEEDS_TIDAL = "Sync Play needs Tidal.";
+export const SYNC_NEEDS_PARTNER = "Sync Play needs a room on the other system.";
 
 /** A session exists and the user can act on it (chip visible): includes "lost". */
 const ACTIVE: ReadonlySet<SyncStatus> = new Set(["resolving", "priming", "verifying", "starting", "locked", "drifting", "correcting", "lost"]);
@@ -167,6 +175,27 @@ export function syncOffer(
     candidates.sort((a, b) => a.name.localeCompare(b.name))[0]!;
   const partnerName = partner.name || "another room";
   return active.vendor === "heos" ? { heos: active.id, sonos: partner.id, partnerName } : { heos: partner.id, sonos: active.id, partnerName };
+}
+
+/**
+ * The one-line reason no Sync Play button is offered, or null when none should be shown.
+ *
+ * Deliberately quiet in two cases: nothing is playing (there is no claim to make yet) and the
+ * content *is* eligible (the offer is either showing or the user dismissed it). It only speaks
+ * when the absence would otherwise look like a missing feature.
+ */
+export function syncUnavailableNote(
+  active: Side | null,
+  contentRef: { service: string } | null | undefined,
+  sides: Record<string, Side>,
+  onlineOf: (side: Side) => boolean,
+  sync: SyncState | null | undefined,
+): string | null {
+  if (!active || isSyncActive(sync)) return null;
+  const partners = Object.values(sides).filter((s) => s.vendor !== active.vendor && onlineOf(s));
+  if (partners.length === 0) return SYNC_NEEDS_PARTNER;
+  if (!contentRef) return null;
+  return contentRef.service === "tidal" ? null : SYNC_NEEDS_TIDAL;
 }
 
 /**

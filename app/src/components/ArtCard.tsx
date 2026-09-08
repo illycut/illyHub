@@ -70,10 +70,22 @@ function ArtCardInner<T>({ payload, title, subtitle, art, service, lastVendor, l
       {/* Text row is a full 48px target tall so the chevron sits inside the card box, >= 8px
           below the art button and never overhanging the gutter (UX U2). */}
       <div className="mt-2 flex min-h-target items-start gap-1">
-        <div className="min-w-0 flex-1 pt-1">
+        {/* The title block plays too. It used to be an inert div, so a tap on the words did
+            nothing while the artwork right above worked — a dead 48px region that reads as
+            broken. Not focusable and hidden from assistive tech on purpose: it is a second hit
+            area for the art button's action, and that button already carries the full label,
+            so announcing it twice would be noise. */}
+        <button
+          type="button"
+          className="min-w-0 flex-1 pt-1 text-left"
+          onClick={() => onPress(payload)}
+          tabIndex={-1}
+          aria-hidden="true"
+          data-testid="card-text"
+        >
           <div className="clamp-1 text-body text-primary">{title}</div>
           {subtitle ? <div className="clamp-1 text-caption text-secondary">{subtitle}</div> : null}
-        </div>
+        </button>
         {onDetail ? (
           <button
             type="button"
@@ -93,7 +105,7 @@ function ArtCardInner<T>({ payload, title, subtitle, art, service, lastVendor, l
 /**
  * Art card (design system §6.1): square artwork with radius-art, title in body, subtitle in
  * caption, service badge chip overlaid bottom-left at 8px inset. Pressed: scale 0.97 over
- * bg-overlay. No hover shadows. Tapping the card plays (through the target picker); the chevron
- * opens the detail view. Memoised: with stable handlers it re-renders only when its item changes.
+ * bg-overlay. No hover shadows. Tapping the artwork *or the title* plays (through the target
+ * picker); the chevron opens the detail view. Memoised: with stable handlers it re-renders only when its item changes.
  */
 export const ArtCard = memo(ArtCardInner) as typeof ArtCardInner;

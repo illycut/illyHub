@@ -20,6 +20,7 @@ from typing import Any, Protocol
 from ..content import NeedsLinkError
 from ..logsetup import get_logger
 from ..tasks import cancel_all, spawn
+from .links import absolute_verification_url
 from .vault import Vault
 
 log = get_logger("auth.tidal")
@@ -217,7 +218,11 @@ class TidalAuth:
         expires_at = self.clock() + timedelta(seconds=float(link.expires_in))
         self.pending = PendingLink(
             user_code=link.user_code,
-            verification_url=link.verification_uri_complete or link.verification_uri,
+            # Tidal returns these without a scheme ("link.tidal.com/ABC12"), which a client
+            # would treat as a relative href. See auth/links.py.
+            verification_url=absolute_verification_url(
+                link.verification_uri_complete or link.verification_uri
+            ),
             expires_at=expires_at,
             interval_s=float(link.interval),
         )

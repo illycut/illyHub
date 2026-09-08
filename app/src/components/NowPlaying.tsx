@@ -9,6 +9,7 @@ import { TransportRow } from "./TransportRow";
 import { VolumeSheet } from "./VolumeSheet";
 import { ZoneDots } from "./ZoneDots";
 import { SyncChip } from "./SyncChip";
+import type { Side } from "@/lib/hub/types";
 import { PandoraSyncChip } from "./PandoraSyncChip";
 import { Slider } from "./Slider";
 import { PlayOptionsRow } from "./PlayOptionsRow";
@@ -23,7 +24,7 @@ import { resolveActiveSide, zoneDotsForState, zoneDotsLabel } from "@/lib/select
 import { useReducedMotion } from "@/lib/reducedMotion";
 import { Coalescer } from "@/lib/coalesce";
 import { scrubFill } from "@/lib/color";
-import { STOP_SYNC, SYNC_BUTTON, SYNC_OFFER_NOTE, isSyncActive, offerContent, syncLabel, syncLabelShort, syncOffer, syncSideIds, type SyncOffer } from "@/lib/sync";
+import { STOP_SYNC, SYNC_BUTTON, SYNC_OFFER_NOTE, isSyncActive, offerContent, syncLabel, syncLabelShort, syncOffer, syncSideIds, syncUnavailableNote, type SyncOffer } from "@/lib/sync";
 import type { PlayRequest } from "@/lib/ui/chrome";
 import { readLastTarget } from "@/lib/prefs";
 import { useLibrary } from "@/lib/library/store";
@@ -53,13 +54,16 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
       const players = s.state?.players;
       const active = resolveActiveSide(s.state, s.activeSideId);
       const ref = active ? s.state?.now_playing[active.id]?.content_ref : null;
-      const offer = syncOffer(active, ref, sides, (side) => players?.[side.coordinator_player_id]?.online ?? true, s.state?.sync, readLastTarget() ?? []);
+      const online = (side: Side) => players?.[side.coordinator_player_id]?.online ?? true;
+      const offer = syncOffer(active, ref, sides, online, s.state?.sync, readLastTarget() ?? []);
       return {
         label: syncLabel(s.state?.sync, sides),
         shortLabel: syncLabelShort(s.state?.sync),
         offerHeos: offer?.heos ?? null,
         offerSonos: offer?.sonos ?? null,
         offerPartner: offer?.partnerName ?? null,
+        // Only when there is no offer: says why, so the button's absence is not a mystery.
+        unavailable: offer ? null : syncUnavailableNote(active, ref, sides, online, s.state?.sync),
       };
     }),
   );
@@ -257,6 +261,10 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
                       >
                         {SYNC_BUTTON}
                       </button>
+                    ) : syncView.unavailable ? (
+                      <span className="ml-auto text-caption text-tertiary" data-testid="sync-unavailable">
+                        {syncView.unavailable}
+                      </span>
                     ) : null}
                   </div>
                   {bridged ? (

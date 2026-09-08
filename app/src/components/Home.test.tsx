@@ -42,6 +42,15 @@ describe("ArtCard", () => {
     expect(onPress).toHaveBeenCalledWith("p");
     await userEvent.click(screen.getByRole("button", { name: "Open Kind of Blue" }));
     expect(onDetail).toHaveBeenCalledWith("p");
+    // The title block is a second hit area for play: it used to be an inert div, so tapping the
+    // words did nothing while the artwork above worked. Not focusable and hidden from assistive
+    // tech, because the art button already carries the descriptive label.
+    onPress.mockClear();
+    const text = screen.getByTestId("card-text");
+    await userEvent.click(text);
+    expect(onPress).toHaveBeenCalledWith("p");
+    expect(text).toHaveAttribute("aria-hidden", "true");
+    expect(text).toHaveAttribute("tabindex", "-1");
     expect(artCardLabel("X", null, "pandora", null)).toBe("Play X. Pandora");
     // the chevron sits inside the card box (no negative top margin) and the text row is a full target tall
     const chevron = screen.getByTestId("card-detail");
@@ -99,7 +108,7 @@ describe("CardGrid", () => {
   });
   it("shows skeletons before data, empty copy with no items, and a section error as an alert", () => {
     const { rerender } = render(<CardGrid section={null} loading connect={[]} onPlay={() => {}} onDetail={() => {}} onConnect={() => {}} emptyCopy="Nothing here." testId="g" />);
-    expect(document.querySelectorAll("[data-skeleton]").length).toBe(4);
+    expect(document.querySelectorAll("[data-skeleton]").length).toBe(3);  // a rail, not a 4-up grid
     rerender(<CardGrid section={{ items: [], needs_link: [], error: null, linked: null }} loading={false} connect={[]} onPlay={() => {}} onDetail={() => {}} onConnect={() => {}} emptyCopy="Nothing here." testId="g" />);
     expect(screen.getByText("Nothing here.")).toBeInTheDocument();
     rerender(<CardGrid section={{ items: [], needs_link: [], error: "Tidal timed out.", linked: null }} loading={false} connect={[]} onPlay={() => {}} onDetail={() => {}} onConnect={() => {}} emptyCopy="Nothing here." testId="g" />);
@@ -158,5 +167,45 @@ describe("HomeScreen", () => {
     useLibrary.setState({ _deps: { fetcher: (async () => jsonResponse({ code: "vendor_error", message: "Tidal isn't answering." }, 502)) as unknown as typeof fetch, now: () => Date.now(), timeoutMs: 8000 } });
     render(<HomeScreen />);
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Tidal isn't answering."));
+  });
+});
+
+describe("home sections are rails, not stacked grids", () => {
+  it("scrolls horizontally, bleeds to the screen edge, and keeps every section one row tall", () => {
+    const items = Array.from({ length: 8 }, (_, i) => ({
+      title: `Album ${i}`,
+      subtitle: "Artist",
+      art: { url: null, cache_key: null, accent: null, accent_is_safe: false },
+      content_ref: { service: "tidal" as const, kind: "album" as const, id: String(i) },
+      duration_ms: null,
+      track_count: null,
+      availability: { heos: true, sonos: true },
+    })) satisfies LibraryItem[];
+    render(
+      <CardGrid
+        section={{ items, needs_link: [], error: null, linked: null }}
+        loading={false}
+        connect={[]}
+        onPlay={() => {}}
+        onDetail={() => {}}
+        onConnect={() => {}}
+        emptyCopy=""
+        testId="albums-grid"
+      />,
+    );
+    const rail = screen.getByTestId("albums-grid");
+    // Horizontal scroll rather than a wrapping grid: the whole point of the change is that a
+    // section's height does not grow with the library.
+    expect(rail.className).toContain("overflow-x-auto");
+    expect(rail.className).not.toMatch(/grid-cols/);
+    // Bleeds past the screen margin so the next card peeks, which is the scroll affordance.
+    expect(rail.className).toContain("-mx-[var(--screen-margin)]");
+    expect(rail.style.scrollPaddingLeft).toBe("var(--screen-margin)");
+    // Proximity, not mandatory: a mandatory rail fights a fast flick across a long row.
+    expect(rail.className).toContain("snap-proximity");
+    // Every card keeps the card width and never shrinks, so 8 items make one long row.
+    const slots = rail.querySelectorAll("li");
+    expect(slots.length).toBe(8);
+    for (const li of slots) expect(li.className).toContain("w-card");
   });
 });

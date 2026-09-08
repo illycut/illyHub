@@ -102,9 +102,17 @@ Long titles truncate with ellipsis at one line on cards, two lines on Now Playin
 
 **Screen margins:** 16px phone, 24px tablet.
 
-**Card grids:**
-- Playlist/album grid: 2 columns phone, 4 tablet, 12px gutters
-- Recents rail: horizontal scroll, cards at 148px (phone) / 180px (tablet), peek of next card always visible
+**Card rails** (revised Sept 8, 2026 — was "card grids"):
+- **Every home section is a horizontal rail**, not a grid: cards at 148px (phone) / 180px
+  (tablet), 12px gutters, peek of the next card always visible, snap on proximity.
+- The rail bleeds past the screen margin to the physical edge so the peeking card is visible;
+  that peek is the only affordance saying the row scrolls, and the scrollbar stays hidden.
+- Rationale: stacked 2-column grids made the phone page as long as the library. Three sections
+  meant scrolling past everything to reach the last, and no section could be scanned without
+  committing to vertical travel. One row per section bounds the page height by the number of
+  sections instead. Same shape as a streaming video service, which is what the pattern is
+  borrowed from.
+- Snap is *proximity*, not mandatory: a mandatory rail fights a fast flick along a long row.
 
 **Radii (hierarchy, not one value everywhere):**
 
@@ -118,8 +126,7 @@ Long titles truncate with ellipsis at one line on cards, two lines on Now Playin
 **Elevation:** dark UIs elevate with lighter surface color, not shadow. `bg-base` → `bg-raised` → `bg-overlay` is the stack. One exception: the mini-player casts a soft upward shadow (`0 -8px 24px rgba(0,0,0,0.45)`) because it floats over scrolling content.
 
 **Artwork sizes** (matches PRD art pipeline):
-- Grid card: 320px source, displayed at 148 to 180px
-- Recents rail: same
+- Rail card: 320px source, displayed at 148 to 180px (every section, recents included)
 - Mini-player thumb: 96px source at 44px
 - Now Playing hero: 1080px source, edge-to-edge with 8px radius
 
@@ -147,8 +154,13 @@ Service identity uses each platform's logo mark, not text labels. Rules:
 ### 6.1 Art card
 Artwork square, `radius-art`, title in `body` below, artist/meta in `caption`, service badge chip overlaid bottom-left of the art at 8px inset. Pressed state: scale 0.97, `bg-overlay` behind. No hover-lift shadows.
 
-### 6.2 Recents rail
-Horizontal scroll of art cards. Each card shows a small target glyph (amp or speaker) in the corner indicating where it last played. Tap opens the target picker with the last-used target pre-highlighted; confirming plays. The common case is two fast taps, and content never surprises the wrong room.
+### 6.2 Rails (recents, playlists, albums, stations)
+Horizontal scroll of art cards; one rail per home section, all sharing one implementation.
+**Tapping the artwork or the title plays** — the title block is a second hit area for the same
+action, because an inert title next to working artwork reads as broken. The chevron is the only
+other target in the row and opens detail.
+
+The recents rail additionally: Each card shows a small target glyph (amp or speaker) in the corner indicating where it last played. Tap opens the target picker with the last-used target pre-highlighted; confirming plays. The common case is two fast taps, and content never surprises the wrong room.
 
 ### 6.3 Mini-player (persistent)
 Pinned bottom bar, 64px tall, `bg-raised`, `radius-sheet` top corners. Contents: 44px art thumb, title + artist stacked (marquee allowed), play/pause, and the **zone dot cluster**: one dot per active output, amber-lit when live. Past 4 active outputs the cluster collapses to a count chip ("5 rooms"). Tap anywhere expands to Now Playing with a shared-element transition on the artwork. Swipe down collapses.

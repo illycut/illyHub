@@ -23,6 +23,7 @@ from typing import Any, Protocol
 from ..content import NeedsClientConfigError, NeedsLinkError
 from ..logsetup import get_logger
 from ..tasks import cancel_all, spawn
+from .links import absolute_verification_url
 from .vault import Vault
 
 log = get_logger("auth.ytmusic")
@@ -260,7 +261,9 @@ class YTMusicAuth:
         pending = PendingLink(
             device_code=str(code["device_code"]),
             user_code=str(code.get("user_code", "")),
-            verification_url=str(code.get("verification_url") or "https://www.google.com/device"),
+            verification_url=absolute_verification_url(
+                str(code.get("verification_url") or ""), "https://www.google.com/device"
+            ),
             expires_at=self.clock() + timedelta(seconds=expires_in),
             interval_s=interval,
         )
