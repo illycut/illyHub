@@ -15,6 +15,8 @@ import { AirPlayGlyph } from "./PandoraSyncChip";
 import { CheckIcon } from "./icons";
 import { useLibrary, errorMessage } from "@/lib/library/store";
 import { useHub } from "@/lib/hub/store";
+import { HubAddressScreen } from "@/components/HubAddressScreen";
+import { reloadForHubBase, useNativeShell, useStoredHubBase } from "@/components/NativeGate";
 import { toast } from "@/lib/ui/toasts";
 
 /** How long the reconnecting notice waits for the socket before giving up. */
@@ -182,6 +184,9 @@ export function SettingsScreen({ initialLink = null }: { initialLink?: Service |
   const [confirmUnlink, setConfirmUnlink] = useState<Service | null>(null);
   const [confirmRestart, setConfirmRestart] = useState(false);
   const [restart, setRestart] = useState<RestartState>({ kind: "idle" });
+  const [addressOpen, setAddressOpen] = useState(false);
+  const nativeShell = useNativeShell();
+  const storedHubBase = useStoredHubBase();
   // AirPlay outputs sheet (Phase 7, read-only): fetched when opened, never cached.
   const [outputsOpen, setOutputsOpen] = useState(false);
   const [outputs, setOutputs] = useState<{ loading: boolean; data: AirPlayStatus | null; error: string | null }>({ loading: false, data: null, error: null });
@@ -542,6 +547,9 @@ export function SettingsScreen({ initialLink = null }: { initialLink?: Service |
             }
             testId="hub-status"
           />
+          {nativeShell || storedHubBase ? (
+            <Row icon={<HubIcon size={22} className="text-secondary" />} title="Hub address" line={storedHubBase ?? "Not set"} onPress={() => setAddressOpen(true)} testId="hub-address-row" />
+          ) : null}
           <Row
             icon={<RefreshIcon size={22} className="text-secondary" />}
             title={UPDATE_ROW_TITLE}
@@ -618,6 +626,9 @@ export function SettingsScreen({ initialLink = null }: { initialLink?: Service |
       {/* Link flow (shared by Tidal and YouTube Music): device code + URL; polls at the hub's interval until linked or expired. */}
       <LinkSheet service={linkService} phase={link} onClose={closeLink} onRetry={() => linkService && void startLink(linkService)} />
 
+      <Sheet open={addressOpen} onClose={() => setAddressOpen(false)} title="Hub address" testId="hub-address-sheet">
+        {addressOpen ? <HubAddressScreen embedded onSaved={reloadForHubBase} onCancel={() => setAddressOpen(false)} onForget={storedHubBase ? reloadForHubBase : undefined} /> : null}
+      </Sheet>
       <Sheet open={confirmUnlink !== null} onClose={() => setConfirmUnlink(null)} title={`Disconnect ${confirmUnlink ? LABEL[confirmUnlink] : ""}?`} testId="unlink-sheet">
         <p className="pb-4 text-body text-secondary">Playlists and albums from this account leave the home screen until you connect it again.</p>
         <div className="flex flex-col gap-2 pb-2">

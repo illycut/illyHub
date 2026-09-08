@@ -5,7 +5,7 @@ const config = [
   ...nextVitals,
   ...nextTs,
   {
-    ignores: ["out/**", ".next/**", "node_modules/**", "coverage/**", "playwright-report/**", "test-results/**", "src/lib/hub/openapi.d.ts"],
+    ignores: ["android/**", "out/**", ".next/**", "node_modules/**", "coverage/**", "playwright-report/**", "test-results/**", "src/lib/hub/openapi.d.ts"],
   },
 ];
 

@@ -15,7 +15,10 @@
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
     "e2e": "playwright test",
-    "openapi": "cd ../hub && uv run python -c \"import json; from illyhub_hub.api import create_app; from illyhub_hub.config import Settings; json.dump(create_app(Settings(fake_devices=True, fake_tidal=True, _env_file=None)).openapi(), open('../app/src/lib/hub/openapi.json','w'), indent=1)\" && cd ../app && openapi-typescript src/lib/hub/openapi.json -o src/lib/hub/openapi.d.ts && cd ../hub && uv run python -m illyhub_hub.messages > ../app/src/lib/hub/messages.json"
+    "openapi": "cd ../hub && uv run python -c \"import json; from illyhub_hub.api import create_app; from illyhub_hub.config import Settings; json.dump(create_app(Settings(fake_devices=True, fake_tidal=True, _env_file=None)).openapi(), open('../app/src/lib/hub/openapi.json','w'), indent=1)\" && cd ../app && openapi-typescript src/lib/hub/openapi.json -o src/lib/hub/openapi.d.ts && cd ../hub && uv run python -m illyhub_hub.messages > ../app/src/lib/hub/messages.json",
+    "android:sync": "next build && cap sync android",
+    "android:build": "npm run android:sync && cd android && ./gradlew assembleDebug",
+    "android:release": "npm run android:sync && cd android && ./gradlew assembleRelease"
   },
   "dependencies": {
     "framer-motion": "^13.2.0",
@@ -26,6 +29,9 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@capacitor/android": "7.6.9",
+    "@capacitor/cli": "7.6.9",
+    "@capacitor/core": "7.6.9",
     "@playwright/test": "^1.63.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.3",

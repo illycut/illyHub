@@ -1,0 +1,94 @@
+name: Android APK
+
+# Builds the Capacitor shell (docs/android.md) and attaches the debug APK to a rolling
+# pre-release tagged `android-latest`. Kept separate from ci.yml so the PR gate stays fast.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    name: debug APK (Capacitor, Gradle)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # ubuntu-latest ships the Android SDK; this pins the platform/build-tools the Capacitor
+      # template expects and accepts the licences non-interactively.
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-35 build-tools;35.0.0
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - run: npm ci
+
+      - name: Build export, sync Capacitor, assemble debug APK
+        env:
+          # Monotonic build number for Android; versionName comes from app/package.json.
+          ANDROID_VERSION_CODE: ${{ github.run_number }}
+        run: npm run android:build
+
+      - name: Name the APKs
+        id: apk
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          DIR=android/app/build/outputs/apk/debug
+          # Versioned copy for the 30-day artifact; a stable name for the rolling release so the
+          # phone's download link never changes.
+          cp "$DIR/app-debug.apk" "$DIR/illyhub-${VERSION}-debug-${GITHUB_RUN_NUMBER}.apk"
+          cp "$DIR/app-debug.apk" "$DIR/illyhub-android-debug.apk"
+          echo "versioned=app/$DIR/illyhub-${VERSION}-debug-${GITHUB_RUN_NUMBER}.apk" >> "$GITHUB_OUTPUT"
+          echo "stable=app/$DIR/illyhub-android-debug.apk" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: illyhub-android-debug
+          path: ${{ steps.apk.outputs.versioned }}
+          if-no-files-found: error
+          retention-days: 30
+
+      # Rolling pre-release: the asset under the fixed tag `android-latest` is replaced on every
+      # successful main build; the body says which version and run it is. Never a release build.
+      - name: Publish rolling android-latest pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-latest
+          name: Android debug APK (latest main)
+          prerelease: true
+          make_latest: false
+          body: |
+            Debug build of the illyHub Android shell from `main` @ ${{ github.sha }}
+            (app version ${{ steps.apk.outputs.version }}, build ${{ github.run_number }}).
+            Debug-signed; not a release build.
+
+            Install: download `illyhub-android-debug.apk` on the phone, allow the install, open
+            illyHub, enter the hub address (for example `http://192.168.50.10:8080`). See `docs/android.md`.
+          files: ${{ steps.apk.outputs.stable }}

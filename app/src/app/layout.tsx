@@ -5,6 +5,7 @@ import { Toasts } from "@/components/Toasts";
 import { HubBanner } from "@/components/Banner";
 import { ServiceWorker } from "@/components/ServiceWorker";
 import { PlayerChrome } from "@/components/PlayerChrome";
+import { NativeGate } from "@/components/NativeGate";
 
 const THEME = "#101014"; // --bg-base; Next metadata cannot read CSS variables
 const BUILD_ID = process.env.NEXT_PUBLIC_BUILD_ID ?? new Date().toISOString().slice(0, 16);
@@ -34,14 +35,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="preload" href="/fonts/GeneralSans-700.woff2" as="font" type="font/woff2" crossOrigin="anonymous" />
       </head>
       <body>
-        <HubProvider>
-          {/* Banner sits above every surface, Now Playing included (UX U4). */}
-          <div className="fixed inset-x-0 top-0 z-50 pt-safe">
-            <HubBanner />
-          </div>
-          <PlayerChrome>{children}</PlayerChrome>
-          <Toasts />
-        </HubProvider>
+        {/* Android shell with no hub address yet: ask first; nothing below connects until then (docs/android.md). */}
+        <NativeGate>
+          <HubProvider>
+            {/* Banner sits above every surface, Now Playing included (UX U4). */}
+            <div className="fixed inset-x-0 top-0 z-50 pt-safe">
+              <HubBanner />
+            </div>
+            <PlayerChrome>{children}</PlayerChrome>
+            <Toasts />
+          </HubProvider>
+        </NativeGate>
         <ServiceWorker version={BUILD_ID} />
       </body>
     </html>

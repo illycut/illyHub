@@ -131,3 +131,12 @@ See RUNBOOK section 3b.
 
 Open spikes that need this machine: ai-dev #9 (Tidal and YouTube Music concurrent-stream
 check, gates Sync Play) and #10 (Tidal ID to HEOS and Sonos playable refs).
+
+## Phone
+
+Two ways to get the app on a phone once the hub serves it:
+
+- **Browser / PWA (no install):** open `http://<hub-ip>:8080` on the phone. On iPhone use Share → Add to
+  Home Screen. Android's install prompt needs HTTPS (runbook §3a); without it the site still works as a tab.
+- **Android APK:** download `app-debug.apk` from the `android-latest` release on GitHub, allow the install,
+  open illyHub, and enter the hub address on the first screen. Details: `docs/android.md`.

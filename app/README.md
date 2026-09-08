@@ -36,6 +36,15 @@ cd ../hub && HUB_APP_DIR=../app/out uv run hub   # the hub mounts out/ at / with
 The hub also serves `public/fonts/` (General Sans, Fontshare license, self-hosted) so the app
 works with the internet down.
 
+## Android APK (Capacitor shell)
+
+[`../docs/android.md`](../docs/android.md) covers it end to end. Short version: the export in `out/` is bundled into an
+APK by `npm run android:build` (needs a JDK 17 and the Android SDK; CI does it on every push to
+`main` and attaches `app-debug.apk` to the rolling `android-latest` pre-release). On first launch
+the shell asks for the hub address (`http://<hub-ip>:8080`), stores it in localStorage
+(`src/lib/hub/hubBase.ts`), and everything else is the same PWA. Change or forget the address
+under Settings → Hub → Hub address. The browser PWA remains the zero-install path.
+
 ## Test
 
 ```bash

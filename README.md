@@ -20,3 +20,5 @@ workflow itself changes (docs-only changes skip it):
 `HUB_DATA_DIR` points at the runner's temp directory so the fake hub never writes into the
 checkout. Dependabot (`.github/dependabot.yml`) opens weekly grouped minor/patch updates for the
 hub (pip), the app (npm) and the actions.
+
+`android.yml` builds the Capacitor Android shell on every push to `main` and refreshes the `android-latest` pre-release; see `docs/android.md`.

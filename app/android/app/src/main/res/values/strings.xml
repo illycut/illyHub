@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">illyHub</string>
+    <string name="title_activity_main">illyHub</string>
+    <string name="package_name">com.illyhub.app</string>
+    <string name="custom_url_scheme">com.illyhub.app</string>
+</resources>

@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, Query, Request, Response, WebSocket
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, model_validator
+from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__
@@ -822,6 +823,8 @@ def lan_address() -> str:
 
 DEFAULT_HOSTS = ("localhost", "127.0.0.1", "*.local")
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+# Origins of the Capacitor Android shell (docs/android.md); the browser PWA is same-origin.
+SHELL_ORIGINS = ("http://localhost", "https://localhost", "capacitor://localhost")
 RESTART_HEADER = "x-illyhub"
 # POSTs that act on the hub Mac itself (restart, AirPlay routing, opening a browser) must always
 # preflight in a browser, so they require the custom header even from an allowed origin.
@@ -975,6 +978,18 @@ def create_app(
 
     # Unknown Host headers (DNS rebinding) are refused outright.
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
+    # CORS for the Android shell (docs/android.md): its WebView origin is http://localhost (or
+    # https:// / capacitor://), never the hub's. Browser tabs served by the hub are same-origin and
+    # unaffected. This only lets the browser *read* responses; _origin_policy below stays the CSRF
+    # layer and already treats localhost as one of the hub's own origins.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[*SHELL_ORIGINS, *settings.allowed_origins],
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers=["accept", "content-type", "x-correlation-id", "x-illyhub"],
+        expose_headers=["x-correlation-id"],
+    )
 
     @app.middleware("http")
     async def _origin_policy(request: Request, call_next: Callable[[Request], Any]) -> Any:

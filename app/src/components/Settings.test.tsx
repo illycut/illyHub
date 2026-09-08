@@ -308,3 +308,42 @@ describe("SettingsScreen", () => {
     expect(back).toHaveBeenCalled();
   });
 });
+
+describe("SettingsScreen: hub address row (Android shell)", () => {
+  afterEach(() => {
+    delete window.__ILLYHUB_NATIVE__;
+    localStorage.removeItem("illyhub.hubBase.v1");
+  });
+
+  it("is absent in a browser with nothing stored", async () => {
+    boot({ linked: true });
+    render(<SettingsScreen />);
+    await waitFor(() => expect(screen.getByTestId("hub-status")).toBeInTheDocument());
+    expect(screen.queryByTestId("hub-address-row")).toBeNull();
+  });
+
+  it("renders inside the native shell, opens the address sheet, and Cancel closes it", async () => {
+    window.__ILLYHUB_NATIVE__ = true;
+    boot({ linked: true });
+    render(<SettingsScreen />);
+    const row = await screen.findByTestId("hub-address-row");
+    expect(row).toHaveTextContent("Hub address");
+    expect(row).toHaveTextContent("Not set");
+    await userEvent.click(row);
+    const sheet = await screen.findByTestId("hub-address-sheet");
+    expect(within(sheet).getByTestId("hub-address-input")).toBeInTheDocument();
+    expect(within(sheet).getAllByRole("heading")).toHaveLength(1); // the sheet title only
+    await userEvent.click(within(sheet).getByTestId("hub-address-cancel"));
+    await waitFor(() => expect(screen.queryByTestId("hub-address-input")).toBeNull());
+  });
+
+  it("renders in a browser too when an address is stored (escape hatch) and offers Forget", async () => {
+    localStorage.setItem("illyhub.hubBase.v1", "http://192.168.50.10:8080");
+    boot({ linked: true });
+    render(<SettingsScreen />);
+    const row = await screen.findByTestId("hub-address-row");
+    expect(row).toHaveTextContent("http://192.168.50.10:8080");
+    await userEvent.click(row);
+    expect(await screen.findByTestId("hub-address-forget")).toBeInTheDocument();
+  });
+});

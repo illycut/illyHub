@@ -18,6 +18,13 @@ it protects state-changing requests structurally:
 - **Restart.** `POST /api/hub/restart` additionally requires the custom header `X-Illyhub: 1`
   (403 `{code: "missing_header"}` without it), so browsers always preflight it. Clients should
   send `X-Illyhub: 1` on every POST; the hub only enforces it on restart today.
+- **CORS.** The browser PWA is same-origin and needs none. The Android shell
+  (`docs/android.md`) loads the export from its own WebView origin, so the hub answers CORS for
+  `http://localhost`, `https://localhost`, `capacitor://localhost` and `HUB_ALLOWED_ORIGINS`:
+  methods GET/POST/DELETE/OPTIONS, request headers `accept`, `content-type`, `x-correlation-id`,
+  `x-illyhub`, exposed header `x-correlation-id`, no credentials. Any other origin gets no
+  `Access-Control-Allow-Origin` and the browser blocks the read. CORS only governs reads; the
+  Origin check above remains the write guard.
 
 Status: Phase 3 (Tidal browse + home). Sync endpoints (Phase 4), Pandora (Phase 5) and
 YouTube Music (Phase 6) land later.
