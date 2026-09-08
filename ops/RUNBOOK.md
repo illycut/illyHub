@@ -248,14 +248,20 @@ hit either of these, so they surface only at deploy time.
    the URL (`curl -s 'http://127.0.0.1:8080/api/health'`). To confirm what was actually sent:
    `curl -sv 'http://…' 2>&1 | grep '^> GET'` — an NBSP shows up as `%C2%A0`. Nothing in this
    repo contains NBSPs; they always come from the copy.
-8. `/api/health` shows `fake_devices: true`: `hub/.env` still has `HUB_FAKE_DEVICES=1`. Remove it and kickstart.
-9. `/` returns 404 but `/api/health` works, and `/api/health` reports `static.app: false`: there
+8. **`Bootstrap failed: 5: Input/output error` from `install.sh`, and the hub is now down.**
+   `bootout` returns before the job is really gone (the hub still has to close the HEOS socket,
+   the Sonos subscriptions and the Denon telnet link), so a bootstrap that follows immediately
+   hits a still-registered label. The bootout *did* work, so the old daemon is gone and the new
+   one never loaded — nothing is listening. `install.sh` now waits for the label to disappear and
+   retries once, but if you see it: `sudo launchctl bootstrap system /Library/LaunchDaemons/com.illyhub.hub.plist`.
+9. `/api/health` shows `fake_devices: true`: `hub/.env` still has `HUB_FAKE_DEVICES=1`. Remove it and kickstart.
+10. `/` returns 404 but `/api/health` works, and `/api/health` reports `static.app: false`: there
    is no PWA export at `HUB_APP_DIR`. **This is normal and needs no fix if your client is not the
    PWA** — a separate mobile or native app talks to the REST and WebSocket API and never asks the
    hub for a page. The hub is API-only in that mode and healthy (`status: ok`). Only build the app
    (`cd app && npm ci && npm run build`, needs Node 20+) if you want the hub to serve the PWA.
-10. Artwork shows grey squares: `/api/art/...` is answering with `X-Art-Fallback: upstream_error` (200 + placeholder). Check `hub.log` for "art fetch failed"; the device URL (Sonos `/getaa?...`, HEOS CDN) must be reachable from the hub Mac. `X-Art-Fallback: proxy_disabled` means `HUB_ART_PROXY=0` is set.
-11. Disk: the art cache is capped at `HUB_ART_MAX_MB` (500) and swept daily; `/api/health` → `art_cache.bytes` shows current usage.
+11. Artwork shows grey squares: `/api/art/...` is answering with `X-Art-Fallback: upstream_error` (200 + placeholder). Check `hub.log` for "art fetch failed"; the device URL (Sonos `/getaa?...`, HEOS CDN) must be reachable from the hub Mac. `X-Art-Fallback: proxy_disabled` means `HUB_ART_PROXY=0` is set.
+12. Disk: the art cache is capped at `HUB_ART_MAX_MB` (500) and swept daily; `/api/health` → `art_cache.bytes` shows current usage.
 
 ## 5. Hardware verification status
 

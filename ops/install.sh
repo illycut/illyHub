@@ -110,8 +110,30 @@ if ! grep -Eq '^HUB_DATA_DIR=/' "$REPO/hub/.env"; then
 fi
 
 # Restart cleanly whether or not it was already loaded.
+#
+# `bootout` returns before the job is gone: the hub still has to close the HEOS socket, the Sonos
+# subscriptions and the Denon telnet link. Bootstrapping into a label that is still registered
+# fails with "Bootstrap failed: 5: Input/output error", which leaves the hub *down* — the bootout
+# succeeded, so the old daemon is gone and the new one never loaded. Wait for the label to
+# disappear instead of racing it.
 $SUDO launchctl bootout "system/$LABEL" 2>/dev/null || true
-$SUDO launchctl bootstrap system "$PLIST_DST"
+for _ in $(seq 1 40); do
+  $SUDO launchctl print "system/$LABEL" >/dev/null 2>&1 || break
+  sleep 0.25
+done
+if $SUDO launchctl print "system/$LABEL" >/dev/null 2>&1; then
+  echo "WARNING: $LABEL is still loaded after 10s; bootstrap may fail with EIO."
+fi
+
+# Retry once: the label can linger a moment past `launchctl print` reporting it gone.
+if ! $SUDO launchctl bootstrap system "$PLIST_DST" 2>/dev/null; then
+  sleep 2
+  $SUDO launchctl bootstrap system "$PLIST_DST" || {
+    echo "ERROR: could not bootstrap $LABEL. The hub is not running."
+    echo "  Try: sudo launchctl bootout system/$LABEL ; sudo launchctl bootstrap system $PLIST_DST"
+    exit 1
+  }
+fi
 
 # Cold start takes a few seconds (interpreter, adapters, SSDP window), so poll instead of
 # sleeping once: a single short sleep reported a false failure on every first install.
