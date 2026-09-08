@@ -17,7 +17,11 @@ dependencies = [
     "aiohttp>=3.14.3",
     "pillow>=10.4",
     "tidalapi>=0.8,<1",
-    "cryptography>=42",
+    # Upper bound is a deployment constraint, not a preference: cryptography>=43 publishes
+    # arm64-only macOS wheels, and the hub Mac is an Intel MacBook Pro (PRD 6.1). 42.0.8 is
+    # the newest release with a CPython x86_64 macOS wheel, so anything above it forces a
+    # source build needing OpenSSL 3 + Rust on the deployment target.
+    "cryptography>=42,<43",
 ]
 
 [project.scripts]
