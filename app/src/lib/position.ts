@@ -2,8 +2,8 @@ import type { PlayState, Position } from "./hub/types";
 import { isPlayingState } from "./playState";
 
 /**
- * Hub positions are estimates stamped with `reported_at`. While playing (or buffering), extrapolate
- * forward from that stamp; clamp to the track duration when known (docs/api.md, PRD NP-3).
+ * Hub positions are estimates stamped with `reported_at`. While playing, extrapolate forward from
+ * that stamp; clamp to the track duration when known (docs/api.md, PRD NP-3).
  */
 export function interpolatePosition(
   pos: Position | null | undefined,

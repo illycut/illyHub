@@ -71,7 +71,7 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
   const pandoraSyncStop = useHub((s) => s.pandoraSyncStop);
   const bridgeLabels = useHub(useShallow((s) => ({ full: pandoraSyncLabel(s.state, s.state?.sides), short: pandoraSyncLabelShort(s.state) })));
   const bridged = bridgedSide(sideId, pandoraSync);
-  // Held intent while the hub is still buffering, else the hub's state (S11).
+  // Held intent while the hub's state is a transient `unknown`, else the hub's state.
   const playState = useHub((s) => s.displayPlayState(sideId));
   const seek = useHub((s) => s.seek);
   const skip = useHub((s) => s.skip);

@@ -2351,20 +2351,6 @@
       "type": "boolean",
       "title": "Supports Prev",
       "default": true
-     },
-     "volume_via": {
-      "type": "string",
-      "enum": [
-       "vendor",
-       "denon"
-      ],
-      "title": "Volume Via",
-      "default": "vendor"
-     },
-     "supports_volume": {
-      "type": "boolean",
-      "title": "Supports Volume",
-      "default": true
      }
     },
     "type": "object",
@@ -3142,7 +3128,7 @@
     },
     "type": "object",
     "title": "PandoraSyncState",
-    "description": "Experimental \"Pandora Sync\" via the hub Mac as an AirPlay 2 sender (PRD \u00a73.5 PAN-4).\n\nThe hub only routes AirPlay outputs and opens Pandora on the Mac; playback itself is driven\nthere (docs/spikes/airplay-bridge.md). ``previous_output_ids`` is what ``stop`` restores."
+    "description": "Experimental \"Pandora Sync\" via the hub Mac as an AirPlay 2 sender (PRD \u00a73.5 PAN-4).\n\nThe hub only routes AirPlay outputs and opens Pandora on the Mac; playback itself is driven\nthere (docs/spikes/airplay-bridge.md). ``previous_output_ids`` is what ``stop`` restores;\n``side_ids`` are the rooms whose outputs are bridged, so the app can scope its controls."
    },
    "PartialFailure": {
     "properties": {
@@ -3272,7 +3258,6 @@
        "play",
        "pause",
        "stop",
-       "buffering",
        "unknown"
       ],
       "title": "Play State",
@@ -3421,7 +3406,6 @@
        "play",
        "pause",
        "stop",
-       "buffering",
        "unknown"
       ],
       "title": "Play State",

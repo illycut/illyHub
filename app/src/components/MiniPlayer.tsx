@@ -37,7 +37,7 @@ export const MiniPlayer = memo(function MiniPlayer({ onExpand, hideArt = false }
   const dots = useHub((s) => zoneDotsForState(s.state));
   const transport = useHub((s) => s.transport);
   const syncRetry = useHub((s) => s.syncRetry);
-  // Held intent while the hub is still buffering, else the hub's state (S11).
+  // Held intent while the hub's state is a transient `unknown`, else the hub's state.
   const playState = useHub((s) => s.displayPlayState(sideId));
   // While the hub Mac streams Pandora over AirPlay, THIS room's transport belongs to the Mac (B3).
   const bridged = bridgedSide(sideId, pandoraSync);

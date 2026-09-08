@@ -1,6 +1,6 @@
 /**
  * Phase 7 Pandora Sync (AirPlay bridge) view logic, normalisers, delta handling, the store
- * start/stop flows, and the buffering play-state rules (S11).
+ * start/stop flows, and the play-state predicate with the held transport intent.
  */
 import messages from "./hub/messages.json";
 import {
@@ -236,27 +236,27 @@ describe("store: pandoraSyncStart / pandoraSyncStop", () => {
   });
 });
 
-describe("buffering (S11)", () => {
-  it("one predicate: play and buffering count as playing; pause/stop/unknown do not; settled = play/pause/stop", () => {
+describe("play state (contract: play / pause / stop / unknown)", () => {
+  it("one predicate: only play is live; settled = play/pause/stop; unknown is transitional", () => {
     expect(isPlayingState("play")).toBe(true);
-    expect(isPlayingState("buffering")).toBe(true);
     for (const s of ["pause", "stop", "unknown", undefined] as const) expect(isPlayingState(s)).toBe(false);
-    expect(isPlaying({ play_state: "buffering" })).toBe(true);
-    expect(isSettledState("buffering")).toBe(false);
-    expect(isSettledState("pause")).toBe(true);
+    expect(isPlaying({ play_state: "play" })).toBe(true);
+    expect(isSettledState("unknown")).toBe(false);
+    for (const s of ["play", "pause", "stop"] as const) expect(isSettledState(s)).toBe(true);
   });
-  it("selectors and interpolation treat a buffering side as live", () => {
+  it("selectors and interpolation read the predicate", () => {
     const s = sampleState();
-    s.sides["sonos:sonos-gK"] = { ...s.sides["sonos:sonos-gK"]!, play_state: "buffering" };
-    expect(liveSideIds(s)).toEqual(expect.arrayContaining(["sonos:sonos-gK", "heos:heos-1"]));
-    s.sides["heos:heos-1"] = { ...s.sides["heos:heos-1"]!, play_state: "pause" };
-    // Kitchen has now-playing metadata and is buffering → it is the active side
-    expect(resolveActiveSide(s, null)?.id).toBe("sonos:sonos-gK");
+    expect(liveSideIds(s)).toEqual(["heos:heos-1"]);
+    // Selectors memoise on the collection object: a new `sides` object, as a delta would produce.
+    const quiet: HubState = { ...s, sides: { ...s.sides, "heos:heos-1": { ...s.sides["heos:heos-1"]!, play_state: "unknown" } } };
+    expect(liveSideIds(quiet)).toEqual([]);
+    // No side playing: the resolver falls back to the first side (by name) with now-playing metadata.
+    expect(resolveActiveSide(quiet, null)?.id).toBe("sonos:sonos-gK");
     const pos = { position_ms: 1000, reported_at: new Date(0).toISOString(), confidence: 1 };
-    expect(interpolatePosition(pos, "buffering", 2500)).toBe(3500);
-    expect(interpolatePosition(pos, "pause", 2500)).toBe(1000);
+    expect(interpolatePosition(pos, "play", 2500)).toBe(3500);
+    expect(interpolatePosition(pos, "unknown", 2500)).toBe(1000);
   });
-  it("store: the optimistic intent is held while the hub reports buffering, cleared once it settles; toggle from buffering sends pause", async () => {
+  it("store: the optimistic intent is held across a transient `unknown` and cleared once the hub settles", async () => {
     const fetchMock = vi.fn(async (_u: RequestInfo | URL, init?: RequestInit) => jsonResponse(okAck((init?.headers as Record<string, string>)["x-correlation-id"])));
     useHub.getState()._reset();
     useHub.setState({ _deps: { fetcher: fetchMock as unknown as typeof fetch, now: () => 1_000, setTimer: () => 0, clearTimer: () => {} } });
@@ -264,17 +264,18 @@ describe("buffering (S11)", () => {
     st.sides["sonos:sonos-gK"] = { ...st.sides["sonos:sonos-gK"]!, play_state: "stop" };
     useHub.getState().onMessage({ type: "snapshot", version: 10, state: st });
     await useHub.getState().transport("play", "sonos:sonos-gK");
+    expect(String(fetchMock.mock.calls[0]![0])).toContain("/api/transport/play");
     expect(useHub.getState().displayPlayState("sonos:sonos-gK")).toBe("play");
-    // The hub reports buffering: the icon must keep showing what the user asked for.
-    useHub.getState().onMessage({ type: "delta", from_version: 10, to_version: 11, changed: { "sides.sonos:sonos-gK": { ...st.sides["sonos:sonos-gK"], play_state: "buffering" } } });
-    expect(useHub.getState().state?.sides["sonos:sonos-gK"]?.play_state).toBe("buffering");
+    // The hub reports a transient unknown: the icon keeps showing what the user asked for.
+    useHub.getState().onMessage({ type: "delta", from_version: 10, to_version: 11, changed: { "sides.sonos:sonos-gK": { ...st.sides["sonos:sonos-gK"], play_state: "unknown" } } });
+    expect(useHub.getState().state?.sides["sonos:sonos-gK"]?.play_state).toBe("unknown");
     expect(useHub.getState().displayPlayState("sonos:sonos-gK")).toBe("play");
-    // A toggle while buffering is sent as an explicit pause.
+    // A toggle is sent as a toggle; the optimistic state flips.
     fetchMock.mockClear();
     await useHub.getState().transport("toggle", "sonos:sonos-gK");
-    expect(String(fetchMock.mock.calls[0]![0])).toContain("/api/transport/pause");
+    expect(String(fetchMock.mock.calls[0]![0])).toContain("/api/transport/toggle");
     expect(useHub.getState().displayPlayState("sonos:sonos-gK")).toBe("pause");
-    // Settled state from the hub clears the held intent.
+    // A settled state from the hub clears the held intent.
     useHub.getState().onMessage({ type: "delta", from_version: 11, to_version: 12, changed: { "sides.sonos:sonos-gK": { ...st.sides["sonos:sonos-gK"], play_state: "play" } } });
     expect(useHub.getState().intents["sonos:sonos-gK"]).toBeUndefined();
     expect(useHub.getState().displayPlayState("sonos:sonos-gK")).toBe("play");

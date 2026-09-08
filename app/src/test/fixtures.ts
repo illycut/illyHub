@@ -6,8 +6,6 @@ const caps = (over: Partial<Player["capabilities"]> = {}) => ({
   can_group: true,
   supports_next: true,
   supports_prev: true,
-  volume_via: "vendor" as const,
-  supports_volume: true,
   ...over,
 });
 

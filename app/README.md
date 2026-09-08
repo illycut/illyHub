@@ -113,6 +113,27 @@ src/styles/         tokens.css (single source of truth), globals.css
 e2e/                Playwright: smoke, viewports, home, sync, pandora, ytmusic, airplay
 ```
 
+## Volume ownership and quantisation (PRD §3.3 [1.2])
+
+Who owns a player's volume is the hub's call, not the app's (`docs/api.md` Concepts). A HEOS player
+hosted by a Denon AVR has no usable volume of its own; the amplifier zone is the authority, and the
+hub mirrors the zone's level onto the player. The app renders that mirrored number and never shows
+the zone twice: a zone that owns a player (`Zone.player_ids`) is represented by the player's row.
+
+- **Zones as targets.** A zone that owns no player (a Zone 2 driving an external amp) gets its own
+  row in the volume sheet: a slider posting `POST /api/volume {target: zone_id}` and a mute toggle
+  when `supports_mute`. Store action: `setZoneVolume(zoneId, level)`; `setMute` accepts a zone id
+  and mirrors onto the players the zone owns.
+- **Fixed outputs.** A zone with `supports_volume: false` (a fixed pre-out) shows its power state
+  only — no slider, no mute — matching the vendor app, which offers it as power-only. If a command
+  reaches the hub anyway it answers `unsupported_action`; the app toasts that sentence verbatim as a
+  backstop.
+- **Quantised levels.** Hub `0–100` maps onto the receiver's step scale, so a request for 96 can
+  settle at 97. The slider always renders the level the hub reports after the ack; a few steps of
+  difference is not a failed command and never triggers the revert path.
+- Picker zone rows keep their power toggles and offer no volume; the Now Playing side slider is
+  unchanged. Tests: `src/components/Volume.test.tsx`.
+
 ## Sync Play (Phase 4)
 
 One HEOS side (clock master) plus one Sonos side (follower) playing the same Tidal content. The
@@ -192,11 +213,11 @@ that playback. One name everywhere: "Pandora Sync".
   volume slider and the volume sheet keep working. The single Stop (text, error tone) sits in the
   meta row and posts `/api/pandora-sync/stop`; the hub's stopped note is toasted once; a stop while
   idle (`sync_idle`) is not an error.
-- **Buffering.** `play_state` includes `buffering`; one predicate (`src/lib/playState.ts`,
-  `isPlaying`) treats it as playing everywhere (dots, active side, icon, scrubber tick,
-  interpolation). The store holds the user's last transport intent per side until the hub reports
-  a settled state, so a `buffering` delta never flips the icon; a toggle while buffering sends
-  `pause`.
+- **Play state.** The contract's states are play / pause / stop / unknown (the hub holds the last
+  known state across a device's transient). One predicate (`src/lib/playState.ts`, `isPlaying`)
+  decides "live" everywhere (dots, active side, icon, scrubber tick, interpolation). The store
+  holds the user's last transport intent per side until the hub reports a settled state, so a
+  transient `unknown` never flips the icon.
 - Code: `src/lib/airplay.ts` (rules and copy from `messages.json` `templates.airplay.*`),
   `src/components/PandoraSyncChip.tsx`, the picker, Now Playing, mini-player and Settings wiring;
   store actions `pandoraSyncStart(sideIds)` / `pandoraSyncStop`. Tests: `src/lib/airplay.test.ts`,

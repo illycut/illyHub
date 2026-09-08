@@ -2,28 +2,48 @@
 import { useEffect, useRef } from "react";
 import { Sheet } from "./Sheet";
 import { Slider } from "./Slider";
-import { AmpIcon, MuteIcon, SpeakerIcon, VolumeIcon } from "./icons";
+import { AmpIcon, MuteIcon, PowerIcon, SpeakerIcon, VolumeIcon } from "./icons";
 import { Coalescer } from "@/lib/coalesce";
 import { useHub } from "@/lib/hub/store";
-import { playersList } from "@/lib/selectors";
+import { playersList, zonesList } from "@/lib/selectors";
+import type { Zone } from "@/lib/hub/types";
+
+/**
+ * Amplifier zones that are volume targets in their own right (PRD §3.3 [1.2]): a zone that owns no
+ * player. A zone that owns a player (the AVR's main zone and its HEOS player) is represented by that
+ * player's row, whose volume the hub mirrors from the zone, so it never appears twice.
+ */
+export function playerlessZones(zones: Zone[]): Zone[] {
+  return zones.filter((z) => (z.player_ids ?? []).length === 0);
+}
 
 /**
  * Volume sheet (design system §6.5): linked master on top, hairline, one row per device
  * interleaved by room, glyph distinguishes HEOS (amp) from Sonos (speaker). Offline rows drop to
  * text-tertiary with "offline" and are never hidden (§8). Drags are coalesced; release flushes.
+ *
+ * Amplifier zones (docs/api.md "Zones declare what they can do"): a playerless zone that
+ * `supports_volume` gets a slider targeting the zone id (mute when `supports_mute`); a fixed-output
+ * zone (`supports_volume: false`) shows power state only — the receiver cannot attenuate it, so the
+ * control is never offered. Levels are quantised on the receiver: the value rendered is always the
+ * hub's, never the one sent.
  */
 export function VolumeSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   const players = useHub((s) => playersList(s.state));
+  const zones = useHub((s) => zonesList(s.state));
   const setVolume = useHub((s) => s.setVolume);
+  const setZoneVolume = useHub((s) => s.setZoneVolume);
   const linkedVolume = useHub((s) => s.linkedVolume);
   const setMute = useHub((s) => s.setMute);
   const online = players.filter((p) => p.online);
   const master = online.length ? Math.max(...online.map((p) => p.volume)) : 0;
+  const ampZones = playerlessZones(zones);
 
   const coalescer = useRef<Coalescer<number> | null>(null);
   if (coalescer.current === null) {
     coalescer.current = new Coalescer<number>((key, level) => {
       if (key === "master") void linkedVolume({ level });
+      else if (key.startsWith("zone:")) void setZoneVolume(key.slice(5), level);
       else void setVolume(key, level);
     }, 100);
   }
@@ -92,8 +112,62 @@ export function VolumeSheet({ open, onClose }: { open: boolean; onClose: () => v
             </li>
           );
         })}
+        {ampZones.map((z) => {
+          const off = !z.online;
+          const canVolume = z.supports_volume && !off;
+          return (
+            <li
+              key={z.id}
+              className={`flex items-center gap-3 py-1 ${off ? "text-tertiary" : ""}`}
+              data-testid={`volume-zone-${z.id}`}
+              data-fixed-output={z.supports_volume ? undefined : "true"}
+            >
+              <span className={`w-6 ${off ? "text-tertiary" : "text-secondary"}`} aria-hidden="true">
+                <AmpIcon size={20} />
+              </span>
+              <div className="flex-1">
+                <div className={`text-caption ${off ? "text-tertiary" : "text-secondary"}`}>
+                  {z.name}
+                  {off ? <span className="ml-2 text-micro">offline</span> : null}
+                </div>
+                {z.supports_volume ? (
+                  <Slider
+                    label={`${z.name} volume`}
+                    value={z.volume}
+                    disabled={!canVolume}
+                    onChange={(v) => c.submit(`zone:${z.id}`, v)}
+                    onCommit={(v) => commit(`zone:${z.id}`, v)}
+                    testId={`slider-zone-${z.id}`}
+                  />
+                ) : (
+                  // Fixed pre-out: the receiver cannot attenuate it, so only the power state is shown (§3.3 [1.2]).
+                  <div className="flex min-h-target items-center gap-2 text-micro text-secondary" data-testid={`zone-power-state-${z.id}`}>
+                    <span className={z.power ? "text-signal" : "text-tertiary"} aria-hidden="true">
+                      <PowerIcon size={16} />
+                    </span>
+                    <span>{z.power ? "On" : "Off"} · fixed output</span>
+                  </div>
+                )}
+              </div>
+              {z.supports_volume && z.supports_mute ? (
+                <button
+                  type="button"
+                  className={`hit-target flex items-center justify-center rounded-control ${z.muted ? "text-signal" : "text-secondary"} disabled:opacity-40`}
+                  aria-label={z.muted ? `Unmute ${z.name}` : `Mute ${z.name}`}
+                  aria-pressed={z.muted}
+                  disabled={off}
+                  onClick={() => void setMute(z.id, !z.muted)}
+                >
+                  {z.muted ? <MuteIcon size={20} /> : <VolumeIcon size={20} />}
+                </button>
+              ) : (
+                <span className="hit-target block" aria-hidden="true" />
+              )}
+            </li>
+          );
+        })}
       </ul>
-      {players.length === 0 ? <p className="py-4 text-body text-secondary">No rooms yet. The hub is still discovering players.</p> : null}
+      {players.length === 0 && ampZones.length === 0 ? <p className="py-4 text-body text-secondary">No rooms yet. The hub is still discovering players.</p> : null}
     </Sheet>
   );
 }

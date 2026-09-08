@@ -1123,17 +1123,6 @@ export interface components {
              * @default true
              */
             supports_prev: boolean;
-            /**
-             * Volume Via
-             * @default vendor
-             * @enum {string}
-             */
-            volume_via: "vendor" | "denon";
-            /**
-             * Supports Volume
-             * @default true
-             */
-            supports_volume: boolean;
         };
         /** ConnectionStatus */
         ConnectionStatus: {
@@ -1435,7 +1424,8 @@ export interface components {
          * @description Experimental "Pandora Sync" via the hub Mac as an AirPlay 2 sender (PRD §3.5 PAN-4).
          *
          *     The hub only routes AirPlay outputs and opens Pandora on the Mac; playback itself is driven
-         *     there (docs/spikes/airplay-bridge.md). ``previous_output_ids`` is what ``stop`` restores.
+         *     there (docs/spikes/airplay-bridge.md). ``previous_output_ids`` is what ``stop`` restores;
+         *     ``side_ids`` are the rooms whose outputs are bridged, so the app can scope its controls.
          */
         PandoraSyncState: {
             /**
@@ -1523,7 +1513,7 @@ export interface components {
              * @default stop
              * @enum {string}
              */
-            play_state: "play" | "pause" | "stop" | "buffering" | "unknown";
+            play_state: "play" | "pause" | "stop" | "unknown";
             /** Group Id */
             group_id?: string | null;
             capabilities?: components["schemas"]["Capabilities"];
@@ -1582,7 +1572,7 @@ export interface components {
              * @default stop
              * @enum {string}
              */
-            play_state: "play" | "pause" | "stop" | "buffering" | "unknown";
+            play_state: "play" | "pause" | "stop" | "unknown";
             /**
              * Volume
              * @default 0

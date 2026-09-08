@@ -18,7 +18,7 @@ export type HealthResponse = components["schemas"]["HealthResponse"];
 export type DevicesResponse = components["schemas"]["DevicesResponse"];
 
 export type Vendor = "heos" | "sonos";
-/** From the contract, never hand-maintained: includes "buffering" (a play that has not produced audio yet). */
+/** From the contract, never hand-maintained (play / pause / stop / unknown; the hub holds the last known state across a device's transient). */
 export type PlayState = Side["play_state"];
 export type ConnState = "connected" | "reconnecting" | "disconnected" | "disabled";
 export type SyncStatus =

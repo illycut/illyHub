@@ -35,8 +35,8 @@ export function Scrubber({
   const [, setTick] = useState(0);
   const [announce, setAnnounce] = useState("");
 
-  // Re-render ~4 Hz while playing (or buffering) so the interpolated position advances between hub
-  // updates. Callers pass `undefined` while a room is bridged so the tick stays off.
+  // Re-render ~4 Hz while playing so the interpolated position advances between hub updates.
+  // Callers pass `undefined` while a room is bridged so the tick stays off.
   useEffect(() => {
     if (!isPlayingState(playState)) return;
     const id = setInterval(() => setTick((t) => t + 1), 250);

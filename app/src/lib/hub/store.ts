@@ -72,8 +72,8 @@ export interface HubStore {
   pending: Record<string, Pending>;
   /**
    * Per-side transport intent from the last optimistic command, held until the hub reports a settled
-   * state (play/pause/stop). While the hub says `buffering` the icon keeps showing what the user
-   * asked for instead of flipping on every transitional delta.
+   * state (play/pause/stop). While the hub says `unknown` (a device transient) the icon keeps showing
+   * what the user asked for instead of flipping on the transitional delta.
    */
   intents: Record<string, PlayState>;
   /** Hook the socket installs so the store can request a resync. */
@@ -101,6 +101,12 @@ export interface HubStore {
   skip(sideId: string, deltaMs: number): Promise<Ack>;
   setVolume(playerId: string, level: number): Promise<Ack>;
   setSideVolume(sideId: string, level: number): Promise<Ack>;
+  /**
+   * An amplifier zone as a volume target in its own right (PRD §3.3 [1.2]): a zone driving an
+   * external amp owns no player, so its level is set by zone id. The hub mirrors a zone's level onto
+   * the players it owns; the optimistic patch does the same.
+   */
+  setZoneVolume(zoneId: string, level: number): Promise<Ack>;
   linkedVolume(arg: { level?: number; delta?: number }): Promise<Ack>;
   setMute(target: string, muted: boolean): Promise<Ack>;
   zonePower(zoneId: string, on: boolean): Promise<Ack>;
@@ -212,7 +218,7 @@ export const useHub = create<HubStore>((set, get) => ({
     if (hub === undefined) return undefined;
     const intent = get().intents[sideId];
     // The hub's settled word wins (settleIntents has already dropped the intent); while it is still
-    // transitional (buffering/unknown) the user's last command is what the icon shows.
+    // transitional (`unknown`) the user's last command is what the icon shows.
     return intent !== undefined && !isSettledState(hub) ? intent : hub;
   },
   toggleTarget(id) {
@@ -270,18 +276,16 @@ export const useHub = create<HubStore>((set, get) => ({
         ? (s) => {
             const side = s.sides[target] ?? sideForPlayer(s, target);
             if (!side) return s;
-            // Toggle from a playing OR buffering side pauses (the device already accepted a play).
+            // A toggle acts on what the user sees: the held intent while the hub is transitional, else the hub's state.
+            const shown = get().displayPlayState(side.id) ?? side.play_state;
             const nextState: PlayState =
-              action === "play" ? "play" : action === "pause" ? "pause" : action === "stop" ? "stop" : isPlayingState(side.play_state) ? "pause" : "play";
-            // Hold the intent until the hub reports a settled state, so a `buffering` delta cannot flip the icon.
+              action === "play" ? "play" : action === "pause" ? "pause" : action === "stop" ? "stop" : isPlayingState(shown) ? "pause" : "play";
+            // Hold the intent until the hub reports a settled state, so a transient `unknown` delta cannot flip the icon.
             set((st) => ({ intents: { ...st.intents, [side.id]: nextState } }));
             return { ...s, sides: { ...s.sides, [side.id]: { ...side, play_state: nextState } } };
           }
         : undefined;
-    // A toggle while the device is still buffering must pause, not re-play: say so explicitly.
-    const sideNow = get().state?.sides[target] ?? sideForPlayer(get().state, target);
-    const sent: TransportAction = action === "toggle" && sideNow?.play_state === "buffering" ? "pause" : action;
-    return get().dispatch(C.transport(sent, target), patch, actionLabel(action));
+    return get().dispatch(C.transport(action, target), patch, actionLabel(action));
   },
 
   seek(sideId, positionMs) {
@@ -349,10 +353,36 @@ export const useHub = create<HubStore>((set, get) => ({
     return get().dispatch(C.linkedVolume(arg), patch, "Master volume");
   },
 
+  setZoneVolume(zoneId, level) {
+    const v = Math.round(level);
+    const patch: Patch = (s) => {
+      const z = s.zones[zoneId];
+      if (!z) return s;
+      const players = { ...s.players };
+      for (const pid of z.player_ids ?? []) {
+        const p = players[pid];
+        if (p) players[pid] = { ...p, volume: v };
+      }
+      return { ...s, players, zones: { ...s.zones, [zoneId]: { ...z, volume: v } } };
+    };
+    const name = get().state?.zones[zoneId]?.name ?? "that zone";
+    return get().dispatch(C.volume(zoneId, level), patch, `Volume on ${name}`);
+  },
+
   setMute(target, muted) {
     const patch: Patch = (s) => {
       const p = s.players[target];
       if (p) return { ...s, players: { ...s.players, [target]: { ...p, muted } } };
+      const z = s.zones[target];
+      if (z) {
+        // A zone mutes itself and mirrors onto the players it owns.
+        const players = { ...s.players };
+        for (const pid of z.player_ids ?? []) {
+          const m = players[pid];
+          if (m) players[pid] = { ...m, muted };
+        }
+        return { ...s, players, zones: { ...s.zones, [target]: { ...z, muted } } };
+      }
       const side = s.sides[target];
       if (!side) return s;
       const players = { ...s.players };

@@ -38,15 +38,19 @@ test("loads Now Playing from the hub snapshot and toggles playback", async ({ pa
   await expect(toggle).not.toHaveAttribute("aria-pressed", before!);
 });
 
-test("volume sheet lists the master slider plus one slider per player", async ({ page, request }) => {
+test("volume sheet lists the master slider, one slider per player, and one per volume-capable playerless zone", async ({ page, request }) => {
   const devices = await (await request.get("/api/devices")).json();
   const playerCount = (devices.players as unknown[]).length;
+  // PRD §3.3 [1.2]: an amplifier zone that owns no player is a volume target in its own right; a zone
+  // that owns a player is represented by that player's (mirrored) row; fixed outputs get no slider.
+  type Z = { player_ids?: string[]; supports_volume: boolean };
+  const zoneSliders = (devices.zones as Z[]).filter((z) => (z.player_ids ?? []).length === 0 && z.supports_volume).length;
   await openNowPlaying(page);
   await page.getByTestId("open-volume").click();
   const sheet = page.getByTestId("volume-sheet");
   await expect(sheet).toBeVisible();
   await expect(sheet.getByTestId("master-slider")).toBeVisible();
-  await expect(sheet.getByRole("slider")).toHaveCount(1 + playerCount);
+  await expect(sheet.getByRole("slider")).toHaveCount(1 + playerCount + zoneSliders);
   expect(playerCount).toBeGreaterThanOrEqual(3);
 });
 

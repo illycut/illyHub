@@ -293,13 +293,17 @@ describe("Mini-player while a room is bridged", () => {
     expect(screen.getByRole("button", { name: /^(Pause|Play)$/ })).toBeEnabled();
   });
 
-  it("buffering shows the pause icon (the device accepted a play)", async () => {
+  it("a held play intent survives a transient unknown from the hub: the icon keeps offering pause", async () => {
     const s = sampleState();
-    s.sides[KITCHEN] = { ...s.sides[KITCHEN]!, play_state: "buffering" };
+    s.sides[KITCHEN] = { ...s.sides[KITCHEN]!, play_state: "stop" };
     boot(AVAILABLE, s);
     useHub.getState().selectSide(KITCHEN);
     render(<MiniPlayer onExpand={() => {}} />);
     await flush();
+    await act(async () => {
+      await useHub.getState().transport("play", KITCHEN);
+    });
+    act(() => useHub.getState().onMessage({ type: "delta", from_version: 10, to_version: 11, changed: { [`sides.${KITCHEN}`]: { ...s.sides[KITCHEN], play_state: "unknown" } } }));
     expect(screen.getByRole("button", { name: "Pause" })).toHaveAttribute("aria-pressed", "true");
   });
 });
