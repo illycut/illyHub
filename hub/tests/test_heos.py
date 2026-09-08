@@ -849,3 +849,48 @@ async def test_station_calls_without_browse_support_refuse(
         await a.disconnect()
     finally:
         del FakeHeosClient.get_music_sources  # type: ignore[attr-defined]
+
+
+async def test_avr_owned_volume_is_not_overwritten_by_heos_reports(
+    store: StateStore, settings: Settings
+) -> None:
+    """A Denon zone owning this player makes HEOS's volume and mute reports untrustworthy.
+
+    On an AVR-X3400H, HEOS reports volume 0 no matter what the receiver's MV is, so following
+    those reports would blank the mirrored level and skew linked volume (VOL-2). Everything
+    else in the same event still applies.
+    """
+    from illyhub_hub.state import Zone
+
+    gen = Generations()
+    a = make(store, settings, gen)
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+
+    # The Denon adapter claims the player and mirrors the amplifier's real level onto it.
+    store.set_zone(
+        Zone(
+            id="denon-192.168.1.20:main",
+            key="main",
+            name="Main zone",
+            host="192.168.1.20",
+            player_ids=["heos-1"],
+            volume=55,
+        )
+    )
+    store.update_player("heos-1", volume=55, muted=False)
+
+    raw = gen.players[1]
+    raw.volume, raw.is_muted = 0, True  # what HEOS actually reports for an AVR
+    raw.state = "play"
+    raw.fire(heos_mod.EVENT_PLAYER_VOLUME_CHANGED)
+    p = store.state.players["heos-1"]
+    assert p.volume == 55 and p.muted is False  # zone stays the authority
+
+    # A zone on a fixed pre-out does not own the level, so HEOS is believed again.
+    zone = store.state.zones["denon-192.168.1.20:main"]
+    store.set_zone(zone.model_copy(update={"supports_volume": False}))
+    raw.volume = 12
+    raw.fire(heos_mod.EVENT_PLAYER_VOLUME_CHANGED)
+    assert store.state.players["heos-1"].volume == 12
+    await a.disconnect()

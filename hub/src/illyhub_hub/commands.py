@@ -44,7 +44,16 @@ from .messages import (
     UNSUPPORTED_ON_VENDOR,
     vendor_app,
 )
-from .state import HubState, Player, Side, StateStore, service_label, vendor_label
+from .state import (
+    HubState,
+    Player,
+    Side,
+    StateStore,
+    Zone,
+    service_label,
+    vendor_label,
+    zone_for_player,
+)
 
 log = get_logger("commands")
 
@@ -454,8 +463,20 @@ class CommandRouter:
         return await self._execute("mute", target, run)
 
     async def _mute_player(self, player: Player, muted: bool, target: str) -> None:
-        adapter = self._adapter_for(player.vendor, target)
         self._require_online(player.id, target)
+        zone = self._volume_zone(player, target)
+        if zone is not None:
+            denon = self._require_denon(zone, target)
+            zid = zone.id
+            await self._call(
+                lambda: denon.set_mute(zid, muted),
+                "mute",
+                target,
+                player.name,
+                vendor=player.vendor,
+            )
+            return
+        adapter = self._adapter_for(player.vendor, target)
         await self._call(
             lambda: adapter.set_mute(player.id, muted),
             "mute",
@@ -804,15 +825,54 @@ class CommandRouter:
             )
 
     async def _set_player_volume(self, player: Player, level: int, target: str) -> None:
-        adapter = self._adapter_for(player.vendor, target)
         self._require_online(player.id, target)
         pid, name, vendor = player.id, player.name, player.vendor
+        zone = self._volume_zone(player, target)
+        if zone is not None:
+            denon = self._require_denon(zone, target)
+            zid = zone.id
+            await self.coalescer.submit(
+                f"volume:{pid}",
+                lambda: self._call(
+                    lambda: denon.set_volume(zid, level), "volume", target, name, vendor=vendor
+                ),
+            )
+            return
+        adapter = self._adapter_for(vendor, target)
         await self.coalescer.submit(
             f"volume:{pid}",
             lambda: self._call(
                 lambda: adapter.set_volume(pid, level), "volume", target, name, vendor=vendor
             ),
         )
+
+    def _volume_zone(self, player: Player, target: str) -> Zone | None:
+        """The amplifier zone that owns this player's level, or None for a self-mixing player.
+
+        Routing volume and mute here is not an optimisation: HEOS accepts set_volume on an
+        AVR-hosted player, reports success, and changes nothing (verified on an AVR-X3400H).
+        """
+        zone = zone_for_player(self.state, player.id)
+        if zone is None:
+            return None
+        if not zone.supports_volume:
+            raise CommandError(
+                "unsupported_action",
+                f"{zone.name} feeds an external amplifier; set the volume there.",
+                target,
+            )
+        return zone
+
+    def _require_denon(self, zone: Zone, target: str) -> DenonAdapter:
+        if self.denon is None or self.denon.status().state != "connected":
+            raise CommandError(
+                "adapter_disconnected",
+                f"{zone.name} didn't change; the amplifier link is down.",
+                target,
+            )
+        if not zone.online:
+            raise CommandError("device_offline", f"{zone.name} is not answering.", target)
+        return self.denon
 
     async def _transport_on(self, adapter: PlaybackAdapter, side: Side, action: str) -> None:
         coord = side.coordinator_player_id

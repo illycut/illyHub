@@ -231,6 +231,20 @@ class HubState(BaseModel):
     connections: dict[str, ConnectionStatus] = Field(default_factory=dict)
 
 
+def zone_for_player(state: HubState, player_id: str) -> Zone | None:
+    """The Denon zone that owns ``player_id``'s volume, if any.
+
+    An AVR-hosted HEOS player has no usable volume of its own: HEOS returns success for
+    ``set_volume`` and applies nothing, and reports 0 regardless of the receiver's real MV
+    (verified on an AVR-X3400H). For those players the amplifier zone is the authority, so
+    volume and mute route to the Denon adapter and its zone values mirror onto the player.
+    """
+    for zone in state.zones.values():
+        if player_id in zone.player_ids:
+            return zone
+    return None
+
+
 def side_id_for_group(vendor: str, group_id: str) -> str:
     return f"{vendor}:{group_id}"
 

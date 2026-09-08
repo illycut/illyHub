@@ -5,7 +5,13 @@ import asyncio
 import pytest
 
 from illyhub_hub.adapters.base import UnsupportedCommandError
-from illyhub_hub.adapters.fake import HEOS_PLAYER, KITCHEN, PATIO, FakeBundle
+from illyhub_hub.adapters.fake import (
+    HEOS_PLAYER,
+    KITCHEN,
+    PATIO,
+    FakeBundle,
+    fake_zone_id,
+)
 from illyhub_hub.coalesce import Coalescer
 from illyhub_hub.commands import (
     ERROR_CATALOGUE,
@@ -378,3 +384,60 @@ async def test_next_prev_refused_when_source_has_none(rig) -> None:
     ack = await router.transport(KITCHEN, "prev")
     assert ack.error is not None and ack.error.code == "unsupported_action"
     assert (await router.transport(KITCHEN, "next")).ok
+
+
+async def test_avr_player_volume_and_mute_route_to_the_amplifier_zone(rig) -> None:
+    """VOL-1/VOL-3 on an AVR-hosted HEOS player must go to the Denon zone, not to HEOS.
+
+    HEOS accepts set_volume on such a player, answers success, and applies nothing, and reports
+    0 for get_volume regardless of the receiver's real MV (verified on an AVR-X3400H). Routing
+    it to HEOS is the difference between a working slider and a dead one.
+    """
+    b, router, _ = rig
+    store = b.heos.store
+    main = fake_zone_id("main")
+    heos_calls: list[tuple[str, int]] = []
+    b.heos.set_volume = lambda pid, level: heos_calls.append((pid, level))  # type: ignore[assignment]
+
+    ack = await router.volume(HEOS_PLAYER, 42)
+    assert ack.ok
+    assert store.state.zones[main].volume == 42  # the zone is the authority
+    assert store.state.players[HEOS_PLAYER].volume == 42  # mirrored onto the player for the UI
+    assert heos_calls == []  # HEOS was never asked
+
+    ack = await router.mute(HEOS_PLAYER, True)
+    assert ack.ok
+    assert store.state.zones[main].muted is True
+    assert store.state.players[HEOS_PLAYER].muted is True
+
+
+async def test_sonos_volume_still_goes_to_its_own_adapter(rig) -> None:
+    """The zone routing must not capture players that mix their own audio."""
+    b, router, _ = rig
+    store = b.heos.store
+    assert (await router.volume(KITCHEN, 44)).ok
+    assert store.state.players[KITCHEN].volume == 44
+    # No Denon zone owns a Sonos player, so no zone level moved.
+    assert store.state.zones[fake_zone_id("main")].volume != 44
+
+
+async def test_fixed_output_zone_refuses_volume_instead_of_pretending(rig) -> None:
+    """Zone 2 feeds an external amp on a fixed pre-out: report it, do not send a no-op."""
+    b, router, _ = rig
+    store = b.heos.store
+    zone = store.state.zones[fake_zone_id("main")]
+    store.set_zone(zone.model_copy(update={"supports_volume": False, "supports_mute": False}))
+
+    ack = await router.volume(HEOS_PLAYER, 30)
+    assert ack.error is not None and ack.error.code == "unsupported_action"
+    assert "external amplifier" in ack.error.message
+    ack = await router.mute(HEOS_PLAYER, True)
+    assert ack.error is not None and ack.error.code == "unsupported_action"
+
+
+async def test_avr_volume_reports_amplifier_link_down(rig) -> None:
+    b, router, _ = rig
+    await b.denon.disconnect()
+    ack = await router.volume(HEOS_PLAYER, 30)
+    assert ack.error is not None and ack.error.code == "adapter_disconnected"
+    assert "amplifier link is down" in ack.error.message
