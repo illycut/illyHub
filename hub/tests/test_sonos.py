@@ -19,6 +19,7 @@ from illyhub_hub.adapters.sonos import (
     snapshot_zones,
     source_from_uri,
 )
+from illyhub_hub.art import placeholder_ref
 from illyhub_hub.config import Settings
 from illyhub_hub.state import StateStore
 
@@ -294,7 +295,7 @@ async def test_events_update_state_absolutize_art_and_contain_errors(
     assert store.state.players["sonos-RINCON_K"].play_state == "pause"
     np = store.state.now_playing["sonos:sonos-gG1"]
     assert np.title == "Signal" and np.duration_ms == 213000 and np.seekable is True
-    assert np.art.url == "http://192.168.1.31:1400/getaa?s=1&u=x"
+    assert np.art == placeholder_ref()  # no ArtCache wired: hub-relative placeholder
     assert np.source == "tidal" and np.track_id.startswith("x-sonos-http:track/1.flac")
     h.sub("RINCON_K", "avTransport").callback(
         Event(
@@ -552,4 +553,43 @@ async def test_topology_event_resnapshots_with_throttle(
     assert pos.position_ms == 0 and pos.confidence == 0.5
     np = store.state.now_playing["sonos:sonos-RINCON_K"]
     assert np.supports_next is False and np.seekable is False
+    await a.disconnect()
+
+
+async def test_relative_album_art_is_absolutized_before_registration(
+    store: StateStore, settings: Settings, tmp_path
+) -> None:
+    """The Sonos ``/getaa?...`` path must be absolutized against the player before the art proxy
+    fetches it; the client only ever sees the hub-relative ArtRef."""
+    from illyhub_hub.art import ArtCache, ArtHelper
+
+    cache = ArtCache(tmp_path / "art")
+    h = Harness()
+    a = SoCoAdapter(
+        store,
+        settings,
+        snapshot=h.snapshot,
+        groups=h.groups,
+        subscribe=h.subscribe,
+        art=ArtHelper(cache),
+    )
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+    h.sub("RINCON_K", "avTransport").callback(
+        Event(
+            {
+                "transport_state": "PLAYING",
+                "current_track_uri": "x-sonos-http:track/1.flac?sid=174",
+                "current_track_meta_data": {
+                    "title": "Signal",
+                    "creator": "Analog Heart",
+                    "album_art_uri": "/getaa?s=1&u=x",
+                },
+            }
+        )
+    )
+    np = store.state.now_playing["sonos:sonos-gG1"]
+    assert np.art.url == f"/api/art/{np.art.cache_key}" and np.art.cache_key
+    meta = cache._read_meta(np.art.cache_key)
+    assert meta.source_url == "http://192.168.1.31:1400/getaa?s=1&u=x"
     await a.disconnect()

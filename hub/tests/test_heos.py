@@ -8,6 +8,7 @@ import pytest
 
 from illyhub_hub.adapters import heos as heos_mod
 from illyhub_hub.adapters.heos import PyHeosAdapter, group_id, player_id
+from illyhub_hub.art import placeholder_ref
 from illyhub_hub.config import Settings
 from illyhub_hub.state import StateStore
 
@@ -173,7 +174,10 @@ async def test_connect_loads_players_now_playing_and_single_socket_invariant(
     assert lr.name == "Living Room Amp" and lr.volume == 30
     assert lr.capabilities.supports_power is True
     np = store.state.now_playing["heos:heos-1"]
-    assert np.title == "Signal" and np.art.url == "http://art/1.jpg" and np.seekable is True
+    assert np.title == "Signal" and np.seekable is True
+    assert (
+        np.art == placeholder_ref()
+    )  # no ArtCache wired: hub-relative placeholder, never the device URL
     assert np.duration_ms == 213000 and np.track_id == "12345"
     await a.disconnect()
     assert a.status().state == "disconnected" and gen.current.disconnect_calls == 1
@@ -426,4 +430,22 @@ async def test_missing_player_event_hook_is_logged(
     await a.connect()
     await wait_for(lambda: a.status().state == "connected")
     assert "no add_on_player_event" in caplog.text
+    await a.disconnect()
+
+
+async def test_now_playing_art_registers_device_url_with_cache(
+    store: StateStore, settings: Settings, tmp_path
+) -> None:
+    """With a cache wired, the HEOS image_url becomes the registered source and the state carries
+    a hub-relative ArtRef with the cache key."""
+    from illyhub_hub.art import ArtCache, ArtHelper
+
+    cache = ArtCache(tmp_path / "art")
+    gen = Generations()
+    a = PyHeosAdapter(store, settings, "192.168.1.20", factory=gen.factory, art=ArtHelper(cache))
+    await a.connect()
+    await wait_for(lambda: bool(store.state.now_playing))
+    np = next(iter(store.state.now_playing.values()))
+    assert np.art.url == f"/api/art/{np.art.cache_key}" and np.art.cache_key
+    assert cache._read_meta(np.art.cache_key).source_url == "http://art/1.jpg"
     await a.disconnect()

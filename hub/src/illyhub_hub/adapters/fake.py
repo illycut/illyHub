@@ -20,8 +20,8 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from ..art import ArtHelper, ArtHints
 from ..state import (
-    Art,
     Capabilities,
     GroupTopology,
     NowPlaying,
@@ -58,13 +58,13 @@ class FakeTrack:
     album: str
     duration_ms: int
     source: str = "tidal"
-    art_url: str = "https://example.invalid/art/1.jpg"
+    art_url: str = "fake://art/signal"  # the art proxy renders synthetic art for fake:// URLs
 
 
 DEFAULT_TRACK = FakeTrack("Signal", "Analog Heart", "Warm Glow", 213_000)
 NEXT_TRACKS = (
-    FakeTrack("Carrier", "Analog Heart", "Warm Glow", 187_000),
-    FakeTrack("Sideband", "Analog Heart", "Warm Glow", 241_000),
+    FakeTrack("Carrier", "Analog Heart", "Warm Glow", 187_000, art_url="fake://art/carrier"),
+    FakeTrack("Sideband", "Analog Heart", "Warm Glow", 241_000, art_url="fake://art/sideband"),
     DEFAULT_TRACK,
 )
 
@@ -158,7 +158,7 @@ class FakeVendorMixin:
                 title=track.title,
                 artist=track.artist,
                 album=track.album,
-                art=Art(url=track.art_url),
+                art=self.art.ref(ArtHints(device_url=track.art_url, service=track.source)),
                 source=track.source,
                 seekable=track.source != "pandora",
                 supports_next=True,  # stations skip forward on both ecosystems
@@ -233,8 +233,8 @@ class FakeVendorMixin:
 class FakeHeos(FakeVendorMixin, HeosAdapter):
     vendor = "heos"
 
-    def __init__(self, store: StateStore, ticker: _Ticker) -> None:
-        super().__init__(store)
+    def __init__(self, store: StateStore, ticker: _Ticker, art: ArtHelper | None = None) -> None:
+        super().__init__(store, art=art)
         self._ticker = ticker
         self._connected = False
 
@@ -323,8 +323,8 @@ class FakeHeos(FakeVendorMixin, HeosAdapter):
 class FakeSonos(FakeVendorMixin, SonosAdapter):
     vendor = "sonos"
 
-    def __init__(self, store: StateStore, ticker: _Ticker) -> None:
-        super().__init__(store)
+    def __init__(self, store: StateStore, ticker: _Ticker, art: ArtHelper | None = None) -> None:
+        super().__init__(store, art=art)
         self._ticker = ticker
         self._connected = False
 
@@ -468,10 +468,12 @@ class FakeDenon(DenonAdapter):
 class FakeBundle:
     """The three fakes plus their shared ticker, wired to one store."""
 
-    def __init__(self, store: StateStore, tick_interval_s: float = 1.0) -> None:
+    def __init__(
+        self, store: StateStore, tick_interval_s: float = 1.0, art: ArtHelper | None = None
+    ) -> None:
         self.ticker = _Ticker(store, tick_interval_s)
-        self.heos = FakeHeos(store, self.ticker)
-        self.sonos = FakeSonos(store, self.ticker)
+        self.heos = FakeHeos(store, self.ticker, art)
+        self.sonos = FakeSonos(store, self.ticker, art)
         self.denon = FakeDenon(store)
 
     @property

@@ -71,7 +71,7 @@ async def test_devices_lists_players_zones_sides(client) -> None:
 async def test_openapi_has_tags(client) -> None:
     c, _rt = client
     spec = (await c.get("/openapi.json")).json()
-    assert {t["name"] for t in spec["tags"]} == {"system", "devices", "commands", "dev"}
+    assert {t["name"] for t in spec["tags"]} == {"system", "devices", "commands", "art", "dev"}
     assert "/api/health" in spec["paths"] and "/api/devices" in spec["paths"]
 
 
@@ -218,7 +218,8 @@ async def test_seek_skip_zone_power_group_endpoints(client) -> None:
     r = await c.post("/api/seek", json={"target": KITCHEN, "position_ms": 20000})
     assert r.status_code == 200 and rt.store.state.positions[side].position_ms == 20000
     r = await c.post("/api/skip", json={"target": KITCHEN})
-    assert r.status_code == 200 and rt.store.state.positions[side].position_ms == 35000
+    # the fake ticker runs at 50 Hz during the request, so allow one tick of drift
+    assert r.status_code == 200 and 35000 <= rt.store.state.positions[side].position_ms < 35100
     r = await c.post("/api/zone/power", json={"zone_id": "denon-fake:zone2", "on": True})
     assert r.status_code == 200 and rt.store.state.zones["denon-fake:zone2"].power is True
     r = await c.delete(f"/api/group/{side}")
@@ -275,6 +276,9 @@ async def test_command_error_handler_is_a_safety_net(client) -> None:
         raise CommandError("device_offline", "Nope.", "x")
 
     app.add_api_route("/api/_broken", broken, methods=["GET"])
+    # The static catch-all is registered last at app creation; a route added afterwards must be
+    # moved ahead of it to be reachable, exactly as a real route would be.
+    app.router.routes.insert(0, app.router.routes.pop())
     r = await c.get("/api/_broken")
     assert r.status_code == 409 and r.json()["error"]["code"] == "device_offline"
     assert r.json()["ok"] is False and r.json()["target"] == "x"

@@ -33,12 +33,21 @@ def now() -> datetime:
     return datetime.now(UTC)
 
 
-class Art(BaseModel):
-    """Artwork reference as served by the hub art proxy (Phase 2 fills accent)."""
+class ArtRef(BaseModel):
+    """Artwork as served by the hub art proxy (design system §2.2, §11).
+
+    ``url`` is hub-relative (``/api/art/{cache_key}``); append ``?size=96|320|1080|backdrop``.
+    ``accent`` is the clamped art-derived colour, ``None`` until the proxy has analysed the image.
+    ``accent_is_safe`` is the hub-side contrast check; when false the client uses ``bg-raised``.
+    """
 
     url: str | None = None
     accent: str | None = None
     accent_is_safe: bool = False
+    cache_key: str | None = None
+
+
+Art = ArtRef  # backwards-compatible alias (Phase 0/1 name)
 
 
 class Capabilities(BaseModel):
@@ -376,6 +385,20 @@ class StateStore:
 
     def set_position(self, side_id: str, pos: Position) -> list[str]:
         return self._mutate(lambda s: s.positions.__setitem__(side_id, pos))
+
+    def update_art_accent(self, cache_key: str, accent: str | None, safe: bool) -> list[str]:
+        """Patch every now-playing entry whose art has ``cache_key`` once the proxy knows the
+        accent. No-op (no version bump) when nothing references the key."""
+
+        def apply(s: HubState) -> None:
+            for side_id, np in list(s.now_playing.items()):
+                if np.art.cache_key == cache_key and (
+                    np.art.accent != accent or np.art.accent_is_safe != safe
+                ):
+                    art = np.art.model_copy(update={"accent": accent, "accent_is_safe": safe})
+                    s.now_playing[side_id] = np.model_copy(update={"art": art})
+
+        return self._mutate(apply)
 
     def set_sync(self, sync: SyncState) -> list[str]:
         return self._mutate(lambda s: setattr(s, "sync", sync))

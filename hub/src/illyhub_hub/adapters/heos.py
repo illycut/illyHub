@@ -16,10 +16,10 @@ import asyncio
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
+from ..art import ArtHelper, ArtHints
 from ..config import Settings
 from ..positions import PositionTracker
 from ..state import (
-    Art,
     Capabilities,
     GroupTopology,
     NowPlaying,
@@ -109,8 +109,9 @@ class PyHeosAdapter(HeosAdapter):
         host: str,
         factory: HeosFactory = default_heos_factory,
         clock: Callable[[], float] | None = None,
+        art: ArtHelper | None = None,
     ) -> None:
-        super().__init__(store)
+        super().__init__(store, art=art)
         self.settings = settings
         self.host = host
         self._factory = factory
@@ -318,7 +319,12 @@ class PyHeosAdapter(HeosAdapter):
         self.store.set_now_playing(
             side_id_for(p),
             NowPlaying(
-                art=Art(url=getattr(media, "image_url", None)),
+                art=self.art.ref(
+                    ArtHints(
+                        device_url=getattr(media, "image_url", None) or None,
+                        service=_service_name(getattr(media, "source_id", None)),
+                    )
+                ),
                 title=getattr(media, "song", None),
                 artist=getattr(media, "artist", None),
                 album=getattr(media, "album", None),
@@ -385,3 +391,14 @@ class PyHeosAdapter(HeosAdapter):
         position = tracker.to_position(loop_now)
         if position is not None:
             self.store.set_position(side, position)
+
+
+HEOS_SOURCE_NAMES: dict[int, str] = {1: "pandora", 4: "spotify", 10: "tidal", 13: "amazon"}
+
+
+def _service_name(source_id: Any) -> str | None:
+    """Map a HEOS ``source_id`` to the hub's service badge names (Phase 3 extends this)."""
+    try:
+        return HEOS_SOURCE_NAMES.get(int(source_id)) if source_id is not None else None
+    except (TypeError, ValueError):
+        return None

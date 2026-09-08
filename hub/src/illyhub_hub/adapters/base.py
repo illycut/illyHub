@@ -16,6 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from ..art import ArtHelper
 from ..logsetup import get_logger
 from ..state import ConnectionStatus, ConnState, StateStore
 from ..tasks import cancel_all, spawn
@@ -63,8 +64,9 @@ class BaseAdapter(ABC):
 
     name: str = "adapter"
 
-    def __init__(self, store: StateStore) -> None:
+    def __init__(self, store: StateStore, *, art: ArtHelper | None = None) -> None:
         self.store = store
+        self.art = art or ArtHelper()
         self.log = get_logger(f"adapter.{self.name}")
         self._callbacks: list[EventCallback] = []
         self._tasks: set[asyncio.Task[Any]] = set()

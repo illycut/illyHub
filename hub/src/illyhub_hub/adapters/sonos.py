@@ -20,10 +20,10 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from ..art import ArtHelper, ArtHints
 from ..config import Settings
 from ..positions import PositionTracker
 from ..state import (
-    Art,
     Capabilities,
     GroupTopology,
     NowPlaying,
@@ -200,8 +200,9 @@ class SoCoAdapter(SonosAdapter):
         subscribe: SubscribeFn = default_subscribe,
         run_sync: RunSync = asyncio.to_thread,
         clock: Callable[[], float] | None = None,
+        art: ArtHelper | None = None,
     ) -> None:
-        super().__init__(store)
+        super().__init__(store, art=art)
         self.settings = settings
         self._snapshot = snapshot or (lambda: default_snapshot(settings))
         self._groups = groups
@@ -512,19 +513,19 @@ class SoCoAdapter(SonosAdapter):
                     self.store.set_position(side, optimistic_position(0))
             self._emit("now_playing", player_id=p_id)
 
-    @staticmethod
-    def _now_playing(meta: Any, variables: dict[str, Any], zone: ZoneSnapshot) -> NowPlaying:
+    def _now_playing(self, meta: Any, variables: dict[str, Any], zone: ZoneSnapshot) -> NowPlaying:
         get = meta.get if isinstance(meta, dict) else lambda k, d=None: getattr(meta, k, d)
         art = get("album_art_uri") or get("album_art")
         uri = variables.get("current_track_uri") or get("uri")
         duration = variables.get("current_track_duration")
         broadcast = "audioBroadcast" in (get("item_class") or "")
+        source = source_from_uri(uri)
         return NowPlaying(
             title=get("title"),
             artist=get("creator"),
             album=get("album"),
-            art=Art(url=absolutize(art, zone.ip)),
-            source=source_from_uri(uri),
+            art=self.art.ref(ArtHints(device_url=absolutize(art, zone.ip), service=source)),
+            source=source,
             seekable=not broadcast,
             supports_next=not broadcast,
             supports_prev=not broadcast,

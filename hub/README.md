@@ -23,11 +23,14 @@ uv run hub                         # real adapters (needs HUB_HEOS_HOST / HUB_DE
 Then `curl localhost:8080/api/health` and `curl localhost:8080/api/devices`.
 OpenAPI docs at `http://localhost:8080/docs`.
 
-## Endpoints (Phase 1)
+## Endpoints (Phases 1–2)
 
 ```
 GET    /api/health                      hub + connection status (always 200)
 GET    /api/devices                     players, zones, sides, discovered devices
+GET    /api/art/{cache_key}?size=       proxied artwork: 96 | 320 | 1080 | backdrop (blurred)
+GET    /                                PWA static export (HUB_APP_DIR) with SPA fallback
+GET    /fonts/...                       self-hosted General Sans (HUB_FONTS_DIR)
 POST   /api/transport/{action}          {target}   play|pause|toggle|stop|next|prev
 POST   /api/seek                        {target, position_ms}
 POST   /api/skip                        {target, delta_ms=15000}
@@ -44,6 +47,13 @@ POST   /api/dev/fake/{scenario}         fakes only: track_change | volume_change
 `target` is a player id, a side id, or `all`. Every command returns an ack
 `{correlation_id, ok, action, target, state_version, error}`; the same ack is broadcast on
 `/ws`. Error codes and the WebSocket protocol are documented in `../docs/api.md`.
+
+Artwork: every `now_playing.art` is an `ArtRef` `{url, cache_key, accent, accent_is_safe}`
+served by the hub (`docs/api.md` § Art proxy). Cache on disk under `HUB_DATA_DIR/art`
+(default `hub/data`, gitignored), 30-day TTL, `HUB_ART_MAX_MB` LRU budget. `HUB_ART_PROXY=0`
+keeps refs hub-relative but serves the neutral placeholder for every one.
+Fakes use `fake://art/<name>` URLs, which the proxy renders as synthetic gradients so the PWA
+has real-looking art and accents without hardware.
 
 Known protocol limit: the HEOS CLI has no seek command, so HEOS sides report
 `capabilities.supports_seek=false` and `/api/seek` / `/api/skip` on them return
@@ -68,10 +78,13 @@ src/illyhub_hub/
   commands.py      CommandRouter: target resolution, error catalogue, acks, latency logging
   coalesce.py      per-target write coalescing for volume/seek bursts
   positions.py     sub-second position estimation from whole-second device reports
+  art.py           art proxy: disk cache, 96/320/1080/backdrop variants, accent + contrast check,
+                   service-direct resolver (Tidal CDN, YT Music thumbnails, device fallback)
+  static.py        PWA export + fonts serving with SPA fallback and cache headers
   ws.py            WebSocket sessions: snapshot/delta/ack stream, heartbeat, bounded queues
   tasks.py         tracked fire-and-forget tasks, cancellation-safe stop_task()
   api.py           FastAPI app factory: read, command, ws, and dev routes
-  main.py          uvicorn entrypoint
+  main.py          uvicorn entrypoint (HUB_TLS_CERT/HUB_TLS_KEY → HTTPS)
 ```
 
 ## Verification status

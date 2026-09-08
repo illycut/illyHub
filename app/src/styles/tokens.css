@@ -1,0 +1,108 @@
+/* illyHub design tokens — the single source of truth (design system v1.0).
+   Tailwind maps to these variables in tailwind.config.ts. Dark-only in v1. */
+:root {
+  color-scheme: dark;
+
+  /* §2.1 Base palette (hex + rgb triplets so Tailwind alpha modifiers work: bg-base/60) */
+  --bg-base: #101014;         --bg-base-rgb: 16 16 20;
+  --bg-raised: #1a1a20;       --bg-raised-rgb: 26 26 32;
+  --bg-overlay: #24242c;      --bg-overlay-rgb: 36 36 44;
+  --stroke: #2e2e38;          --stroke-rgb: 46 46 56;
+  --text-primary: #f2f2f5;    --text-primary-rgb: 242 242 245;
+  --text-secondary: #a6a6b3;  --text-secondary-rgb: 166 166 179;
+  --text-tertiary: #6e6e7a;   --text-tertiary-rgb: 110 110 122;
+  --signal: #f0a63c;          --signal-rgb: 240 166 60;
+  --signal-dim: #8a6224;      --signal-dim-rgb: 138 98 36;
+
+  /* §2.3 Semantic */
+  --sync-locked: #4cc38a;     --sync-locked-rgb: 76 195 138;
+  --sync-drift: #f0a63c;      --sync-drift-rgb: 240 166 60;
+  --sync-lost: #e5484d;       --sync-lost-rgb: 229 72 77;
+  --error: #e5484d;           --error-rgb: 229 72 77;
+
+  /* §2.4 Service badges */
+  --badge-tidal-bg: #0e2a33;    --badge-tidal-bg-rgb: 14 42 51;
+  --badge-tidal-fg: #7fd4e8;    --badge-tidal-fg-rgb: 127 212 232;
+  --badge-ytmusic-bg: #331114;  --badge-ytmusic-bg-rgb: 51 17 20;
+  --badge-ytmusic-fg: #f08a8f;  --badge-ytmusic-fg-rgb: 240 138 143;
+  --badge-pandora-bg: #131a33;  --badge-pandora-bg-rgb: 19 26 51;
+  --badge-pandora-fg: #8fa8f0;  --badge-pandora-fg-rgb: 143 168 240;
+
+  /* Derived surfaces */
+  --scrim: rgb(var(--bg-base-rgb) / 0.6);
+
+  /* §2.2 Dynamic accent — set per Now Playing by the client from the hub's art payload.
+     Defaults to bg-raised, the documented fallback. --scrub-fill is the contrast-guarded fill. */
+  --art-accent: var(--bg-raised);
+  --art-accent-alpha: 0.4;
+  --scrub-fill: var(--text-primary);
+
+  /* §3 Typography */
+  --font-sans: "General Sans", -apple-system, "Segoe UI", sans-serif;
+  --type-display-size: 32px;  --type-display-line: 38px;
+  --type-title-1-size: 24px;  --type-title-1-line: 30px;
+  --type-title-2-size: 18px;  --type-title-2-line: 24px;
+  --type-body-size: 15px;     --type-body-line: 22px;
+  --type-caption-size: 13px;  --type-caption-line: 18px;
+  --type-micro-size: 11px;    --type-micro-line: 14px;
+
+  /* §4 Spacing (4px base) */
+  --space-half: 2px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --screen-margin: 16px;
+  --transport-margin: 12px;   /* transport row only, keeps >= 8px between 56px targets at 375px */
+
+  /* §4 Radii */
+  --radius-art: 8px;
+  --radius-control: 12px;
+  --radius-sheet: 20px;
+  --radius-pill: 999px;
+
+  /* §4, §6, §9 Sizes */
+  --size-card: 148px;
+  --size-card-tablet: 180px;
+  --size-thumb-art: 44px;
+  --size-mini-player: 64px;
+  --size-target: 48px;        /* minimum touch target */
+  --size-target-lg: 56px;     /* transport row */
+  --size-play: 64px;          /* primary play/pause */
+  --size-row: 56px;           /* settings/list rows */
+  --size-transport-row: 372px;
+  --size-slider-track: 4px;
+  --size-slider-track-active: 8px;
+  --size-slider-thumb: 28px;
+  --size-scrub-thumb: 12px;
+  --size-scrub-thumb-active: 20px;
+  --size-sheet-handle: 40px;
+  --size-hero-max: 520px;
+  --gap-target-min: 8px;
+
+  /* §4 Elevation */
+  --shadow-mini-player: 0 -8px 24px rgba(0, 0, 0, 0.45);
+
+  /* §7 Motion */
+  --motion-press: 100ms;
+  --motion-scrub: 120ms;
+  --motion-fade: 150ms;
+  --motion-expand: 320ms;
+  --motion-pulse: 400ms;
+
+  /* Safe areas */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+}
+
+@media (min-width: 768px) {
+  :root {
+    --screen-margin: 24px;
+    --size-card: var(--size-card-tablet);
+  }
+}

@@ -1,7 +1,7 @@
 # Design System
 ## Multi-Room Audio Control App
 
-**Version:** 1.0 Final
+**Version:** 1.1 (see §13 changelog)
 **Companion to:** multi-room-audio-PRD.md
 **Date:** September 7, 2026
 
@@ -253,3 +253,22 @@ One signature moment: the **mini-player expand**. Artwork shared-element morphs 
 3. **Theme:** v1 ships dark-only. The token layer makes a light theme additive later.
 4. **Transport:** full 5-button row retained, 56px hit targets, per Section 6.4.
 5. **Recents interaction:** tap always opens the target picker, last-used target pre-highlighted (Section 6.2).
+
+---
+
+## 13. Changelog
+
+### 1.1 — September 7, 2026 (Phase 2 build and UX review)
+
+Refinements found while implementing Phase 2. Each is a clarification of intent, not a change of direction.
+
+1. **Scrubber fill fallback.** §2.2 says `art_accent` falls back to `bg-raised`. That is correct for the backdrop tint only. `bg-raised` is darker than the `stroke` track, so it cannot be the scrubber fill. Fill fallback is `text-primary`. The client also guards live: if contrast(accent, `stroke`) is under 3:1, the fill uses `text-primary`.
+2. **Non-seekable scrubber.** §6.4 "disabled at 40 percent opacity" applies to the thumb and the ±15 buttons only. Track, fill, and timecodes stay at full opacity so position still reads. The thumb is hidden entirely (a progress bar without a handle reads as display, not as a broken slider). The control stays focusable with `aria-readonly`. This now also covers HEOS sides, since the HEOS protocol has no seek command (PRD review §6a).
+3. **`accent_is_safe` semantics.** The hub returns `accent_is_safe=false` and `accent=null` when extraction fails, when the artwork is effectively greyscale (a grey tint is pointless), or when the clamped accent fails the contrast check. After the §2.2 clamp the contrast check almost always passes; the greyscale rule is what makes the flag meaningful in practice.
+4. **Transport row on the smallest phones.** §6.4 assumed 372px usable. At 16px margins a 375px phone yields 343px and 13.75px gaps. The transport row alone uses a 12px margin on phones; the 8px hard minimum holds everywhere and the 18px target holds from 390px up.
+5. **Alpha and scrim tokens.** Add `--bg-base-rgb: 16 16 20` (and matching `-rgb` triplets for `bg-raised`, `bg-overlay`) so Tailwind alpha modifiers work, plus `--scrim: rgb(16 16 20 / 0.6)` for sheets. Add `--size-sheet-handle: 40px` for the sheet drag pill.
+6. **Landscape and wall tablet.** Now Playing caps the hero by height (`min(520px, 100dvh - 396px)`) and switches to a two-column layout (art left, controls right) at landscape widths of 700px and above. Play/pause must never require scrolling. Screen margins respect `env(safe-area-inset-left/right)`.
+7. **Hub-unreachable banner placement.** The banner renders above every surface, including the expanded Now Playing, not only in the home shell.
+8. **Denon zone toggles.** Each power toggle carries a `micro` label ("Main", "Zone 2") and the on state has a filled ring, so the two toggles never differ by color alone (§9).
+9. **Zone dots.** Dots model live and online separately: amber live, `signal-dim` idle, `text-tertiary` offline, with a text label such as "2 rooms playing, 1 offline".
+10. **Open questions filed as issues:** `text-tertiary` contrast versus §9 (illyHub #3), marquee trigger (#4), sheet modality (#5).

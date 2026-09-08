@@ -1,0 +1,1232 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "illyHub hub",
+  "version": "0.1.0"
+ },
+ "paths": {
+  "/api/health": {
+   "get": {
+    "tags": [
+     "system"
+    ],
+    "summary": "Health",
+    "operationId": "health_api_health_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HealthResponse"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/devices": {
+   "get": {
+    "tags": [
+     "devices"
+    ],
+    "summary": "Devices",
+    "operationId": "devices_api_devices_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/DevicesResponse"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/transport/{action}": {
+   "post": {
+    "tags": [
+     "commands"
+    ],
+    "summary": "Transport",
+    "operationId": "transport_api_transport__action__post",
+    "parameters": [
+     {
+      "name": "action",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "enum": [
+        "play",
+        "pause",
+        "toggle",
+        "stop",
+        "next",
+        "prev"
+       ],
+       "type": "string",
+       "title": "Action"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/TargetBody"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Ack"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/seek": {
+   "post": {
+    "tags": [
+     "commands"
+    ],
+    "summary": "Seek",
+    "operationId": "seek_api_seek_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SeekBody"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Ack"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/skip": {
+   "post": {
+    "tags": [
+     "commands"
+    ],
+    "summary": "Skip",
+    "operationId": "skip_api_skip_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SkipBody"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Ack"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/volume": {
+   "post": {
+    "tags": [
+     "commands"
+    ],
+    "summary": "Volume",
+    "operationId": "volume_api_volume_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/VolumeBody"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Ack"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/mute": {
+   "post": {
+    "tags": [
+     "commands"
+    ],
+    "summary": "Mute",
+    "operationId": "mute_api_mute_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/MuteBody"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Ack"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/zone/power": {
+   "post": {
+    "tags": [
+     "commands"
+    ],
+    "summary": "Zone Power",
+    "operationId": "zone_power_api_zone_power_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ZonePowerBody"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Ack"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/group": {
+   "post": {
+    "tags": [
+     "commands"
+    ],
+    "summary": "Group",
+    "operationId": "group_api_group_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/GroupBody"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Ack"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/group/{side_id}": {
+   "delete": {
+    "tags": [
+     "commands"
+    ],
+    "summary": "Ungroup",
+    "operationId": "ungroup_api_group__side_id__delete",
+    "parameters": [
+     {
+      "name": "side_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Side Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Ack"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/dev/fake/{scenario}": {
+   "post": {
+    "tags": [
+     "dev"
+    ],
+    "summary": "Fake Scenario",
+    "operationId": "fake_scenario_api_dev_fake__scenario__post",
+    "parameters": [
+     {
+      "name": "scenario",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Scenario"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ScenarioResponse"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "schemas": {
+   "Ack": {
+    "properties": {
+     "correlation_id": {
+      "type": "string",
+      "title": "Correlation Id"
+     },
+     "ok": {
+      "type": "boolean",
+      "title": "Ok"
+     },
+     "action": {
+      "type": "string",
+      "title": "Action"
+     },
+     "target": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Target"
+     },
+     "state_version": {
+      "type": "integer",
+      "title": "State Version"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/ErrorEnvelope"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "partial": {
+      "items": {
+       "$ref": "#/components/schemas/PartialFailure"
+      },
+      "type": "array",
+      "title": "Partial"
+     }
+    },
+    "type": "object",
+    "required": [
+     "correlation_id",
+     "ok",
+     "action",
+     "state_version"
+    ],
+    "title": "Ack"
+   },
+   "Capabilities": {
+    "properties": {
+     "supports_seek": {
+      "type": "boolean",
+      "title": "Supports Seek",
+      "default": true
+     },
+     "supports_power": {
+      "type": "boolean",
+      "title": "Supports Power",
+      "default": false
+     },
+     "can_group": {
+      "type": "boolean",
+      "title": "Can Group",
+      "default": true
+     },
+     "supports_next": {
+      "type": "boolean",
+      "title": "Supports Next",
+      "default": true
+     },
+     "supports_prev": {
+      "type": "boolean",
+      "title": "Supports Prev",
+      "default": true
+     }
+    },
+    "type": "object",
+    "title": "Capabilities",
+    "description": "What a player or side can do, so Phase 1 does not hard-code vendor checks.\n\n``supports_next`` / ``supports_prev`` follow the current source (HEOS ``supported_controls``,\nSonos DIDL item class): a radio station has no next track."
+   },
+   "ConnectionStatus": {
+    "properties": {
+     "state": {
+      "type": "string",
+      "enum": [
+       "connected",
+       "reconnecting",
+       "disconnected",
+       "disabled"
+      ],
+      "title": "State",
+      "default": "disconnected"
+     },
+     "last_error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Error"
+     },
+     "since": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Since"
+     }
+    },
+    "type": "object",
+    "title": "ConnectionStatus"
+   },
+   "DevicesResponse": {
+    "properties": {
+     "players": {
+      "items": {
+       "$ref": "#/components/schemas/Player"
+      },
+      "type": "array",
+      "title": "Players"
+     },
+     "zones": {
+      "items": {
+       "$ref": "#/components/schemas/Zone"
+      },
+      "type": "array",
+      "title": "Zones"
+     },
+     "sides": {
+      "items": {
+       "$ref": "#/components/schemas/Side"
+      },
+      "type": "array",
+      "title": "Sides"
+     },
+     "discovered": {
+      "items": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "type": "array",
+      "title": "Discovered"
+     }
+    },
+    "type": "object",
+    "required": [
+     "players",
+     "zones",
+     "sides",
+     "discovered"
+    ],
+    "title": "DevicesResponse"
+   },
+   "ErrorEnvelope": {
+    "properties": {
+     "code": {
+      "type": "string",
+      "enum": [
+       "unknown_target",
+       "unsupported_action",
+       "not_seekable",
+       "adapter_disconnected",
+       "device_offline",
+       "invalid_argument",
+       "vendor_error"
+      ],
+      "title": "Code"
+     },
+     "message": {
+      "type": "string",
+      "title": "Message"
+     },
+     "target": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Target"
+     },
+     "correlation_id": {
+      "type": "string",
+      "title": "Correlation Id"
+     }
+    },
+    "type": "object",
+    "required": [
+     "code",
+     "message",
+     "correlation_id"
+    ],
+    "title": "ErrorEnvelope"
+   },
+   "GroupBody": {
+    "properties": {
+     "vendor": {
+      "type": "string",
+      "enum": [
+       "heos",
+       "sonos"
+      ],
+      "title": "Vendor"
+     },
+     "coordinator_id": {
+      "type": "string",
+      "title": "Coordinator Id"
+     },
+     "member_ids": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Member Ids"
+     }
+    },
+    "type": "object",
+    "required": [
+     "vendor",
+     "coordinator_id",
+     "member_ids"
+    ],
+    "title": "GroupBody"
+   },
+   "HTTPValidationError": {
+    "properties": {
+     "detail": {
+      "items": {
+       "$ref": "#/components/schemas/ValidationError"
+      },
+      "type": "array",
+      "title": "Detail"
+     }
+    },
+    "type": "object",
+    "title": "HTTPValidationError"
+   },
+   "HealthResponse": {
+    "properties": {
+     "status": {
+      "type": "string",
+      "title": "Status",
+      "description": "ok or degraded"
+     },
+     "degraded": {
+      "type": "boolean",
+      "title": "Degraded"
+     },
+     "fake_devices": {
+      "type": "boolean",
+      "title": "Fake Devices"
+     },
+     "version": {
+      "type": "string",
+      "title": "Version"
+     },
+     "uptime_s": {
+      "type": "number",
+      "title": "Uptime S"
+     },
+     "connections": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/ConnectionStatus"
+      },
+      "type": "object",
+      "title": "Connections"
+     },
+     "last_error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Error"
+     },
+     "discovery_last_run": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Discovery Last Run"
+     },
+     "state_version": {
+      "type": "integer",
+      "title": "State Version"
+     }
+    },
+    "type": "object",
+    "required": [
+     "status",
+     "degraded",
+     "fake_devices",
+     "version",
+     "uptime_s",
+     "connections",
+     "state_version"
+    ],
+    "title": "HealthResponse"
+   },
+   "MuteBody": {
+    "properties": {
+     "target": {
+      "type": "string",
+      "title": "Target",
+      "description": "player id, side id, or 'all'"
+     },
+     "muted": {
+      "type": "boolean",
+      "title": "Muted"
+     }
+    },
+    "type": "object",
+    "required": [
+     "target",
+     "muted"
+    ],
+    "title": "MuteBody"
+   },
+   "PartialFailure": {
+    "properties": {
+     "target": {
+      "type": "string",
+      "title": "Target"
+     },
+     "code": {
+      "type": "string",
+      "enum": [
+       "unknown_target",
+       "unsupported_action",
+       "not_seekable",
+       "adapter_disconnected",
+       "device_offline",
+       "invalid_argument",
+       "vendor_error"
+      ],
+      "title": "Code"
+     },
+     "message": {
+      "type": "string",
+      "title": "Message"
+     }
+    },
+    "type": "object",
+    "required": [
+     "target",
+     "code",
+     "message"
+    ],
+    "title": "PartialFailure"
+   },
+   "Player": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "name": {
+      "type": "string",
+      "title": "Name"
+     },
+     "vendor": {
+      "type": "string",
+      "enum": [
+       "heos",
+       "sonos"
+      ],
+      "title": "Vendor"
+     },
+     "ip": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ip"
+     },
+     "model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Model"
+     },
+     "online": {
+      "type": "boolean",
+      "title": "Online",
+      "default": true
+     },
+     "volume": {
+      "type": "integer",
+      "maximum": 100.0,
+      "minimum": 0.0,
+      "title": "Volume",
+      "default": 0
+     },
+     "muted": {
+      "type": "boolean",
+      "title": "Muted",
+      "default": false
+     },
+     "play_state": {
+      "type": "string",
+      "enum": [
+       "play",
+       "pause",
+       "stop",
+       "unknown"
+      ],
+      "title": "Play State",
+      "default": "stop"
+     },
+     "group_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Group Id"
+     },
+     "capabilities": {
+      "$ref": "#/components/schemas/Capabilities"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "name",
+     "vendor"
+    ],
+    "title": "Player"
+   },
+   "ScenarioResponse": {
+    "properties": {
+     "scenario": {
+      "type": "string",
+      "title": "Scenario"
+     },
+     "result": {
+      "additionalProperties": true,
+      "type": "object",
+      "title": "Result"
+     },
+     "state_version": {
+      "type": "integer",
+      "title": "State Version"
+     }
+    },
+    "type": "object",
+    "required": [
+     "scenario",
+     "result",
+     "state_version"
+    ],
+    "title": "ScenarioResponse"
+   },
+   "SeekBody": {
+    "properties": {
+     "target": {
+      "type": "string",
+      "title": "Target",
+      "description": "player id, side id, or 'all'"
+     },
+     "position_ms": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Position Ms"
+     }
+    },
+    "type": "object",
+    "required": [
+     "target",
+     "position_ms"
+    ],
+    "title": "SeekBody"
+   },
+   "Side": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "vendor": {
+      "type": "string",
+      "enum": [
+       "heos",
+       "sonos"
+      ],
+      "title": "Vendor"
+     },
+     "coordinator_player_id": {
+      "type": "string",
+      "title": "Coordinator Player Id"
+     },
+     "member_ids": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Member Ids"
+     },
+     "name": {
+      "type": "string",
+      "title": "Name"
+     },
+     "play_state": {
+      "type": "string",
+      "enum": [
+       "play",
+       "pause",
+       "stop",
+       "unknown"
+      ],
+      "title": "Play State",
+      "default": "stop"
+     },
+     "volume": {
+      "type": "integer",
+      "title": "Volume",
+      "default": 0
+     },
+     "muted": {
+      "type": "boolean",
+      "title": "Muted",
+      "default": false
+     },
+     "capabilities": {
+      "$ref": "#/components/schemas/Capabilities"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "vendor",
+     "coordinator_player_id",
+     "member_ids",
+     "name"
+    ],
+    "title": "Side"
+   },
+   "SkipBody": {
+    "properties": {
+     "target": {
+      "type": "string",
+      "title": "Target",
+      "description": "player id, side id, or 'all'"
+     },
+     "delta_ms": {
+      "type": "integer",
+      "title": "Delta Ms",
+      "description": "signed; \u00b115000 for the transport row",
+      "default": 15000
+     }
+    },
+    "type": "object",
+    "required": [
+     "target"
+    ],
+    "title": "SkipBody"
+   },
+   "TargetBody": {
+    "properties": {
+     "target": {
+      "type": "string",
+      "title": "Target",
+      "description": "player id, side id, or 'all'"
+     }
+    },
+    "type": "object",
+    "required": [
+     "target"
+    ],
+    "title": "TargetBody"
+   },
+   "ValidationError": {
+    "properties": {
+     "loc": {
+      "items": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      },
+      "type": "array",
+      "title": "Location"
+     },
+     "msg": {
+      "type": "string",
+      "title": "Message"
+     },
+     "type": {
+      "type": "string",
+      "title": "Error Type"
+     },
+     "input": {
+      "title": "Input"
+     },
+     "ctx": {
+      "type": "object",
+      "title": "Context"
+     }
+    },
+    "type": "object",
+    "required": [
+     "loc",
+     "msg",
+     "type"
+    ],
+    "title": "ValidationError"
+   },
+   "VolumeBody": {
+    "properties": {
+     "target": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Target"
+     },
+     "level": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "maximum": 100.0,
+        "minimum": 0.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Level"
+     },
+     "linked": {
+      "type": "boolean",
+      "title": "Linked",
+      "default": false
+     },
+     "delta": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Delta"
+     }
+    },
+    "type": "object",
+    "title": "VolumeBody"
+   },
+   "Zone": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "key": {
+      "type": "string",
+      "title": "Key"
+     },
+     "name": {
+      "type": "string",
+      "title": "Name"
+     },
+     "power": {
+      "type": "boolean",
+      "title": "Power",
+      "default": false
+     },
+     "online": {
+      "type": "boolean",
+      "title": "Online",
+      "default": true
+     },
+     "host": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Host"
+     },
+     "device_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Device Id"
+     },
+     "player_ids": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Player Ids"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "key",
+     "name"
+    ],
+    "title": "Zone",
+    "description": "A Denon amplifier zone, namespaced by receiver host: ``denon-{host}:{key}``."
+   },
+   "ZonePowerBody": {
+    "properties": {
+     "zone_id": {
+      "type": "string",
+      "title": "Zone Id",
+      "description": "Denon zone id, or a Sonos player/side id for stop+ungroup"
+     },
+     "on": {
+      "type": "boolean",
+      "title": "On"
+     }
+    },
+    "type": "object",
+    "required": [
+     "zone_id",
+     "on"
+    ],
+    "title": "ZonePowerBody"
+   }
+  }
+ },
+ "tags": [
+  {
+   "name": "system",
+   "description": "Health and hub metadata"
+  },
+  {
+   "name": "devices",
+   "description": "Discovered players, zones, and sides"
+  },
+  {
+   "name": "commands",
+   "description": "Transport, seek, volume, mute, power, grouping"
+  },
+  {
+   "name": "dev",
+   "description": "Fake-device scenario triggers (HUB_FAKE_DEVICES=1)"
+  }
+ ]
+}

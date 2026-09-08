@@ -1,0 +1,194 @@
+@import "./tokens.css";
+
+@font-face {
+  font-family: "General Sans";
+  src: url("/fonts/GeneralSans-500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "General Sans";
+  src: url("/fonts/GeneralSans-600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "General Sans";
+  src: url("/fonts/GeneralSans-700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    background: var(--bg-base);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-weight: 500;
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior-y: none;
+  }
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    background: var(--bg-base);
+    font-size: var(--type-body-size);
+    line-height: var(--type-body-line);
+  }
+  body.scroll-lock {
+    overflow: hidden;
+  }
+  button {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    padding: 0;
+    touch-action: manipulation;
+  }
+  /* §9 focus states: 2px signal ring at 2px offset, keyboard/remote only */
+  :focus-visible {
+    outline: 2px solid var(--signal);
+    outline-offset: 2px;
+  }
+  /* Touch hygiene: no callouts or text selection on controls and artwork */
+  button,
+  img,
+  [role="slider"] {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  img {
+    -webkit-user-drag: none;
+  }
+}
+
+@layer utilities {
+  .numeric {
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+  /* Screen margins, widened by the landscape safe areas (§4, notches) */
+  .screen-margin {
+    padding-left: max(var(--screen-margin), var(--safe-left));
+    padding-right: max(var(--screen-margin), var(--safe-right));
+  }
+  .transport-margin {
+    padding-left: max(var(--transport-margin), var(--safe-left));
+    padding-right: max(var(--transport-margin), var(--safe-right));
+  }
+  .pt-safe {
+    padding-top: var(--safe-top);
+  }
+  .pb-safe {
+    padding-bottom: var(--safe-bottom);
+  }
+  .hit-target {
+    min-width: var(--size-target);
+    min-height: var(--size-target);
+  }
+  .clamp-1 {
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  /* Now Playing hero: never taller than what leaves room for the controls below it (U5).
+     Portrait budget: header 48 + title block ~146 + scrubber 62 + transport 56 + volume 48 + gaps/padding ~120. */
+  .hero-size {
+    width: auto;
+    max-width: 100%;
+    max-height: min(var(--size-hero-max), calc(100dvh - 500px));
+    aspect-ratio: 1 / 1;
+    margin-inline: auto;
+  }
+}
+
+/* Compact Now Playing on short viewports (iPhone SE portrait, phones in landscape): tighter gaps,
+   one-line title at title-1, metadata and badge on one row. Play/pause never needs scrolling. */
+@media (max-height: 700px) {
+  [data-np-stack] {
+    gap: var(--space-3);
+    padding-bottom: var(--space-3);
+  }
+  [data-np-title] {
+    font-size: var(--type-title-1-size);
+    line-height: var(--type-title-1-line);
+    -webkit-line-clamp: 1;
+  }
+  [data-np-meta] {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: var(--space-1);
+  }
+  [data-np-meta] > * {
+    margin: 0;
+    min-width: 0;
+  }
+  /* Measured at 375x667: header 48 + title 34 + meta 30 + scrubber 62 + transport 64 + volume 48 + gaps/padding 72 = 358. */
+  .hero-size {
+    max-height: min(var(--size-hero-max), calc(100dvh - 366px));
+  }
+}
+/* Landscape two-column: the hero is bounded by the column height, not the control stack. */
+@media (min-width: 700px) and (orientation: landscape) {
+  .hero-size {
+    max-height: min(var(--size-hero-max), calc(100dvh - 96px), 45vw);
+  }
+}
+
+/* Marquee (mini-player only, §3). Stops under reduced motion (§7). */
+@keyframes marquee {
+  0%, 15% { transform: translateX(0); }
+  85%, 100% { transform: translateX(var(--marquee-shift, -40%)); }
+}
+.marquee {
+  display: inline-block;
+  white-space: nowrap;
+  animation: marquee 9s ease-in-out infinite alternate;
+}
+
+/* Sync chip single pulse (§7): one 400ms opacity pulse, never looping. */
+@keyframes pulse-once {
+  0% { opacity: 1; }
+  50% { opacity: 0.35; }
+  100% { opacity: 1; }
+}
+.pulse-once {
+  animation: pulse-once var(--motion-pulse) ease-in-out 1;
+}
+
+/* §7: reduced motion kills every CSS transition and animation, marquee and pulses included. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  .marquee { animation: none; }
+  .clamp-1 { text-overflow: ellipsis; }
+  .pulse-once { animation: none; }
+}

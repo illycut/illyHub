@@ -83,7 +83,7 @@ git clone https://github.com/illycut/illyHub.git ~/illyHub
 cd ~/illyHub
 cp hub/.env.example hub/.env   # then edit: HUB_HOST, HUB_PORT, HUB_STATIC_DEVICES, HUB_DENON_HOST, HUB_HEOS_HOST
 ./ops/install.sh
-curl -s http://127.0.0.1:8080/api/health | python3 -m json.tool
+curl -s http://127.0.0.1:8080/api/health | python3 -m json.tool   # with mkcert TLS: curl -sk https://127.0.0.1:8080/api/health
 ```
 
 - **Local Network permission (Sequoia, do this once):** macOS 15 gates LAN multicast and UPnP callbacks behind
@@ -98,6 +98,48 @@ curl -s http://127.0.0.1:8080/api/health | python3 -m json.tool
 - Update: `git pull && ./ops/install.sh`
 - Uninstall: `./ops/install.sh --uninstall`
 
+## 3a. HTTPS for the PWA
+
+Service workers (offline shell, Android install prompt) require a secure origin. Plain
+`http://<hub-ip>:8080` still works for a bookmark-style install, but pick one of these.
+
+**Default: Tailscale (no certificates to manage).**
+Prerequisite, once, in the Tailscale admin console (DNS page): enable **MagicDNS** and
+**HTTPS Certificates**. Without both, `tailscale serve` cannot mint a certificate.
+```bash
+tailscale up                              # once, sign in
+tailscale serve --bg 8080                 # HTTPS on https://<hub-name>.<tailnet>.ts.net
+tailscale serve status
+```
+The hub keeps serving plain HTTP on 8080; Tailscale terminates TLS with a MagicDNS certificate.
+Works on the LAN for devices that are on the tailnet and from anywhere remote. Leave
+`HUB_TLS_CERT`/`HUB_TLS_KEY` empty.
+
+**Alternative: mkcert (LAN-only devices that are not on the tailnet).**
+```bash
+brew install mkcert nss
+mkcert -install                           # trusts a local CA on the hub Mac
+mkdir -p ~/illyHub/hub/tls                # gitignored; the hub resolves tls/ relative to hub/
+mkcert -cert-file ~/illyHub/hub/tls/hub.pem -key-file ~/illyHub/hub/tls/hub-key.pem \
+  "$(hostname -s).local" 192.168.1.10     # the hub's .local name and reserved IP
+```
+Then in `hub/.env`: `HUB_TLS_CERT=tls/hub.pem`, `HUB_TLS_KEY=tls/hub-key.pem` (relative to
+`hub/`; the hub refuses to start if either file is missing), and `./ops/install.sh`. The hub
+now serves `https://<hostname>.local:8080`, and every health check below becomes
+`curl -sk https://127.0.0.1:8080/api/health` (`-k` because the CA is local). `install.sh`
+detects `HUB_TLS_CERT` in `.env` and switches scheme automatically. Install the
+root CA on each phone: `mkcert -CAROOT` prints the folder; AirDrop `rootCA.pem` to the phone.
+iOS: Settings → General → VPN & Device Management → install, then Settings → General → About →
+Certificate Trust Settings → enable. Android: Settings → Security → Install a certificate → CA.
+
+**Install the app on a phone**
+- iOS (Safari): open the hub URL → Share → *Add to Home Screen*. Standalone mode works even on
+  plain HTTP; the service worker only registers on HTTPS.
+- Android (Chrome): open the hub URL → menu → *Install app* (requires HTTPS), or *Add to Home
+  screen* on plain HTTP.
+- The app export must be built and present at `HUB_APP_DIR` (`app/out`); `/api/health` still
+  answers when it is missing, but `/` returns 404 and the hub log says "app export missing".
+
 ## 4. Recovery: "the Mac rebooted and nothing started"
 
 1. Did the user session log in? If the login window is showing, auto-login is off (see FileVault above). Log in once; the agent starts with the session.
@@ -106,6 +148,9 @@ curl -s http://127.0.0.1:8080/api/health | python3 -m json.tool
 4. Common causes: `uv` moved (Homebrew path changed) → rerun `./ops/install.sh`; `.env` missing → copy from example; port in use → `lsof -i :8080`.
 5. Discovery finds nothing: first check Local Network permission (§3). Then `ping <sonos_ip>`; with static devices configured the hub comes up regardless. Check IGMP snooping on the switch if multicast never works.
 6. `/api/health` shows `fake_devices: true`: `hub/.env` still has `HUB_FAKE_DEVICES=1`. Remove it and kickstart.
+7. `/` returns 404 but `/api/health` works: the PWA export is not at `HUB_APP_DIR`. Build the app (`cd app && npm run build`) or fix the path, then kickstart.
+8. Artwork shows grey squares: `/api/art/...` is answering with `X-Art-Fallback: upstream_error` (200 + placeholder). Check `hub.log` for "art fetch failed"; the device URL (Sonos `/getaa?...`, HEOS CDN) must be reachable from the hub Mac. `X-Art-Fallback: proxy_disabled` means `HUB_ART_PROXY=0` is set.
+9. Disk: the art cache is capped at `HUB_ART_MAX_MB` (500) and swept daily; `/api/health` → `art_cache.bytes` shows current usage.
 
 ## 5. What is verified only against fakes (as of Phase 0/1)
 

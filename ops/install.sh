@@ -53,8 +53,10 @@ launchctl kickstart -k "gui/$UID_NUM/$LABEL"
 sleep 2
 PORT="$(grep -E '^HUB_PORT=' "$REPO/hub/.env" | cut -d= -f2 || true)"
 PORT="${PORT:-8080}"
-if curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
-  echo "illyHub running: http://$(hostname -s).local:$PORT/api/health"
+# HTTPS when the hub terminates TLS itself (mkcert path); -k because the CA is local.
+if grep -Eq '^HUB_TLS_CERT=.+' "$REPO/hub/.env"; then SCHEME=https; CURL_OPTS="-k"; else SCHEME=http; CURL_OPTS=""; fi
+if curl -fsS $CURL_OPTS "$SCHEME://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
+  echo "illyHub running: $SCHEME://$(hostname -s).local:$PORT/api/health"
 else
   echo "Agent loaded but health check failed. Check $LOGDIR/hub.log and $LOGDIR/launchd.err.log"
   exit 1
