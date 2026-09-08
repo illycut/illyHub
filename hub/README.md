@@ -178,7 +178,9 @@ GUI session and Automation permission for Music (`ops/RUNBOOK.md` § AirPlay bri
 
 ## Hardware-driven fixes (September 7, 2026 LAN run)
 
-- HEOS volume/mute for the receiver-hosted player is routed to the Denon zone; state follows the
-  MV read-back (`Capabilities.volume_via`, `supports_volume`).
-- `play_state: "buffering"` for Sonos `TRANSITIONING` and HEOS `unknown` right after a hub play.
+- Volume and mute for the receiver-hosted HEOS player route to the Denon zone (the HEOS CLI
+  accepts and ignores them); the zone's quantised level mirrors onto the player. Zone ids are
+  volume/mute targets in their own right.
+- Play state holds the last known value across the vendors' start-up transient (Sonos
+  `TRANSITIONING`, HEOS `unknown`), so a tapped play never flicks back.
 - `HUB_DENON_MAX_VOLUME` is the only volume scale; `MVMAX` read-backs are recorded, never applied.

@@ -182,10 +182,11 @@ hit either of these, so they surface only at deploy time.
   (`hub/src/illyhub_hub/auth/vault.py`), so nothing is lost. Do not "upgrade" this pin without
   checking wheels for `macosx_*_x86_64` on PyPI.
 - **Node 20+ is required to build the PWA** (`next` 16, `react` 19, `vitest` 4). A stock Intel Mac
-  may still have Node 16, which fails in confusing ways. No Homebrew needed:
-  install Node 22 from the official pkg at nodejs.org, or use `nvm`/`fnm`. Check with `node -v`
-  before `cd app && npm ci && npm run build`. Until the export exists, `/api/health` shows
-  `static.app: false` and the hub serves the API only.
+  may still have Node 16. `app/package.json` declares `engines.node >=20.9` and `app/.npmrc`
+  sets `engine-strict=true`, so `npm install` now stops with `EBADENGINE` instead of failing
+  deep inside a Next build. No Homebrew needed: install Node 22 from the official pkg at
+  nodejs.org, or use `nvm`/`fnm`. Then `cd app && npm ci && npm run build`. Until the export
+  exists, `/api/health` shows `static.app: false` and the hub serves the API only.
 - Homebrew is not required anywhere: `uv` installs via
   `curl -LsSf https://astral.sh/uv/install.sh | sh` into `~/.local/bin`.
 
@@ -232,8 +233,13 @@ HEOS: Tidal and Pandora. YouTube Music is linked on Sonos, not on HEOS.
 
 - **HEOS cannot set volume on the AVR.** `heos://player/set_volume` returns `success` and applies
   nothing; `get_volume` reports `0` regardless of the real `MV`. Volume and mute for that player
-  must go through the Denon telnet link. `commands.py` still routes player volume to the vendor
-  playback adapter, so VOL-1 on the HEOS side is broken end to end (ai-dev #15).
+  go through the Denon telnet link instead, and the zone's level mirrors onto the player.
+  Verified through the REST API on hardware: `POST /api/volume {player, 80}` moved the receiver
+  to `MV48` and updated both zone and player.
+- **The hub scale is coarser than the receiver's.** Hub 0-100 maps onto `MV 0-HUB_DENON_MAX_VOLUME`
+  (60 by default, so 61 steps): asking for 96 lands on `MV58` and reads back 97. Expect a
+  slider to settle a point or two from where it was dropped. Linked volume records the settled
+  level, not the request, so this is not mistaken for someone turning the knob.
 - **`/goform/` is gone on this firmware.** Every legacy HTTP endpoint answers 403 (nginx on
   80/443). Telnet is the only control path here.
 - **`Z2OFF` can standby the whole unit**, taking the main zone with it. Power commands read back.
@@ -242,10 +248,11 @@ HEOS: Tidal and Pandora. YouTube Music is linked on Sonos, not on HEOS.
 - **Zone 2 feeds an external amp** and is configured as volume-incapable
   (`HUB_DENON_FIXED_ZONES=["zone2"]`). Zone 2 mute is still unverified: the receiver stays silent
   for Zone 2 commands while Zone 2 is off, so it needs Zone 2 powered to test.
-- **Play state has an unmapped transient.** Sonos reports `TRANSITIONING` for ~1 s while a stream
-  buffers and HEOS reports `state=unknown`; both fall through to `"unknown"`, which is why a
-  play took 1.7-1.9 s to confirm while a pause took 0.21 s. The UI must hold its optimistic state
-  rather than follow this.
+- ~~Play state has an unmapped transient.~~ **Fixed.** Sonos reports `TRANSITIONING` for ~1 s
+  while a stream buffers and HEOS reports `state=unknown`; both used to fall through to
+  `"unknown"`, which is why a play took 1.7-1.9 s to confirm while a pause took 0.21 s. Both
+  adapters now hold the last known state across a transient report instead of blanking it, so
+  the client's optimistic play survives.
 - **Position reports are whole-second and drift against the wall clock** (`1:33:01` held for two
   samples, then `1:33:04 → 1:33:06`), confirming the review 1.2 concern: the 300 ms Sync Play
   threshold needs tick-edge interpolation, not raw position deltas.
@@ -253,7 +260,9 @@ HEOS: Tidal and Pandora. YouTube Music is linked on Sonos, not on HEOS.
 ### Still to verify
 
 - [ ] Change track in the HEOS app; hub now-playing follows.
-- [ ] Zone 2 mute, with Zone 2 powered.
+- ~~Zone 2 mute.~~ Not applicable: Zone 2 is a fixed pre-out to an external amp, confirmed by
+      the HEOS app offering it as power on/off only with no volume and no separate playback.
+      `HUB_DENON_FIXED_ZONES=["zone2"]` makes the hub report it power-only.
 - [ ] Ai-dev #9 concurrent-stream test and #10 Tidal ref spike. Note for #9: HEOS Tidal is
       `norman@umich.edu` and Sonos was playing YouTube Music, so check which account each
       ecosystem uses before assuming the one-stream limit applies.

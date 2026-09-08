@@ -5,7 +5,13 @@ import asyncio
 import pytest
 
 from illyhub_hub.adapters.base import UnsupportedCommandError
-from illyhub_hub.adapters.fake import HEOS_PLAYER, KITCHEN, PATIO, FakeBundle
+from illyhub_hub.adapters.fake import (
+    HEOS_PLAYER,
+    KITCHEN,
+    PATIO,
+    FakeBundle,
+    fake_zone_id,
+)
 from illyhub_hub.coalesce import Coalescer
 from illyhub_hub.commands import (
     ERROR_CATALOGUE,
@@ -378,3 +384,123 @@ async def test_next_prev_refused_when_source_has_none(rig) -> None:
     ack = await router.transport(KITCHEN, "prev")
     assert ack.error is not None and ack.error.code == "unsupported_action"
     assert (await router.transport(KITCHEN, "next")).ok
+
+
+async def test_avr_player_volume_and_mute_route_to_the_amplifier_zone(rig) -> None:
+    """VOL-1/VOL-3 on an AVR-hosted HEOS player must go to the Denon zone, not to HEOS.
+
+    HEOS accepts set_volume on such a player, answers success, and applies nothing, and reports
+    0 for get_volume regardless of the receiver's real MV (verified on an AVR-X3400H). Routing
+    it to HEOS is the difference between a working slider and a dead one.
+    """
+    b, router, _ = rig
+    store = b.heos.store
+    main = fake_zone_id("main")
+    heos_calls: list[tuple[str, int]] = []
+    b.heos.set_volume = lambda pid, level: heos_calls.append((pid, level))  # type: ignore[assignment]
+
+    ack = await router.volume(HEOS_PLAYER, 42)
+    assert ack.ok
+    assert store.state.zones[main].volume == 42  # the zone is the authority
+    assert store.state.players[HEOS_PLAYER].volume == 42  # mirrored onto the player for the UI
+    assert heos_calls == []  # HEOS was never asked
+
+    ack = await router.mute(HEOS_PLAYER, True)
+    assert ack.ok
+    assert store.state.zones[main].muted is True
+    assert store.state.players[HEOS_PLAYER].muted is True
+
+
+async def test_sonos_volume_still_goes_to_its_own_adapter(rig) -> None:
+    """The zone routing must not capture players that mix their own audio."""
+    b, router, _ = rig
+    store = b.heos.store
+    assert (await router.volume(KITCHEN, 44)).ok
+    assert store.state.players[KITCHEN].volume == 44
+    # No Denon zone owns a Sonos player, so no zone level moved.
+    assert store.state.zones[fake_zone_id("main")].volume != 44
+
+
+async def test_fixed_output_zone_refuses_volume_instead_of_pretending(rig) -> None:
+    """Zone 2 feeds an external amp on a fixed pre-out: report it, do not send a no-op."""
+    b, router, _ = rig
+    store = b.heos.store
+    zone = store.state.zones[fake_zone_id("main")]
+    store.set_zone(zone.model_copy(update={"supports_volume": False, "supports_mute": False}))
+
+    ack = await router.volume(HEOS_PLAYER, 30)
+    assert ack.error is not None and ack.error.code == "unsupported_action"
+    assert "external amplifier" in ack.error.message
+    ack = await router.mute(HEOS_PLAYER, True)
+    assert ack.error is not None and ack.error.code == "unsupported_action"
+
+
+async def test_avr_volume_reports_amplifier_link_down(rig) -> None:
+    b, router, _ = rig
+    await b.denon.disconnect()
+    ack = await router.volume(HEOS_PLAYER, 30)
+    assert ack.error is not None and ack.error.code == "adapter_disconnected"
+    assert "amplifier link is down" in ack.error.message
+
+
+async def test_zone_id_is_a_valid_volume_and_mute_target(rig) -> None:
+    """An amplifier zone with no player must still be addressable.
+
+    Zone 2 drives an external amp and owns no player, so before this the only way to reach a
+    zone's level was through a player that claimed it, and Zone 2's was unreachable while the
+    adapter could set it perfectly well.
+    """
+    b, router, _ = rig
+    store = b.heos.store
+    zone2 = fake_zone_id("zone2")
+    assert store.state.zones[zone2].player_ids == []
+
+    ack = await router.volume(zone2, 40)
+    assert ack.ok and store.state.zones[zone2].volume == 40
+    ack = await router.mute(zone2, True)
+    assert ack.ok and store.state.zones[zone2].muted is True
+
+    # The main zone is addressable by zone id as well as through its player.
+    main = fake_zone_id("main")
+    assert (await router.volume(main, 25)).ok
+    assert store.state.zones[main].volume == 25
+    assert store.state.players[HEOS_PLAYER].volume == 25  # mirrored
+
+
+async def test_zone_target_respects_the_capability_flags(rig) -> None:
+    b, router, _ = rig
+    store = b.heos.store
+    zone2 = fake_zone_id("zone2")
+    zone = store.state.zones[zone2]
+    store.set_zone(zone.model_copy(update={"supports_volume": False, "supports_mute": False}))
+    ack = await router.volume(zone2, 40)
+    assert ack.error is not None and ack.error.code == "unsupported_action"
+    ack = await router.mute(zone2, True)
+    assert ack.error is not None and ack.error.code == "unsupported_action"
+    # Power is unaffected: the zone plays, it just cannot be attenuated.
+    assert (await router.zone_power(zone2, True)).ok
+
+
+async def test_linked_volume_survives_amplifier_quantisation(rig) -> None:
+    """A zone quantises the hub scale, so the settled level differs from the request.
+
+    Observed on hardware: asking for 96 lands on MV58 and reads back 97. If linked volume
+    recorded the request it would read that as the user turning the knob and re-learn the
+    ratio on every call, so it records what the device settled on instead.
+    """
+    b, router, _ = rig
+    store = b.heos.store
+    real_set = b.denon.set_volume
+
+    async def quantising(zone_id: str, level: int) -> None:
+        await real_set(zone_id, min(level + 1, 100))  # stand in for step rounding
+
+    b.denon.set_volume = quantising  # type: ignore[assignment]
+
+    await router.linked_volume(level=60)
+    settled = store.state.players[HEOS_PLAYER].volume
+    assert router._linked_written[HEOS_PLAYER] == settled  # not the requested value
+    # The ratio therefore survives into the next call rather than being discarded.
+    before = dict(router._linked_ratios)
+    await router.linked_volume(delta=-5)
+    assert HEOS_PLAYER in router._linked_ratios and before.get(HEOS_PLAYER) is not None

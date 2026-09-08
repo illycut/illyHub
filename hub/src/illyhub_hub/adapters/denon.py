@@ -336,9 +336,16 @@ class DenonControlAdapter(DenonAdapter):
     def zone_id(self, key: str) -> str:
         return zone_id(self.host, key)
 
-    def _player_ids(self) -> list[str]:
+    def _player_ids(self, key: str) -> list[str]:
         """The HEOS player this receiver hosts, matched on IP so no cross-adapter wiring is
-        needed. An explicit list (tests, config) wins."""
+        needed. An explicit list (tests, config) wins.
+
+        Only the main zone claims it. The receiver is one HEOS player that can be routed to
+        either zone, but for VOL-1 the player's slider has to mean one thing, and that is the
+        main zone's MV. Zone 2 stays a separate target with its own level.
+        """
+        if key != "main":
+            return []
         if self._explicit_player_ids is not None:
             return list(self._explicit_player_ids)
         return sorted(
@@ -359,7 +366,7 @@ class DenonControlAdapter(DenonAdapter):
             supports_volume=attenuable,
             supports_mute=attenuable,
         )
-        players = self._player_ids()
+        players = self._player_ids(key)
         if players and base.player_ids != players:
             base = base.model_copy(update={"player_ids": players})
         return base.model_copy(update=fields) if fields else base
@@ -449,10 +456,24 @@ class DenonControlAdapter(DenonAdapter):
         if key.endswith("_power"):
             self.store.set_zone(self._zone(zone_key, power=value == "ON", online=True))
         elif key.endswith("_mute"):
-            self.store.set_zone(self._zone(zone_key, muted=value == "ON", online=True))
+            muted = value == "ON"
+            self.store.set_zone(self._zone(zone_key, muted=muted, online=True))
+            self._mirror_to_players(zone_key, muted=muted)
         elif key.endswith("_volume"):
             level = step_to_level(decode_mv(value), self._max_step)
             self.store.set_zone(self._zone(zone_key, volume=level, online=True))
+            self._mirror_to_players(zone_key, volume=level)
+
+    def _mirror_to_players(self, key: str, **fields: Any) -> None:
+        """Copy the zone's level onto the players it owns.
+
+        Without this, ``Player.volume`` for the AVR-hosted HEOS player stays at whatever pyheos
+        reported (0), which would show a dead slider in the UI and would poison the proportional
+        ratios in linked volume (VOL-2).
+        """
+        for pid in self._player_ids(key):
+            if pid in self.store.state.players:
+                self.store.update_player(pid, **fields)
 
     async def _read_back_power(self) -> None:
         link = self._link

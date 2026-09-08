@@ -27,15 +27,31 @@ YouTube Music (Phase 6) land later.
 - **Player** — one HEOS or Sonos device. Ids: `heos-<pid>`, `sonos-<RINCON uid>`.
 - **Side** — one ecosystem's native group: `heos:<group or player id>`, `sonos:<group or player id>`.
   Transport and seek act on a side's coordinator. Solo players are their own side.
-- **Zone** — a Denon amplifier zone, `denon-<host>:main` / `denon-<host>:zone2`.
-- **Target** — a player id, a side id, or `"all"`. Transport/seek resolve a player id to its side;
-  volume/mute resolve a side id to its members.
+- **Zone** — a Denon amplifier zone, `denon-<host>:main` / `denon-<host>:zone2`. Carries
+  `power`, `online`, `volume`, `muted`, `supports_volume`, `supports_mute` and `player_ids`.
+- **Target** — a player id, a side id, an **amplifier zone id**, or `"all"`. Transport/seek
+  resolve a player id to its side; volume/mute resolve a side id to its members, and accept a
+  zone id directly.
 - **Capabilities** — on players and sides: `supports_seek`, `supports_power`, `can_group`,
   `supports_next`, `supports_prev`. HEOS players report `supports_seek: false` because the HEOS
   CLI protocol has no seek command. A side's `supports_seek` / `supports_next` / `supports_prev`
   also follow the current source (a radio station cannot seek or go back). Sides carry a derived
   `volume` (coordinator volume for solo sides, member average for groups, the Sonos convention)
   and `muted` (true when every member is muted).
+- **Who owns a player's volume.** A HEOS player hosted by a Denon AVR has no usable volume of its
+  own: HEOS answers `set_volume` with success and applies nothing, and reports `0` whatever the
+  receiver's real level is. For such a player the amplifier zone is the authority, so
+  `/api/volume` and `/api/mute` are routed to the Denon link and the zone's level is mirrored
+  onto the player, which is the number a client should render. `Zone.player_ids` says which
+  players a zone owns (the main zone claims the AVR's HEOS player; a second zone claims none).
+- **Zones declare what they can do.** `supports_volume` / `supports_mute` are `false` for a zone
+  wired as a fixed pre-out to an external amplifier, because the receiver cannot attenuate it.
+  A client must hide the slider and the mute control for those zones; sending the command anyway
+  returns `unsupported_action` rather than silently doing nothing. Power still works.
+- **Volume is quantised.** Hub `0-100` maps onto the receiver's step scale (`0-HUB_DENON_MAX_VOLUME`,
+  default 60, so 61 distinct values). A request for `96` can settle at `97`. Render the value the
+  hub reports after the ack rather than the value you sent, and do not treat the difference as a
+  failed command.
 
 ## Read endpoints
 
@@ -125,9 +141,9 @@ from the error code.
 | POST | `/api/transport/{action}` | `{target}` | `action` ∈ `play, pause, toggle, stop, next, prev` |
 | POST | `/api/seek` | `{target, position_ms}` | clamped to the track duration; refused for non-seekable sides |
 | POST | `/api/skip` | `{target, delta_ms = 15000}` | relative seek. Rapid skips accumulate: each adds to the still-pending target if one exists, else to the hub's position estimate extrapolated to now while playing. Clamped to `[0, duration]` |
-| POST | `/api/volume` | `{target, level}` | per player; a side target sets every member |
+| POST | `/api/volume` | `{target, level}` | per player; a side target sets every member; an **amplifier zone id** sets that zone. A player owned by a zone is routed to the zone (see Concepts). `unsupported_action` for a fixed-output zone |
 | POST | `/api/volume` | `{linked: true, level}` or `{linked: true, delta}` | master move: the loudest online player is the master, ratios preserved; all-zero players rise together |
-| POST | `/api/mute` | `{target, muted}` | |
+| POST | `/api/mute` | `{target, muted}` | same target rules as `/api/volume`, including zone ids and the `unsupported_action` refusal |
 | POST | `/api/zone/power` | `{zone_id, on}` | Denon zone via the amplifier link. A Sonos player/side id with `on: false` means stop + leave group; `on: true` is a no-op |
 | POST | `/api/group` | `{vendor, coordinator_id, member_ids[]}` | **desired** membership, coordinator first. The adapter reconciles against the current topology: members not listed leave, new ones join. Cross-vendor lists are `invalid_argument` |
 | DELETE | `/api/group/{side_id}` | | dissolve the side. HEOS: one `group/set_group` with the leader's id (the only way HEOS removes a group). Sonos: every non-coordinator `unjoin`s |
@@ -141,30 +157,6 @@ Volume and seek writes are **coalesced** per target: at most one device write pe
 immediately and its failure fails the ack. A later write in the same window is *accepted*, not
 yet written: its ack says `ok: true`, the device write happens when the window closes, and a
 failure there is logged (the next state delta will show the true value).
-
-### Volume routing (HEOS players hosted by a Denon receiver)
-
-Verified on the AVR-X3400H: `heos://player/set_volume` returns success and changes nothing, and
-`get_volume` reports 0 regardless of the real level. So for any player listed in a Denon zone's
-`player_ids` (the receiver's main zone wins when both zones list it):
-
-- `POST /api/volume` and `POST /api/mute` for that player go to the receiver's zone over the
-  Denon link (telnet), including the linked master volume. When the Denon link is down the command
-  falls back to the HEOS adapter with a warning in the hub log.
-- The player's `volume` and `muted` come from the receiver's MV/MU read-back; the vendor's own
-  reports for that player are dropped.
-- `Capabilities.volume_via` is `"denon"` for such players, `"vendor"` otherwise, and
-  `Capabilities.supports_volume` is `false` when the hosting zone is a fixed pre-out
-  (`HUB_DENON_FIXED_ZONES`). A volume or mute command for a fixed zone, or for a player hosted only
-  by one, is refused: `invalid_argument` "Zone 2's volume is set on its own amp."
-- `target` may also be a Denon zone id directly (`denon-{host}:main`).
-
-### Play state
-
-`play_state` is `play | pause | stop | buffering | unknown`. `buffering` covers Sonos
-`TRANSITIONING` (about a second while a stream buffers) and HEOS `unknown` within 3 s of a hub
-play command for that player. **The client keeps its optimistic state while `buffering`** and
-follows the next definite state; only a HEOS `unknown` outside that window is `unknown`.
 
 ### Ack
 
@@ -817,13 +809,13 @@ revert the optimistic state, and send `resync`.
 {
   "version": 412,
   "players":     {"heos-1": {"id", "name", "vendor", "ip", "model", "online", "volume", "muted", "play_state", "group_id", "capabilities"}},
-  "zones":       {"denon-10.0.0.5:main": {"id", "key", "name", "power", "online", "host", "device_id", "player_ids"}},
+  "zones":       {"denon-10.0.0.5:main": {"id", "key", "name", "power", "online", "volume", "muted", "supports_volume", "supports_mute", "host", "device_id", "player_ids"}},
   "groups":      {"sonos-gRINCON_…": {"id", "vendor", "coordinator_player_id", "member_ids", "name"}},
   "sides":       {"sonos:sonos-gRINCON_…": {"id", "vendor", "coordinator_player_id", "member_ids", "name", "play_state", "volume", "muted", "capabilities"}},
   "now_playing": {"<side id>": {"title", "artist", "album", "art": {"url", "cache_key", "accent", "accent_is_safe"}, "source", "seekable", "supports_next", "supports_prev", "duration_ms", "track_id", "content_ref": {"service", "kind", "id"} | null}},   // Tidal track id, or the Pandora station ref
   "positions":   {"<side id>": {"position_ms", "reported_at", "confidence"}},
   "sync":        {"status", "session_id", "master_side", "follower_side", "content_ref", "title", "drift_ms", "start_delta_ms", "last_correction_at", "corrections", "reason", "started_at"},
-  "pandora_sync": {"active": false, "output_ids": [], "outputs": [], "previous_output_ids": [], "started_at": null, "note": null},
+  "pandora_sync": {"active": false, "side_ids": [], "output_ids": [], "outputs": [], "previous_output_ids": [], "started_at": null, "note": null},
   "connections": {"heos": {"state", "last_error", "since"}, "sonos": {...}, "denon": {...}}
 }
 ```

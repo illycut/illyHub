@@ -306,7 +306,9 @@ def test_helpers() -> None:
     class E:
         value = "pause"
 
-    assert heos_mod._play_state(E()) == "pause" and heos_mod._play_state("weird") == "unknown"
+    # An unrecognised report maps to None so callers hold the state they already have,
+    # rather than blanking a known state during the ~1s transient at stream start.
+    assert heos_mod._play_state(E()) == "pause" and heos_mod._play_state("weird") is None
 
 
 async def test_commands_map_to_pyheos_player_methods_and_seek_is_unsupported(
@@ -849,3 +851,76 @@ async def test_station_calls_without_browse_support_refuse(
         await a.disconnect()
     finally:
         del FakeHeosClient.get_music_sources  # type: ignore[attr-defined]
+
+
+async def test_avr_owned_volume_is_not_overwritten_by_heos_reports(
+    store: StateStore, settings: Settings
+) -> None:
+    """A Denon zone owning this player makes HEOS's volume and mute reports untrustworthy.
+
+    On an AVR-X3400H, HEOS reports volume 0 no matter what the receiver's MV is, so following
+    those reports would blank the mirrored level and skew linked volume (VOL-2). Everything
+    else in the same event still applies.
+    """
+    from illyhub_hub.state import Zone
+
+    gen = Generations()
+    a = make(store, settings, gen)
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+
+    # The Denon adapter claims the player and mirrors the amplifier's real level onto it.
+    store.set_zone(
+        Zone(
+            id="denon-192.168.1.20:main",
+            key="main",
+            name="Main zone",
+            host="192.168.1.20",
+            player_ids=["heos-1"],
+            volume=55,
+        )
+    )
+    store.update_player("heos-1", volume=55, muted=False)
+
+    raw = gen.players[1]
+    raw.volume, raw.is_muted = 0, True  # what HEOS actually reports for an AVR
+    raw.state = "play"
+    raw.fire(heos_mod.EVENT_PLAYER_VOLUME_CHANGED)
+    p = store.state.players["heos-1"]
+    assert p.volume == 55 and p.muted is False  # zone stays the authority
+
+    # A zone on a fixed pre-out does not own the level, so HEOS is believed again.
+    zone = store.state.zones["denon-192.168.1.20:main"]
+    store.set_zone(zone.model_copy(update={"supports_volume": False}))
+    raw.volume = 12
+    raw.fire(heos_mod.EVENT_PLAYER_VOLUME_CHANGED)
+    assert store.state.players["heos-1"].volume == 12
+    await a.disconnect()
+
+
+async def test_transient_state_report_holds_the_known_play_state(
+    store: StateStore, settings: Settings
+) -> None:
+    """HEOS answers state=unknown for ~1s while a stream starts; that must not blank state.
+
+    Measured on an AVR-X3400H: `t+01s state=unknown`, `t+02s state=play`. Writing "unknown"
+    through would overwrite the client's optimistic play and make the button flick back.
+    """
+    gen = Generations()
+    a = make(store, settings, gen)
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+    raw = gen.players[1]
+
+    raw.state = "play"
+    raw.fire(heos_mod.EVENT_PLAYER_STATE_CHANGED)
+    assert store.state.players["heos-1"].play_state == "play"
+
+    raw.state = "unknown"  # the transient
+    raw.fire(heos_mod.EVENT_PLAYER_STATE_CHANGED)
+    assert store.state.players["heos-1"].play_state == "play"  # held, not blanked
+
+    raw.state = "pause"  # a real change still lands
+    raw.fire(heos_mod.EVENT_PLAYER_STATE_CHANGED)
+    assert store.state.players["heos-1"].play_state == "pause"
+    await a.disconnect()

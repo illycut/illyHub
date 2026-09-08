@@ -44,7 +44,16 @@ from .messages import (
     UNSUPPORTED_ON_VENDOR,
     vendor_app,
 )
-from .state import HubState, Player, Side, StateStore, hosting_zone, service_label, vendor_label
+from .state import (
+    HubState,
+    Player,
+    Side,
+    StateStore,
+    Zone,
+    service_label,
+    vendor_label,
+    zone_for_player,
+)
 
 log = get_logger("commands")
 
@@ -425,14 +434,33 @@ class CommandRouter:
         async def run(out: _Outcomes) -> None:
             if not 0 <= level <= 100:
                 raise CommandError("invalid_argument", "Volume must be between 0 and 100.", target)
+            # An amplifier zone can be a volume target in its own right. A zone that drives an
+            # external amp has no player to address it by, so without this its level is
+            # unreachable even though the adapter can set it.
             if target in self.state.zones:
-                await out.attempt(target, self._zone_volume(target, level, None))
+                await out.attempt(target, self._set_zone_volume(target, level))
                 return
             for player in resolve_players(self.state, target):
                 if await out.attempt(player.id, self._set_player_volume(player, level, target)):
                     self._linked_written.pop(player.id, None)  # user moved it: re-learn ratio
 
         return await self._execute("volume", target, run)
+
+    async def _set_zone_volume(self, zone_id: str, level: int) -> None:
+        zone = self.state.zones[zone_id]
+        if not zone.supports_volume:
+            raise CommandError(
+                "unsupported_action",
+                f"{zone.name} feeds an external amplifier; set the volume there.",
+                zone_id,
+            )
+        denon = self._require_denon(zone, zone_id)
+        await self.coalescer.submit(
+            f"volume:{zone_id}",
+            lambda: self._call(
+                lambda: denon.set_volume(zone_id, level), "volume", zone_id, zone.name
+            ),
+        )
 
     async def linked_volume(self, *, level: int | None = None, delta: int | None = None) -> Ack:
         async def run(out: _Outcomes) -> None:
@@ -455,29 +483,49 @@ class CommandRouter:
                     self._linked_written[player.id] = new
                     continue
                 if await out.attempt(player.id, self._set_player_volume(player, new, "all")):
-                    self._linked_written[player.id] = new
+                    # Record what the device ended up reporting, not what we asked for. An
+                    # amplifier zone quantises the hub's 0-100 onto its own step scale (0-60 by
+                    # default, so 61 values): asking for 96 lands on MV58 and reads back 97.
+                    # Storing the request would make the next linked call read that one-point
+                    # difference as the user having turned the knob and drop the learned ratio.
+                    settled = self.state.players.get(player.id)
+                    self._linked_written[player.id] = settled.volume if settled else new
 
         return await self._execute("linked_volume", "all", run)
 
     async def mute(self, target: str, muted: bool) -> Ack:
         async def run(out: _Outcomes) -> None:
             if target in self.state.zones:
-                await out.attempt(target, self._zone_volume(target, None, muted))
+                await out.attempt(target, self._set_zone_mute(target, muted))
                 return
             for player in resolve_players(self.state, target):
                 await out.attempt(player.id, self._mute_player(player, muted, target))
 
         return await self._execute("mute", target, run)
 
+    async def _set_zone_mute(self, zone_id: str, muted: bool) -> None:
+        zone = self.state.zones[zone_id]
+        if not zone.supports_mute:
+            raise CommandError(
+                "unsupported_action",
+                f"{zone.name} feeds an external amplifier; mute it there.",
+                zone_id,
+            )
+        denon = self._require_denon(zone, zone_id)
+        await self._call(lambda: denon.set_mute(zone_id, muted), "mute", zone_id, zone.name)
+
     async def _mute_player(self, player: Player, muted: bool, target: str) -> None:
-        zone = self._denon_route(player, target)
         self._require_online(player.id, target)
+        zone = self._volume_zone(player, target)
         if zone is not None:
-            denon = self.denon
-            assert denon is not None
+            denon = self._require_denon(zone, target)
             zid = zone.id
             await self._call(
-                lambda: denon.set_mute(zid, muted), "mute", target, player.name, vendor="denon"
+                lambda: denon.set_mute(zid, muted),
+                "mute",
+                target,
+                player.name,
+                vendor=player.vendor,
             )
             return
         adapter = self._adapter_for(player.vendor, target)
@@ -828,44 +876,21 @@ class CommandRouter:
                 "unsupported_action", f"{side.name} can't seek from this hub.", target
             )
 
-    def _denon_route(self, player: Player, target: str) -> Any | None:
-        """The Denon zone a volume/mute command for this player must go to, or ``None``.
-
-        A HEOS player hosted by the receiver cannot set its own volume (verified on hardware:
-        ``set_volume`` succeeds and does nothing). When the receiver link is down the command
-        falls back to the vendor adapter with a warning; a fixed pre-out zone refuses.
-        """
-        zone = hosting_zone(self.state, player.id)
-        if zone is None:
-            return None
-        if not zone.supports_volume:
-            raise CommandError(
-                "invalid_argument", f"{zone.name}'s volume is set on its own amp.", target
-            )
-        if self.denon is None or self.denon.status().state != "connected":
-            log.warning(
-                "denon link down; volume falls back to the vendor adapter",
-                extra={"extra": {"player": player.id, "zone": zone.id}},
-            )
-            return None
-        return zone
-
     async def _set_player_volume(self, player: Player, level: int, target: str) -> None:
-        zone = self._denon_route(player, target)
         self._require_online(player.id, target)
         pid, name, vendor = player.id, player.name, player.vendor
+        zone = self._volume_zone(player, target)
         if zone is not None:
-            denon = self.denon
-            assert denon is not None
+            denon = self._require_denon(zone, target)
             zid = zone.id
             await self.coalescer.submit(
                 f"volume:{pid}",
                 lambda: self._call(
-                    lambda: denon.set_volume(zid, level), "volume", target, name, vendor="denon"
+                    lambda: denon.set_volume(zid, level), "volume", target, name, vendor=vendor
                 ),
             )
             return
-        adapter = self._adapter_for(player.vendor, target)
+        adapter = self._adapter_for(vendor, target)
         await self.coalescer.submit(
             f"volume:{pid}",
             lambda: self._call(
@@ -873,41 +898,39 @@ class CommandRouter:
             ),
         )
 
-    async def _zone_volume(self, zone_id: str, level: int | None, muted: bool | None) -> None:
-        """Volume/mute addressed to a Denon zone id directly."""
-        zone = self.state.zones[zone_id]
+    def _volume_zone(self, player: Player, target: str) -> Zone | None:
+        """The amplifier zone that owns this player's level, or None for a self-mixing player.
+
+        Routing volume and mute here is not an optimisation: HEOS accepts set_volume on an
+        AVR-hosted player, reports success, and changes nothing (verified on an AVR-X3400H).
+        """
+        zone = zone_for_player(self.state, player.id)
+        if zone is None:
+            return None
         if not zone.supports_volume:
             raise CommandError(
-                "invalid_argument", f"{zone.name}'s volume is set on its own amp.", zone_id
+                "unsupported_action",
+                f"{zone.name} feeds an external amplifier; set the volume there.",
+                target,
             )
+        return zone
+
+    def _require_denon(self, zone: Zone, target: str) -> DenonAdapter:
         if self.denon is None or self.denon.status().state != "connected":
             raise CommandError(
                 "adapter_disconnected",
                 f"{zone.name} didn't change; the amplifier link is down.",
-                zone_id,
+                target,
             )
-        denon = self.denon
-        if level is not None:
-            await self._call(
-                lambda: denon.set_volume(zone_id, level),
-                "volume",
-                zone_id,
-                zone.name,
-                vendor="denon",
-            )
-        if muted is not None:
-            await self._call(
-                lambda: denon.set_mute(zone_id, muted), "mute", zone_id, zone.name, vendor="denon"
-            )
+        if not zone.online:
+            raise CommandError("device_offline", f"{zone.name} is not answering.", target)
+        return self.denon
 
     async def _transport_on(self, adapter: PlaybackAdapter, side: Side, action: str) -> None:
         coord = side.coordinator_player_id
         if action == "toggle":
             action = "pause" if side.play_state == "play" else "play"
         if action == "play":
-            # HEOS reports `unknown` while buffering; the adapter maps that to "buffering" only
-            # within a short window after a hub play command (docs/api.md → Play state).
-            self.store.note_play_sent(list(side.member_ids))
             await adapter.play(coord)
         elif action == "pause":
             await adapter.pause(coord)

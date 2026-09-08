@@ -743,22 +743,19 @@ class FakeDenon(DenonAdapter):
     async def connect(self) -> None:
         if self._connected:
             return
-        # The receiver's MV read-back is the volume source for the HEOS player it hosts (the
-        # HEOS CLI reports 0 for it), so the fake seeds a plausible level like a real read-back.
-        for key, name, power, volume in (
-            ("main", "Main zone", True, 30),
-            ("zone2", "Zone 2", False, 20),
-        ):
+        for key, name, power in (("main", "Main zone", True), ("zone2", "Zone 2", False)):
             self.store.set_zone(
                 Zone(
                     id=fake_zone_id(key),
                     key=key,
                     name=name,
                     power=power,
-                    volume=volume,
+                    volume=35 if key == "main" else 0,
                     host=FAKE_DENON_HOST,
                     device_id=f"denon-{FAKE_DENON_HOST}",
-                    player_ids=[HEOS_PLAYER],
+                    # Only the main zone claims the HEOS player, as on a real receiver: the
+                    # player's slider has to mean one zone's level (see denon._player_ids).
+                    player_ids=[HEOS_PLAYER] if key == "main" else [],
                 )
             )
         self._connected = True
@@ -783,13 +780,22 @@ class FakeDenon(DenonAdapter):
 
     async def set_volume(self, zone_id: str, level: int) -> None:
         zone = self._resolve(zone_id)
-        self.store.set_zone(zone.model_copy(update={"volume": max(0, min(level, 100))}))
+        clamped = max(0, min(level, 100))
+        self.store.set_zone(zone.model_copy(update={"volume": clamped}))
+        self._mirror(zone, volume=clamped)
         self._emit("zone_volume", zone_id=zone.id, level=level)
 
     async def set_mute(self, zone_id: str, on: bool) -> None:
         zone = self._resolve(zone_id)
         self.store.set_zone(zone.model_copy(update={"muted": on}))
+        self._mirror(zone, muted=on)
         self._emit("zone_mute", zone_id=zone.id, muted=on)
+
+    def _mirror(self, zone: Zone, **fields: object) -> None:
+        """An AVR-hosted player has no volume of its own; the zone's level is the truth."""
+        for pid in zone.player_ids:
+            if pid in self.store.state.players:
+                self.store.update_player(pid, **fields)
 
 
 class FakeBundle:

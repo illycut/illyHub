@@ -515,15 +515,17 @@ def group_id(uid: str) -> str:
     return f"sonos-g{uid}"
 
 
-def _play_state(transport_state: str | None) -> str:
-    """UPnP TransportState → hub PlayState. ``TRANSITIONING`` (about a second while a stream
-    buffers, seen on hardware) is ``buffering`` so the client keeps its optimistic state."""
-    return {
-        "PLAYING": "play",
-        "PAUSED_PLAYBACK": "pause",
-        "STOPPED": "stop",
-        "TRANSITIONING": "buffering",
-    }.get(transport_state or "", "unknown")
+def _play_state(transport_state: str | None) -> str | None:
+    """Map a Sonos transport state, or None when it carries no play/pause/stop meaning.
+
+    Sonos reports ``TRANSITIONING`` for about a second while a stream buffers (measured on a
+    Sonos Amp: ``t+01s TRANSITIONING`` then ``t+02s PLAYING``). Callers keep the state they
+    already have rather than writing "unknown", because that clobbers the client's optimistic
+    play and makes a tapped play button flick back for a second before it takes.
+    """
+    return {"PLAYING": "play", "PAUSED_PLAYBACK": "pause", "STOPPED": "stop"}.get(
+        transport_state or ""
+    )
 
 
 def absolutize(uri: str | None, ip: str | None) -> str | None:
@@ -1020,7 +1022,7 @@ class SoCoAdapter(SonosAdapter):
             online=True,
             volume=z.volume,
             muted=z.muted,
-            play_state=_play_state(z.transport_state) if z.transport_state else "stop",  # type: ignore[arg-type]
+            play_state=(_play_state(z.transport_state) or "stop") if z.transport_state else "stop",  # type: ignore[arg-type]
             group_id=existing.group_id if existing else None,
             capabilities=Capabilities(supports_power=False),
         )
@@ -1075,7 +1077,9 @@ class SoCoAdapter(SonosAdapter):
     def _apply_transport(self, p_id: str, zone: ZoneSnapshot, variables: dict[str, Any]) -> None:
         state = variables.get("transport_state")
         if state:
-            self.store.update_player(p_id, play_state=_play_state(state))
+            mapped = _play_state(state)
+            if mapped is not None:  # TRANSITIONING: hold the known state, do not blank it
+                self.store.update_player(p_id, play_state=mapped)
             self._emit("play_state", player_id=p_id)
             self._sync_pollers()
         meta = variables.get("current_track_meta_data")

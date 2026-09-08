@@ -1113,3 +1113,39 @@ async def test_list_and_play_station_run_soco_in_a_thread(
     with pytest.raises(ContentUnavailableError):
         await a.play_station("sonos-RINCON_K", ref, stations[0])
     await a.disconnect()
+
+
+async def test_transitioning_holds_the_known_play_state(
+    store: StateStore, settings: Settings
+) -> None:
+    """Sonos reports TRANSITIONING for ~1s while a stream buffers; that must not blank state.
+
+    Measured on a Sonos Amp: `t+01s TRANSITIONING`, `t+02s PLAYING`. Writing "unknown" through
+    would overwrite the client's optimistic play, so a tapped play button flicks back for a
+    second before it takes. It also accounted for play confirming in 1.7-1.9s while pause
+    confirmed in 0.21s.
+    """
+    h = Harness()
+    a = h.adapter(store, settings)
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+
+    h.sub("RINCON_K", "avTransport").callback(Event({"transport_state": "PAUSED_PLAYBACK"}))
+    await wait_for(lambda: store.state.players["sonos-RINCON_K"].play_state == "pause")
+
+    h.sub("RINCON_K", "avTransport").callback(Event({"transport_state": "TRANSITIONING"}))
+    assert store.state.players["sonos-RINCON_K"].play_state == "pause"  # held, not blanked
+
+    h.sub("RINCON_K", "avTransport").callback(Event({"transport_state": "PLAYING"}))
+    await wait_for(lambda: store.state.players["sonos-RINCON_K"].play_state == "play")
+    await a.disconnect()
+
+
+def test_play_state_mapping_returns_none_for_states_without_meaning() -> None:
+    assert sonos_mod._play_state("PLAYING") == "play"
+    assert sonos_mod._play_state("PAUSED_PLAYBACK") == "pause"
+    assert sonos_mod._play_state("STOPPED") == "stop"
+    # TRANSITIONING and anything unrecognised carry no play/pause/stop meaning.
+    assert sonos_mod._play_state("TRANSITIONING") is None
+    assert sonos_mod._play_state(None) is None
+    assert sonos_mod._play_state("NONSENSE") is None

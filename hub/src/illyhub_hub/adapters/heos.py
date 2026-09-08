@@ -29,6 +29,7 @@ from ..state import (
     StateStore,
     optimistic_position,
     side_id_for,
+    zone_for_player,
 )
 from ..tasks import stop_task
 from .base import (
@@ -111,19 +112,15 @@ def _enum_value(raw: Any) -> str:
     return str(value) if value is not None else ""
 
 
-def _play_state(raw: Any) -> str:
+def _play_state(raw: Any) -> str | None:
+    """Map a HEOS play state, or None when it is not one of play/pause/stop.
+
+    HEOS answers ``state=unknown`` for about a second while a stream starts (measured on an
+    AVR-X3400H: ``t+01s unknown`` then ``t+02s play``). Callers hold the state they already
+    have rather than writing it through; see the Sonos adapter for the same reasoning.
+    """
     value = _enum_value(raw)
-    return value if value in ("play", "pause", "stop") else "unknown"
-
-
-def play_state_for(store: StateStore, player_id_: str, raw: Any) -> str:
-    """HEOS reports ``state=unknown`` for a second or two after a play command while the stream
-    buffers (seen on the AVR-X3400H). Within 3 s of a hub play for that player that is
-    ``buffering``; any other ``unknown`` stays ``unknown``."""
-    value = _play_state(raw)
-    if value == "unknown" and store.play_sent_recently(player_id_):
-        return "buffering"
-    return value
+    return value if value in ("play", "pause", "stop") else None
 
 
 def _controls(media: Any) -> set[str]:
@@ -512,13 +509,40 @@ class PyHeosAdapter(HeosAdapter):
             ip=getattr(raw, "ip_address", None),
             model=getattr(raw, "model", None),
             online=bool(getattr(raw, "available", True)),
-            volume=int(getattr(raw, "volume", 0) or 0),
-            muted=bool(getattr(raw, "is_muted", False)),
-            play_state=play_state_for(self.store, player_id(pid), getattr(raw, "state", "unknown")),  # type: ignore[arg-type]
+            # An AVR-hosted player's volume belongs to the Denon zone (HEOS reports 0 for it),
+            # so keep whatever the Denon adapter mirrored rather than overwriting it.
+            volume=self._reported_volume(player_id(pid), int(getattr(raw, "volume", 0) or 0)),
+            muted=self._reported_mute(player_id(pid), bool(getattr(raw, "is_muted", False))),
+            play_state=(  # keep a known state across a transient report
+                _play_state(getattr(raw, "state", None))
+                or (existing.play_state if existing else "stop")
+            ),  # type: ignore[arg-type]
             group_id=existing.group_id if existing else None,
             # The HEOS CLI cannot seek; see module docstring.
             capabilities=Capabilities(supports_power=True, supports_seek=False),
         )
+
+    def _zone_owns_volume(self, p_id: str) -> bool:
+        """True when a Denon zone is the authority for this player's level.
+
+        HEOS on an AVR answers ``set_volume`` with success and applies nothing, and reports 0
+        for ``get_volume`` no matter what the receiver's MV is (verified on an AVR-X3400H). If
+        the hub trusted those numbers it would show a dead slider and skew linked volume.
+        """
+        zone = zone_for_player(self.store.state, p_id)
+        return zone is not None and zone.supports_volume
+
+    def _reported_volume(self, p_id: str, raw_level: int) -> int:
+        if self._zone_owns_volume(p_id):
+            existing = self.store.state.players.get(p_id)
+            return existing.volume if existing else 0
+        return raw_level
+
+    def _reported_mute(self, p_id: str, raw_muted: bool) -> bool:
+        if self._zone_owns_volume(p_id):
+            existing = self.store.state.players.get(p_id)
+            return existing.muted if existing else False
+        return raw_muted
 
     # -- commands (Phase 1) ---------------------------------------------------------
 
@@ -646,13 +670,15 @@ class PyHeosAdapter(HeosAdapter):
     def _handle_player_event(self, pid: int, raw: Any, event: str) -> None:
         p_id = player_id(pid)
         if event == EVENT_PLAYER_STATE_CHANGED:
-            self.store.update_player(
-                p_id, play_state=play_state_for(self.store, p_id, getattr(raw, "state", "unknown"))
-            )
+            mapped = _play_state(getattr(raw, "state", None))
+            if mapped is not None:  # transient "unknown": hold the known state
+                self.store.update_player(p_id, play_state=mapped)
             self._emit("play_state", player_id=p_id)
         elif event == EVENT_PLAYER_VOLUME_CHANGED:
             self.store.update_player(
-                p_id, volume=int(raw.volume), muted=bool(getattr(raw, "is_muted", False))
+                p_id,
+                volume=self._reported_volume(p_id, int(raw.volume)),
+                muted=self._reported_mute(p_id, bool(getattr(raw, "is_muted", False))),
             )
             self._emit("volume", player_id=p_id)
         elif event == EVENT_NOW_PLAYING_CHANGED:
