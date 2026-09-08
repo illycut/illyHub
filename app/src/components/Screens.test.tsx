@@ -232,16 +232,50 @@ describe("ZonePicker", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(readLastTarget()).toEqual(["sonos:sonos-gK"]);
   });
+  it("offers Play here on the other rooms so audio can be sent, not just viewed", async () => {
+    // The gap this closes: tapping a row only switched which room you were looking at, so a
+    // track playing in one room could not be sent to another without going back to Home.
+    const onClose = vi.fn();
+    const posted: unknown[] = [];
+    useHub.getState().selectSide("heos:heos-1"); // HEOS is playing "Blue in Green" (Tidal)
+    useHub.setState({
+      _deps: { ...useHub.getState()._deps, fetcher: async (_p: RequestInfo | URL, init?: RequestInit) => {
+        posted.push(JSON.parse(String(init?.body ?? "{}")));
+        return { ok: true, json: async () => ({ ok: true, action: "play_content", partial: [] }) } as unknown as Response;
+      } },
+    });
+    render(<ZonePicker open onClose={onClose} />);
+
+    // No action on the room already playing it; the other room gets one.
+    expect(screen.queryByTestId("play-here-heos:heos-1")).toBeNull();
+    const here = screen.getByTestId("play-here-sonos:sonos-gK");
+    expect(here).toHaveAccessibleName('Play “Blue in Green” on Kitchen + 1');
+
+    await userEvent.click(here);
+    expect(onClose).toHaveBeenCalled();
+    // It plays the current content on that room, rather than selecting or switching to it.
+    expect(useHub.getState().activeSideId).toBe("heos:heos-1");
+    expect(posted.length).toBe(1);
+  });
+
   it("deselecting does not change the active side or close; multi-select stays open", async () => {
     const onClose = vi.fn();
     useHub.getState().setTargets(["heos:heos-1"]);
     useHub.getState().selectSide("heos:heos-1");
     render(<ZonePicker open onClose={onClose} />);
-    await userEvent.click(within(screen.getByTestId("zone-row-sonos:sonos-gK")).getByRole("button", { name: /Kitchen/ }));
+    // Exact name: the row also carries a "Play here" button whose label names the room
+    // ("Play X on Kitchen"), so /Kitchen/ matches two controls.
+    // The row button's accessible name is the room plus its status line; "Play here" is a
+    // separate control whose label also names the room, so match the row's status text.
+    const kitchenRow = () =>
+      within(screen.getByTestId("zone-row-sonos:sonos-gK")).getByRole("button", {
+        name: /speakers$/,
+      });
+    await userEvent.click(kitchenRow());
     expect(useHub.getState().selectedTargets).toEqual(["heos:heos-1", "sonos:sonos-gK"]);
     expect(onClose).not.toHaveBeenCalled();
     expect(useHub.getState().activeSideId).toBe("sonos:sonos-gK"); // selecting makes it active
-    await userEvent.click(within(screen.getByTestId("zone-row-sonos:sonos-gK")).getByRole("button", { name: /Kitchen/ }));
+    await userEvent.click(kitchenRow());
     expect(useHub.getState().selectedTargets).toEqual(["heos:heos-1"]);
     expect(useHub.getState().activeSideId).toBe("sonos:sonos-gK"); // deselecting leaves the active side alone
     expect(onClose).not.toHaveBeenCalled();

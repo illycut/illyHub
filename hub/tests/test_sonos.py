@@ -1110,6 +1110,12 @@ async def test_list_and_play_station_run_soco_in_a_thread(
             "sonos-RINCON_K", ContentRef(service="tidal", kind="track", id="1"), stations[0]
         )
     a.settings = settings
+    # The serial learned from playback outlives the setting: the station URIs above carried
+    # sn=4, and on firmware where /status/accounts is empty that observation is the only source
+    # the hub has. Clearing it too is what actually makes the service unknown again.
+    assert a.pandora_sn == "4"
+    a._observed_sn.clear()
+    assert a.pandora_sn is None
     with pytest.raises(ContentUnavailableError):
         await a.play_station("sonos-RINCON_K", ref, stations[0])
     await a.disconnect()
@@ -1149,3 +1155,56 @@ def test_play_state_mapping_returns_none_for_states_without_meaning() -> None:
     assert sonos_mod._play_state("TRANSITIONING") is None
     assert sonos_mod._play_state(None) is None
     assert sonos_mod._play_state("NONSENSE") is None
+
+
+def test_sn_from_uri_reads_the_account_serial_a_player_is_using() -> None:
+    """The only source of a Sonos account serial on firmware where /status/accounts is empty.
+
+    Verified on a Sonos Amp running 96.1-79270: `/status/accounts` returns an empty
+    `<ZPSupportInfo></ZPSupportInfo>`, SoCo reports one placeholder account, and every service
+    looked unlinked while the speaker was streaming YouTube Music with `sn=6` in its URI.
+    """
+    from illyhub_hub.adapters.sonos import sn_from_uri
+
+    # The real URI observed on the owner's speaker.
+    assert sn_from_uri("x-sonosapi-hls-static:ALkSOi?sid=284&flags=8&sn=6") == ("ytmusic", "6")
+    assert sn_from_uri("x-sonos-http:track/77.flac?sid=174&flags=8224&sn=3") == ("tidal", "3")
+    assert sn_from_uri("x-sonosapi-radio:ST%3A1?sid=236&flags=8300&sn=4") == ("pandora", "4")
+    # Nothing to learn: no sn, no sid, an unknown service, or not a service URI at all.
+    assert sn_from_uri("x-sonos-http:track/77.flac?sid=174&flags=8224") is None
+    assert sn_from_uri("x-sonosapi-stream:s1234?sn=6") is None
+    assert sn_from_uri("x-sonos-http:x?sid=999&sn=6") is None
+    assert sn_from_uri("x-rincon-queue:RINCON_X#0") is None
+    assert sn_from_uri("") is None
+    assert sn_from_uri(None) is None
+
+
+async def test_an_observed_serial_makes_a_service_playable(
+    store: StateStore, settings: Settings
+) -> None:
+    """A transport event teaches the hub the account, so the next play is allowed.
+
+    This is the fix for "I can't play Pandora on the Sonos": the hub reported every service as
+    not linked because it could only read the empty accounts endpoint.
+    """
+    h = Harness()
+    a = h.adapter(store, settings)
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+    assert a.tidal_sn is None and a.service_linked("tidal") is False
+
+    h.sub("RINCON_K", "avTransport").callback(
+        Event(
+            {
+                "transport_state": "PLAYING",
+                "current_track_uri": "x-sonos-http:track/77.flac?sid=174&flags=8224&sn=9",
+                "current_track_meta_data": {"title": "Signal", "creator": "Analog Heart"},
+            }
+        )
+    )
+    assert a.tidal_sn == "9"
+    assert a.service_linked("tidal") is True
+    # An explicit setting still wins over the observation.
+    a.settings = settings.model_copy(update={"sonos_tidal_sn": "1"})
+    assert a.tidal_sn == "1"
+    await a.disconnect()

@@ -405,7 +405,8 @@ def test_resolver_strategy_table() -> None:
     r = resolve(ArtHints(device_url="http://dev/art.jpg", tidal_cover_id=cover))
     assert r and r.strategy == "tidal_cdn"
     assert r.source_url == tidal_cover_url(cover)
-    assert "/a1b2c3d4/e5f6/7890/abcd/ef1234567890/1280x1280.jpg" in r.source_url
+    # 1080 is the largest size Tidal's CDN serves; 1280 403s for every image.
+    assert "/a1b2c3d4/e5f6/7890/abcd/ef1234567890/1080x1080.jpg" in r.source_url
 
     thumbs = [Thumbnail("s", 120), Thumbnail("m", 544), Thumbnail("l", 800), Thumbnail("xl", 1200)]
     r = resolve(ArtHints(device_url="http://dev/art.jpg", thumbnails=thumbs))

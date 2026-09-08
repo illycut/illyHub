@@ -255,7 +255,11 @@ class Resolved:
     strategy: str
 
 
-TIDAL_CDN = "https://resources.tidal.com/images/{path}/1280x1280.jpg"
+# 1080x1080 is the largest size Tidal's CDN actually serves for cover art. 1280x1280 was
+# requested here and 403s for every image (verified against resources.tidal.com: 160, 320, 640,
+# 750 and 1080 return 200; 80 and 1280 return 403), so every Tidal item fell back to a
+# placeholder square. The hub downsizes to its own variants anyway, so 1080 loses nothing.
+TIDAL_CDN = "https://resources.tidal.com/images/{path}/1080x1080.jpg"
 YT_MIN_WIDTH = 640
 
 

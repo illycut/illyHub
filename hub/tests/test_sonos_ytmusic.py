@@ -106,7 +106,9 @@ async def test_play_content_ytmusic_builds_a_queue_only_when_linked(
     ]
     ref = ContentRef(service="ytmusic", kind="playlist", id="PLrun")
     assert a.service_linked("ytmusic") is False
-    with pytest.raises(ContentUnavailableError, match="YouTube Music is not linked"):
+    with pytest.raises(
+        ContentUnavailableError, match="does not know this speaker's YouTube Music account"
+    ):
         await a.play_content("sonos-RINCON_K", ref, tracks, 0)
     a.settings = settings.model_copy(
         update={"sonos_ytmusic_sn": "9", "sonos_ytmusic_uri": "yt://{id}?sn={sn}"}

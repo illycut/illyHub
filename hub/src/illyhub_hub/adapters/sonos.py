@@ -56,6 +56,24 @@ RESNAPSHOT_MIN_GAP_S = 2.0  # topology events re-run discovery at most this ofte
 # Sonos music-service ids seen in stream URIs (``sid=``). Best-effort; unknown ids stay None.
 SERVICE_IDS = {"174": "tidal", "236": "pandora", "284": "ytmusic"}
 
+# Fact and fix, per design system section 10. Deliberately does not say "not linked in the Sonos
+# app": the account often *is* linked there and only the hub cannot see it, because
+# /status/accounts is empty on current firmware (see sn_from_uri).
+SN_UNKNOWN = {
+    "tidal": (
+        "The hub does not know this speaker's Tidal account. Play Tidal on it once from the "
+        "Sonos app, or set HUB_SONOS_TIDAL_SN."
+    ),
+    "ytmusic": (
+        "The hub does not know this speaker's YouTube Music account. Play it on the speaker "
+        "once from the Sonos app, or set HUB_SONOS_YTMUSIC_SN."
+    ),
+    "pandora": (
+        "The hub does not know this speaker's Pandora account. Play a station on it once from "
+        "the Sonos app, or set HUB_SONOS_PANDORA_SN."
+    ),
+}
+
 
 QUEUE_DEBOUNCE_S = 0.5  # coalesce AVTransport bursts into one queue re-read
 
@@ -566,6 +584,28 @@ def absolutize(uri: str | None, ip: str | None) -> str | None:
     return f"http://{ip}:1400{uri if uri.startswith('/') else '/' + uri}"
 
 
+def sn_from_uri(uri: str | None) -> tuple[str, str] | None:
+    """``(service, account serial)`` from a Sonos stream URI, or None.
+
+    A Sonos service URI carries both the service id and the *account* serial:
+    ``x-sonos-http:...?sid=284&flags=8232&sn=6``. That serial is what the hub must echo back when
+    it builds a URI of its own, and on current firmware it is the only way to learn it.
+
+    ``/status/accounts``, which SoCo scrapes and this adapter used to rely on, returns an empty
+    ``<ZPSupportInfo></ZPSupportInfo>`` on Sonos 96.1 (verified on a Sonos Amp): SoCo then reports
+    a single placeholder account and every service looks unlinked, so the hub refused to play
+    Tidal or Pandora on a player that was happily streaming YouTube Music at the time.
+    """
+    if not uri:
+        return None
+    sid = re.search(r"[?&]sid=(\d+)", uri)
+    sn = re.search(r"[?&]sn=(\d+)", uri)
+    if not sid or not sn:
+        return None
+    service = SERVICE_IDS.get(sid.group(1))
+    return (service, sn.group(1)) if service else None
+
+
 def source_from_uri(uri: str | None) -> str | None:
     if not uri or "sid=" not in uri:
         return None
@@ -605,6 +645,10 @@ class SoCoAdapter(SonosAdapter):
         self._pollers: dict[str, asyncio.Task[None]] = {}
         self._last_snapshot_at: float | None = None
         self._topology = Topology()
+        # Account serials learned from URIs the player is using, per service. The accounts
+        # endpoint is empty on current firmware (see sn_from_uri), so this is often the only
+        # source; HUB_SONOS_*_SN makes a learned value permanent.
+        self._observed_sn: dict[str, str] = {}
         self._subs: list[SonosSubscription] = []
         self._task: asyncio.Task[None] | None = None
         self._backoff = Backoff(cap=settings.reconnect_max_s)
@@ -778,17 +822,52 @@ class SoCoAdapter(SonosAdapter):
 
     # -- content (Phase 3) ----------------------------------------------------------
 
+    def _observe_sn(self, uri: str | None) -> None:
+        """Learn a service's account serial from a URI the player is actually using.
+
+        Logged at INFO the first time so the value can be pasted into ``HUB_SONOS_*_SN`` and
+        survive a restart; an observation only lasts as long as the process.
+        """
+        found = sn_from_uri(uri)
+        if found is None:
+            return
+        service, sn = found
+        if self._observed_sn.get(service) != sn:
+            self._observed_sn[service] = sn
+            self.log.info(
+                "learned a Sonos account serial from playback",
+                extra={
+                    "extra": {
+                        "service": service,
+                        "sn": sn,
+                        "setting": f"HUB_SONOS_{service.upper()}_SN",
+                    }
+                },
+            )
+
     @property
     def tidal_sn(self) -> str | None:
-        return self._topology.tidal_sn or self.settings.sonos_tidal_sn
+        return (
+            self._topology.tidal_sn
+            or self.settings.sonos_tidal_sn
+            or self._observed_sn.get("tidal")
+        )
 
     @property
     def pandora_sn(self) -> str | None:
-        return self._topology.pandora_sn or self.settings.sonos_pandora_sn
+        return (
+            self._topology.pandora_sn
+            or self.settings.sonos_pandora_sn
+            or self._observed_sn.get("pandora")
+        )
 
     @property
     def ytmusic_sn(self) -> str | None:
-        return self._topology.ytmusic_sn or self.settings.sonos_ytmusic_sn
+        return (
+            self._topology.ytmusic_sn
+            or self.settings.sonos_ytmusic_sn
+            or self._observed_sn.get("ytmusic")
+        )
 
     def service_linked(self, service: str) -> bool:
         if service == "tidal":
@@ -805,12 +884,12 @@ class SoCoAdapter(SonosAdapter):
         if service == "tidal":
             sn = self.tidal_sn
             if not sn:
-                raise ContentUnavailableError("Tidal is not linked in the Sonos app")
+                raise ContentUnavailableError(SN_UNKNOWN["tidal"])
             return lambda t: build_tidal_didl(t, sn)
         if service == "ytmusic":
             sn = self.ytmusic_sn
             if not sn:
-                raise ContentUnavailableError("YouTube Music is not linked in the Sonos app")
+                raise ContentUnavailableError(SN_UNKNOWN["ytmusic"])
             template = self.settings.sonos_ytmusic_uri or YTMUSIC_URI_TEMPLATE
             return lambda t: build_ytmusic_didl(t, sn, template)
         raise ContentUnavailableError(f"{service} is not playable on Sonos from the hub")
@@ -825,7 +904,7 @@ class SoCoAdapter(SonosAdapter):
         if service != "pandora":
             raise ContentUnavailableError(f"{service} stations are not available on Sonos")
         if not self.pandora_sn:
-            raise ContentUnavailableError("Pandora is not linked in the Sonos app")
+            raise ContentUnavailableError(SN_UNKNOWN["pandora"])
         raw_zone = next(iter(self._topology.raw.values()), None)
         if raw_zone is None:
             raise ContentUnavailableError("no Sonos player is reachable")
@@ -857,7 +936,7 @@ class SoCoAdapter(SonosAdapter):
             raise ContentUnavailableError(f"{ref.service} stations are not playable on Sonos")
         sn = self.pandora_sn
         if not sn:
-            raise ContentUnavailableError("Pandora is not linked in the Sonos app")
+            raise ContentUnavailableError(SN_UNKNOWN["pandora"])
         if not station.ids.get("id"):
             raise ContentUnavailableError(f"{station.name} has no Sonos station id")
         raw = self._raw(player_id)
@@ -1279,6 +1358,7 @@ class SoCoAdapter(SonosAdapter):
         get = meta.get if isinstance(meta, dict) else lambda k, d=None: getattr(meta, k, d)
         art = get("album_art_uri") or get("album_art")
         uri = variables.get("current_track_uri") or get("uri")
+        self._observe_sn(uri)
         duration = variables.get("current_track_duration")
         broadcast = "audioBroadcast" in (get("item_class") or "")
         source = source_from_uri(uri)

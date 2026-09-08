@@ -99,6 +99,30 @@ export function ZonePicker({
   const selected = useHub((s) => s.selectedTargets);
   const setTargets = useHub((s) => s.setTargets);
   const selectSide = useHub((s) => s.selectSide);
+  const playAction = useHub((s) => s.play);
+  // What the room being controlled is playing, so another room can be given the same thing.
+  // Without this the sheet could only *switch* which room you were looking at, which is what
+  // the owner hit: "if i tap one option it will show whats playing there not assign the audio".
+  //
+  // Two primitives only. Selecting a built play item here (even under useShallow) returns a new
+  // nested object every render, shallow compare never matches, and React loops with "Maximum
+  // update depth exceeded". The item is assembled from the store at click time instead.
+  const playingSideId = useHub((s) => {
+    const active = s.activeSideId ? s.state?.sides[s.activeSideId] : null;
+    const np = active ? s.state?.now_playing[active.id] : null;
+    return active && np?.content_ref && np.title ? active.id : null;
+  });
+  const playingTitle = useHub((s) =>
+    playingSideId ? (s.state?.now_playing[playingSideId]?.title ?? null) : null,
+  );
+
+  /** The current content as a play item, read fresh so no object identity is held in state. */
+  const playHereItem = () => {
+    const st = useHub.getState();
+    const np = playingSideId ? st.state?.now_playing[playingSideId] : null;
+    if (!np?.content_ref || !np.title) return null;
+    return { content_ref: np.content_ref, title: np.title, subtitle: np.artist ?? null, art: np.art };
+  };
   const zonePower = useHub((s) => s.zonePower);
   // Play-mode selection: derived from the request until the user toggles a row; the override is
   // keyed to the request so a new request starts fresh.
@@ -197,6 +221,23 @@ export function ZonePicker({
                   </span>
                 </span>
               </button>
+              {/* Switch mode only: a row tap still switches which room you are controlling, and
+                  this sends the audio instead. Play mode already has its own confirm button. */}
+              {!playMode && playingSideId && playingSideId !== side.id && !reason ? (
+                <button
+                  type="button"
+                  className="min-h-target shrink-0 rounded-control px-3 text-caption text-signal"
+                  aria-label={`Play “${playingTitle ?? "this"}” on ${side.name}`}
+                  onClick={() => {
+                    const item = playHereItem();
+                    if (item) void playAction([side.id], item);
+                    onClose();
+                  }}
+                  data-testid={`play-here-${side.id}`}
+                >
+                  Play here
+                </button>
+              ) : null}
               {zones.map((z) => (
                 <button
                   key={z.id}
