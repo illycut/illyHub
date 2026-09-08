@@ -7,6 +7,10 @@ This file is the executable version of PRD §6. Every item has a command or a se
 
 ## 0. Information to gather before first install
 
+> **Before anything else:** clone to `~/illyHub`, not into `~/Documents`, `~/Desktop` or
+> `~/Downloads`. Those are TCC-protected and a launchd job cannot read them, which makes the hub
+> hang with no log output at all. See §3.
+
 Run these on the hub Mac and paste the output into an issue or hand it over. Nothing here is secret
 except where marked; redact those.
 
@@ -70,30 +74,49 @@ Also note, in words:
 - [ ] Static IP or DHCP reservation for the hub Mac on the router. Record it here: `HUB_IP = ________`
 - [ ] DHCP reservations for every HEOS, Sonos, and Denon device. Record them in `hub/.env` as `HUB_STATIC_DEVICES`.
 - [ ] Remote admin: System Settings → General → Sharing → Remote Login (SSH) ON, Screen Sharing ON.
-- [ ] Tailscale: `brew install --cask tailscale`, sign in, then `tailscale status`. Later: `tailscale serve --bg 8080` for HTTPS.
-- [ ] Auto-login: System Settings → Users & Groups → Automatically log in as → hub user. **Requires FileVault OFF** (`sudo fdesetup disable`). Decide and record: FileVault ________
+- [ ] Tailscale: install from tailscale.com (no Homebrew on this Mac), sign in, then `tailscale status`. Later: `tailscale serve --bg 8080` for HTTPS.
+- [x] Auto-login: **not needed.** The hub is a root LaunchDaemon and starts at boot with nobody
+      logged in (§3), so **FileVault can stay ON**. Only the Phase 7 AirPlay bridge would need a
+      logged-in session; deal with that when Phase 7 lands rather than weakening disk encryption now.
 - [ ] Manual AirPlay 2 multi-output check (Phase 7 gate): Music app → AirPlay icon → tick both a HEOS device and a Sonos device → play. Note the result: ________
-- [ ] `caffeinate` is already in the LaunchAgent; Amphetamine is optional.
+- [ ] `caffeinate` is already in the LaunchDaemon; Amphetamine is optional.
 
 ## 3. Service deployment
 
+The hub runs as a **root LaunchDaemon** in `/Library/LaunchDaemons`. This is not a preference:
+see "Local Network" below. It also means the hub starts at boot with nobody logged in, so
+**FileVault can stay on** and auto-login is not needed (supersedes the note in section 2).
+
 ```bash
-brew install uv git
+curl -LsSf https://astral.sh/uv/install.sh | sh          # no Homebrew needed
 git clone https://github.com/illycut/illyHub.git ~/illyHub
 cd ~/illyHub
-cp hub/.env.example hub/.env   # then edit: HUB_HOST, HUB_PORT, HUB_STATIC_DEVICES, HUB_DENON_HOST, HUB_HEOS_HOST
-./ops/install.sh
+cp hub/.env.example hub/.env   # then edit: HUB_HOST, HUB_PORT, HUB_STATIC_DEVICES, HUB_DENON_HOST, HUB_HEOS_HOST, HUB_DATA_DIR
+./ops/install.sh               # prompts for sudo; only the launchctl and /Library steps use it
 curl -s http://127.0.0.1:8080/api/health | python3 -m json.tool   # with mkcert TLS: curl -sk https://127.0.0.1:8080/api/health
 ```
 
-- **Local Network permission (Sequoia, do this once):** macOS 15 gates LAN multicast and UPnP callbacks behind
-  System Settings → Privacy & Security → Local Network. A launchd-started process in a headless session never
-  gets the prompt, so discovery finds nothing and it looks like broken SSDP. After the first `./ops/install.sh`,
-  run `cd ~/illyHub/hub && uv run hub` once from Terminal to trigger the prompt, allow it, Ctrl-C, then
-  `launchctl kickstart -k gui/$(id -u)/com.illyhub.hub`. Confirm the entry is enabled in that settings pane.
-- Logs: `~/Library/Logs/illyhub/hub.log` (JSON, rotated by the hub: 7 files x 10 MB). `launchd.out.log` /
+- **Do not clone into `~/Documents`, `~/Desktop` or `~/Downloads`.** Those are TCC-protected and
+  a launchd job has no consent grant, so it gets `Operation not permitted` and the hub **hangs
+  with nothing in any log** (uv and Python block rather than erroring). `install.sh` now refuses
+  to install from those paths. `~/illyHub` is fine.
+- **Local Network (Sequoia): only a root daemon reaches the LAN.** macOS 15 gates LAN unicast and
+  multicast behind System Settings, Privacy and Security, Local Network. Verified September 7
+  2026: a user LaunchAgent is denied, a system daemon with `UserName` set is denied, and there is
+  **no way to grant it** — the process never appears in that settings pane, and
+  `tccutil reset LocalNetwork com.illyhub.hub` answers `Failed to reset` because no entry exists.
+  Wrapping the hub in a signed `.app` bundle and launching it via LaunchServices did not help
+  either. Denied traffic surfaces as `EHOSTUNREACH`, so it reads like a network fault:
+  `Unable to connect to <ip>: OSError: [Errno 65] No route to host` and `no Sonos players
+  discovered`, while the same binary run from Terminal reaches everything. If you see that
+  pattern, check that the job is loaded in the **system** context and running as root.
+- **`HUB_DATA_DIR` must be an absolute path outside the repo** (`/usr/local/var/illyhub`).
+  As root the hub would otherwise scatter root-owned files through the checkout, which then
+  breaks running the hub or `pytest` as yourself. Keep it `chmod 700` and `vault.key` `600`:
+  the Fernet key sits next to the ciphertext, so directory permissions do the real work.
+- Logs: `/Library/Logs/illyhub/hub.log` (JSON, rotated by the hub: 7 files x 10 MB). `launchd.out.log` /
   `launchd.err.log` catch only startup failures before logging is configured.
-- Restart: `launchctl kickstart -k gui/$(id -u)/com.illyhub.hub`, or from the app's Settings
+- Restart: `sudo launchctl kickstart -k system/com.illyhub.hub`, or from the app's Settings
   (`POST /api/hub/restart`): the hub exits with code 0 and `KeepAlive=true` relaunches it
   regardless of exit code. `HUB_ALLOW_RESTART=0` disables the endpoint.
 - Request-origin policy: the hub refuses unknown `Host` headers and cross-origin POSTs. Add the
@@ -101,7 +124,7 @@ curl -s http://127.0.0.1:8080/api/health | python3 -m json.tool   # with mkcert 
   HTTPS via Tailscale or mkcert, `HUB_ALLOWED_ORIGINS=["https://hub-mac.<tailnet>.ts.net"]`.
   `localhost`, `127.0.0.1`, the LAN IP and `*.local` are always allowed. A 400 "Invalid host
   header" or a 403 `forbidden_origin` in the app means a name is missing here.
-- Stop: `launchctl bootout gui/$(id -u)/com.illyhub.hub`
+- Stop: `sudo launchctl bootout system/com.illyhub.hub`
 - Update: `git pull && ./ops/install.sh`
 - Uninstall: `./ops/install.sh --uninstall`
 
@@ -147,28 +170,93 @@ Certificate Trust Settings → enable. Android: Settings → Security → Instal
 - The app export must be built and present at `HUB_APP_DIR` (`app/out`); `/api/health` still
   answers when it is missing, but `/` returns 404 and the hub log says "app export missing".
 
+## 3b. Toolchain constraints on the hub Mac (Intel)
+
+The hub Mac is the 2019 Intel MacBook Pro from PRD 6.1. A dev machine on Apple Silicon will not
+hit either of these, so they surface only at deploy time.
+
+- **`cryptography` must stay below 43.** Releases from 43 onward publish arm64-only macOS
+  wheels. On Intel, `uv sync` falls back to a source build and fails needing OpenSSL 3 and Rust.
+  `pyproject.toml` pins `>=42,<43`; 42.0.8 is the newest with a CPython x86_64 macOS wheel, and
+  being `cp37-abi3` it also works on 3.12 through 3.14. Only `Fernet` is used
+  (`hub/src/illyhub_hub/auth/vault.py`), so nothing is lost. Do not "upgrade" this pin without
+  checking wheels for `macosx_*_x86_64` on PyPI.
+- **Node 20+ is required to build the PWA** (`next` 16, `react` 19, `vitest` 4). A stock Intel Mac
+  may still have Node 16, which fails in confusing ways. No Homebrew needed:
+  install Node 22 from the official pkg at nodejs.org, or use `nvm`/`fnm`. Check with `node -v`
+  before `cd app && npm ci && npm run build`. Until the export exists, `/api/health` shows
+  `static.app: false` and the hub serves the API only.
+- Homebrew is not required anywhere: `uv` installs via
+  `curl -LsSf https://astral.sh/uv/install.sh | sh` into `~/.local/bin`.
+
 ## 4. Recovery: "the Mac rebooted and nothing started"
 
-1. Did the user session log in? If the login window is showing, auto-login is off (see FileVault above). Log in once; the agent starts with the session.
-2. `launchctl print gui/$(id -u)/com.illyhub.hub | grep -E 'state|last exit'`
-3. `tail -50 ~/Library/Logs/illyhub/hub.log; tail -20 ~/Library/Logs/illyhub/launchd.err.log`
-4. Common causes: `uv` moved (Homebrew path changed) → rerun `./ops/install.sh`; `.env` missing → copy from example; port in use → `lsof -i :8080`.
-5. Discovery finds nothing: first check Local Network permission (§3). Then `ping <sonos_ip>`; with static devices configured the hub comes up regardless. Check IGMP snooping on the switch if multicast never works.
-6. `/api/health` shows `fake_devices: true`: `hub/.env` still has `HUB_FAKE_DEVICES=1`. Remove it and kickstart.
-7. `/` returns 404 but `/api/health` works: the PWA export is not at `HUB_APP_DIR`. Build the app (`cd app && npm run build`) or fix the path, then kickstart.
-8. Artwork shows grey squares: `/api/art/...` is answering with `X-Art-Fallback: upstream_error` (200 + placeholder). Check `hub.log` for "art fetch failed"; the device URL (Sonos `/getaa?...`, HEOS CDN) must be reachable from the hub Mac. `X-Art-Fallback: proxy_disabled` means `HUB_ART_PROXY=0` is set.
-9. Disk: the art cache is capped at `HUB_ART_MAX_MB` (500) and swept daily; `/api/health` → `art_cache.bytes` shows current usage.
+1. No login is needed: the daemon runs in the system context and starts at boot. If nothing is
+   listening, go straight to step 2 rather than looking for a login window.
+2. `sudo launchctl print system/com.illyhub.hub | grep -E 'state|last exit'`
+3. `sudo tail -50 /Library/Logs/illyhub/hub.log; sudo tail -20 /Library/Logs/illyhub/launchd.err.log`
+4. Common causes: `.venv` missing or moved → rerun `./ops/install.sh`; `.env` missing → copy from
+   example; port in use → `sudo lsof -nP -iTCP:8080 -sTCP:LISTEN` (needs sudo to see a root process).
+5. **Nothing in any log and the process is alive but idle:** the checkout is somewhere a launchd
+   job cannot read (§3, TCC). Move it to `~/illyHub`.
+6. Discovery finds nothing, `[Errno 65] No route to host`: the job is not running as root in the
+   system context (§3, Local Network). Confirm with
+   `ps -o user,command -p $(sudo launchctl print system/com.illyhub.hub | awk '/pid = /{print $3}')`
+   — it must say `root`. A user LaunchAgent will never work. Then `ping <sonos_ip>`; with static
+   devices configured the hub comes up regardless. Check IGMP snooping on the switch if multicast
+   never works.
+7. `/api/health` shows `fake_devices: true`: `hub/.env` still has `HUB_FAKE_DEVICES=1`. Remove it and kickstart.
+8. `/` returns 404 but `/api/health` works: the PWA export is not at `HUB_APP_DIR`. Build the app (`cd app && npm run build`) or fix the path, then kickstart.
+9. Artwork shows grey squares: `/api/art/...` is answering with `X-Art-Fallback: upstream_error` (200 + placeholder). Check `hub.log` for "art fetch failed"; the device URL (Sonos `/getaa?...`, HEOS CDN) must be reachable from the hub Mac. `X-Art-Fallback: proxy_disabled` means `HUB_ART_PROXY=0` is set.
+10. Disk: the art cache is capped at `HUB_ART_MAX_MB` (500) and swept daily; `/api/health` → `art_cache.bytes` shows current usage.
 
-## 5. What is verified only against fakes (as of Phase 0/1)
+## 5. Hardware verification status
 
-Until the hub runs on this Mac, every adapter has been exercised only against mocks and the protocol fakes.
-First LAN run checklist:
-- [ ] `/api/health` shows heos, sonos, denon all `connected`.
-- [ ] `/api/devices` lists every player and both Denon zones with the right room names.
-- [ ] Change volume in the Sonos app; hub state follows within 1s (WebSocket or repeated GET).
+### Verified on the LAN (September 7 2026)
+
+Devices: Denon **AVR-X3400H** at `192.168.50.40` (HEOS player pid 1400399113, firmware
+3.139.173 / Aios 4.025, main zone + Zone 2) and a **Sonos Amp** "Outside" at `192.168.50.224`
+(`RINCON_C438758063E101400`), household `Sonos_Yf3PogWRdPw6igHxVRlDMMPjEC`. Services linked on
+HEOS: Tidal and Pandora. YouTube Music is linked on Sonos, not on HEOS.
+
+- [x] `/api/health` shows heos, sonos and denon all `connected` (as the root daemon).
+- [x] `/api/devices` lists both players and both Denon zones with the vendor room names.
+- [x] Sonos transport: `play` resumes at the stored position, `pause`, and `seek` restores an
+      exact position on a YouTube Music HLS stream (`x-sonosapi-hls-static`, `sid=284`).
+- [x] Sonos state follows the device over UPnP events: an external volume change reached hub
+      state, and `pause` was reflected in 0.21 s.
+- [x] Denon zone power, volume and mute over telnet, including the read-back behaviour.
+- [x] HEOS transport: `set_play_state=play` started the Pandora station on the receiver.
+
+### Known-bad, found on hardware
+
+- **HEOS cannot set volume on the AVR.** `heos://player/set_volume` returns `success` and applies
+  nothing; `get_volume` reports `0` regardless of the real `MV`. Volume and mute for that player
+  must go through the Denon telnet link. `commands.py` still routes player volume to the vendor
+  playback adapter, so VOL-1 on the HEOS side is broken end to end (ai-dev #15).
+- **`/goform/` is gone on this firmware.** Every legacy HTTP endpoint answers 403 (nginx on
+  80/443). Telnet is the only control path here.
+- **`Z2OFF` can standby the whole unit**, taking the main zone with it. Power commands read back.
+- **`MVMAX` is not stable** (75, 78, 79, 82, 665, 785 observed) and must not feed the volume
+  scale; `HUB_DENON_MAX_VOLUME` is a hard cap the receiver cannot raise.
+- **Zone 2 feeds an external amp** and is configured as volume-incapable
+  (`HUB_DENON_FIXED_ZONES=["zone2"]`). Zone 2 mute is still unverified: the receiver stays silent
+  for Zone 2 commands while Zone 2 is off, so it needs Zone 2 powered to test.
+- **Play state has an unmapped transient.** Sonos reports `TRANSITIONING` for ~1 s while a stream
+  buffers and HEOS reports `state=unknown`; both fall through to `"unknown"`, which is why a
+  play took 1.7-1.9 s to confirm while a pause took 0.21 s. The UI must hold its optimistic state
+  rather than follow this.
+- **Position reports are whole-second and drift against the wall clock** (`1:33:01` held for two
+  samples, then `1:33:04 → 1:33:06`), confirming the review 1.2 concern: the 300 ms Sync Play
+  threshold needs tick-edge interpolation, not raw position deltas.
+
+### Still to verify
+
 - [ ] Change track in the HEOS app; hub now-playing follows.
-- [ ] `ZMON`/`ZMOFF` via the hub turns the Denon on and off.
-- [ ] Ai-dev #9 concurrent-stream test and #10 Tidal ref spike.
+- [ ] Zone 2 mute, with Zone 2 powered.
+- [ ] Ai-dev #9 concurrent-stream test and #10 Tidal ref spike. Note for #9: HEOS Tidal is
+      `norman@umich.edu` and Sonos was playing YouTube Music, so check which account each
+      ecosystem uses before assuming the one-stream limit applies.
 
 ### Pandora (Phase 5) on the LAN
 

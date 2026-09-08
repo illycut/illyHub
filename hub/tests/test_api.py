@@ -227,7 +227,9 @@ async def test_seek_skip_zone_power_group_endpoints(client) -> None:
     side = rt.fakes.sonos.side_id()
     await c.post("/api/transport/play", json={"target": KITCHEN})
     r = await c.post("/api/seek", json={"target": KITCHEN, "position_ms": 20000})
-    assert r.status_code == 200 and rt.store.state.positions[side].position_ms == 20000
+    # Same one-tick tolerance as the skip assertion below: the fake ticker can advance the
+    # position between the response and this read, which flaked on a slower machine.
+    assert r.status_code == 200 and 20000 <= rt.store.state.positions[side].position_ms < 20100
     r = await c.post("/api/skip", json={"target": KITCHEN})
     # the fake ticker runs at 50 Hz during the request, so allow one tick of drift
     assert r.status_code == 200 and 35000 <= rt.store.state.positions[side].position_ms < 35100

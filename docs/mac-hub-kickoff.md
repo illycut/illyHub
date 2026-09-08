@@ -7,9 +7,14 @@ short path to a first LAN run. Do the steps in order.
 ## 1. Install prerequisites and clone
 
 ```bash
-brew install uv git
+curl -LsSf https://astral.sh/uv/install.sh | sh    # Homebrew is not installed on this Mac
 git clone https://github.com/illycut/illyHub.git ~/illyHub
 ```
+
+Clone to `~/illyHub`. **Not** `~/Documents` or `~/Desktop`: those are TCC-protected, a launchd
+job cannot read them, and the hub then hangs with nothing in any log.
+
+`git` needs the Xcode licence accepted once: `sudo xcodebuild -license`.
 
 ## 2. Gather device information
 
@@ -20,7 +25,7 @@ back into the dev session (or into an issue on `illycut/illyHub`). It yields:
 - room names as set in the vendor apps (the hub inherits them, never renames)
 - which Denon zones exist
 - which streaming services are linked in the HEOS app and in the Sonos app
-- FileVault status (auto-login requires it off)
+- FileVault status (it can stay on; the root daemon needs no login)
 - whether Tailscale is installed
 
 With that output the static device list for `.env` can be written for you.
@@ -41,21 +46,30 @@ Edit it:
 ## 4. Install the service
 
 ```bash
-cd ~/illyHub && ./ops/install.sh
+cd ~/illyHub && ./ops/install.sh    # prompts for sudo
 ```
 
-Then the one-time **Local Network permission** step (macOS Sequoia gates multicast and
-UPnP callbacks; a launchd-started process never gets the prompt):
+The hub installs as a **root LaunchDaemon**, not a user LaunchAgent. That is forced by macOS
+Sequoia's Local Network gate: a LaunchAgent, and a system daemon with `UserName` set, are both
+denied LAN access, and there is no way to grant it — the process never appears in System
+Settings, Privacy and Security, Local Network, and `tccutil reset LocalNetwork` reports
+`Failed to reset` because no entry exists. Only a root daemon in the system context reaches the
+LAN. There is **no prompt to allow**; do not go looking for one.
 
-```bash
-cd ~/illyHub/hub && uv run hub      # allow the Local Network prompt, then Ctrl-C
-launchctl kickstart -k gui/$(id -u)/com.illyhub.hub
-```
+The upside: the hub starts at boot with nobody logged in, so **FileVault can stay on** and
+auto-login is unnecessary (this supersedes step 7 and RUNBOOK section 2).
 
-Confirm the hub entry is enabled under System Settings → Privacy & Security → Local Network.
-Skipping this step looks exactly like broken discovery.
+The trade-off: everything the hub writes is root-owned, so `HUB_DATA_DIR` must be an absolute
+path outside the repo (`/usr/local/var/illyhub`).
 
-## 5. First LAN run checklist
+If discovery finds nothing and the log shows `[Errno 65] No route to host`, the job is not
+running as root in the system context. That error is the Local Network gate, not a network fault.
+
+## 5. First LAN run checklist — done September 7 2026
+
+This is complete; results and the remaining gaps are recorded in `ops/RUNBOOK.md` section 5.
+Devices found: Denon AVR-X3400H at `192.168.50.40` (main zone + Zone 2, HEOS pid 1400399113) and
+a Sonos Amp "Outside" at `192.168.50.224`. Kept here for reference when the hub is rebuilt.
 
 Work through `ops/RUNBOOK.md` **section 5** and report anything that fails:
 
@@ -101,7 +115,7 @@ No hub configuration changes are needed.
 ## 7. Any time, not blocking
 
 `ops/RUNBOOK.md` sections 1 and 2: energy settings, DHCP reservations for the hub and
-every device, SSH and Screen Sharing, Tailscale, auto-login.
+every device, SSH and Screen Sharing, Tailscale. Auto-login is not needed.
 
 ## Later phases
 
@@ -110,6 +124,10 @@ Every later phase is:
 ```bash
 cd ~/illyHub && git pull && ./ops/install.sh
 ```
+
+Node 20+ is needed to build the PWA (`next` 16 / `react` 19); a stock Intel Mac may still have
+Node 16. And `cryptography` is pinned below 43 because 43+ ships arm64-only macOS wheels.
+See RUNBOOK section 3b.
 
 Open spikes that need this machine: ai-dev #9 (Tidal and YouTube Music concurrent-stream
 check, gates Sync Play) and #10 (Tidal ID to HEOS and Sonos playable refs).

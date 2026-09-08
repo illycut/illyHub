@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  System LaunchDaemon, installed to /Library/LaunchDaemons by ops/install.sh.
+
+  It must be a *root* daemon, not a user LaunchAgent. Verified on macOS 15.1.1 (Sequoia),
+  September 7 2026: the Local Network privacy gate denies LAN access to a user LaunchAgent and
+  to a system daemon running with UserName set, and macOS offers no way to grant it: the
+  process never appears in System Settings, Privacy and Security, Local Network, and
+  `tccutil reset LocalNetwork <bundle id>` reports "Failed to reset" because no entry exists.
+  Denied traffic surfaces as EHOSTUNREACH, so it reads like a routing fault:
+
+      Unable to connect to <heos ip>: OSError: [Errno 65] No route to host
+      no Sonos players discovered
+
+  Only a root daemon in the system context reaches the LAN. That also means the hub starts at
+  boot with nobody logged in, so FileVault can stay enabled (RUNBOOK section 2).
+
+  Consequence: everything the hub writes is root-owned, which is why HUB_DATA_DIR points at a
+  system path rather than the repo. See RUNBOOK section 3.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.illyhub.hub</string>
+
+  <!-- The venv entrypoint directly, not `uv run`: as root, uv would rewrite the user-owned
+       .venv and leave root-owned files that break the developer's next `uv sync`.
+       caffeinate -s is sleep insurance on top of the pmset settings. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-s</string>
+    <string>__REPO__/hub/.venv/bin/hub</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO__/hub</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HUB_ENV_FILE</key>
+    <string>__REPO__/hub/.env</string>
+    <!-- The hub rotates its own log (10 MB x 7). The launchd files below only catch output
+         from before logging is configured (import errors, uvicorn bind failures). -->
+    <key>HUB_LOG_FILE</key>
+    <string>__LOGDIR__/hub.log</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- Back off if the hub crash-loops so launchd does not spin. -->
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+
+  <key>StandardOutPath</key>
+  <string>__LOGDIR__/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOGDIR__/launchd.err.log</string>
+</dict>
+</plist>
