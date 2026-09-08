@@ -41,6 +41,10 @@ TRACK_PAGE = 100  # Tidal's default page for album/playlist items
 CACHE_MAX_ENTRIES = 256
 
 
+SEARCH_CACHE_S = 60.0  # search results are cached briefly (ai-dev #78); HUB_SEARCH_CACHE_S
+SEARCH_CACHE_MAX = 64
+
+
 def _is_not_found(exc: Exception) -> bool:
     """tidalapi raises ``tidalapi.exceptions.ObjectNotFound`` (HTTP 404); we never import the
     library at module level so the fakes can raise a look-alike by class name."""
@@ -57,6 +61,7 @@ class Catalog(Protocol):
     async def album(self, album_id: str) -> Container: ...
     async def playlist(self, playlist_id: str) -> Container: ...
     async def track(self, track_id: str) -> BrowseItem: ...
+    async def search(self, query: str, limit: int) -> dict[str, list[BrowseItem]]: ...
 
 
 def _ms(seconds: Any) -> int | None:
@@ -223,7 +228,37 @@ class TidalCatalog:
         parent = BrowseItem(content_ref=ref, title=str(t.name))
         return self._track_item(t, 0, parent)
 
+    def _search(self, query: str, limit: int) -> dict[str, list[BrowseItem]]:
+        """``Session.search(query, models=[Album, Playlist, Track])`` (tidalapi caps at 300)."""
+        s = self._session()
+        import tidalapi
+
+        results = s.search(
+            query, models=[tidalapi.Album, tidalapi.Playlist, tidalapi.Track], limit=limit
+        )
+        get = results.get if isinstance(results, dict) else lambda k, d=None: getattr(results, k, d)
+        albums = [self._album_item(a) for a in list(get("albums") or [])[:limit]]
+        playlists = [self._playlist_item(p) for p in list(get("playlists") or [])[:limit]]
+        tracks: list[BrowseItem] = []
+        for i, t in enumerate(list(get("tracks") or [])[:limit]):
+            album = getattr(t, "album", None)
+            parent = (
+                self._album_item(album)
+                if album is not None and getattr(album, "id", None)
+                else BrowseItem(
+                    content_ref=ContentRef(service=SERVICE, kind="track", id=str(t.id)),
+                    title=str(t.name),
+                )
+            )
+            tracks.append(self._track_item(t, i, parent))
+        return {"albums": albums, "playlists": playlists, "tracks": tracks}
+
     # -- async surface --------------------------------------------------------------------
+
+    async def search(self, query: str, limit: int) -> dict[str, list[BrowseItem]]:
+        from .search import in_search_pool
+
+        return await in_search_pool(self._search, query, limit)
 
     async def favorite_albums(self, limit: int, offset: int) -> BrowsePage:
         return await asyncio.to_thread(self._favorite_albums, limit, offset)
@@ -390,6 +425,30 @@ class FakeTidalCatalog:
             t.index = i
         return Container(item=item, tracks=tracks)
 
+    async def search(self, query: str, limit: int) -> dict[str, list[BrowseItem]]:
+        """Case-insensitive substring match over titles and artists of the canned library."""
+        self._check()
+        q = query.casefold()
+        albums = [
+            self._album_item(r)
+            for r in _FAKE_ALBUMS
+            if q in r[1].casefold() or q in r[2].casefold()
+        ]
+        playlists = [self._playlist_item(r) for r in _FAKE_PLAYLISTS if q in r[1].casefold()]
+        tracks: list[BrowseItem] = []
+        for r in _FAKE_ALBUMS:
+            item = self._album_item(r)
+            tracks.extend(
+                t
+                for t in self._tracks(r[0], item)
+                if q in t.title.casefold() or q in (t.artist or "").casefold()
+            )
+        return {
+            "albums": albums[:limit],
+            "playlists": playlists[:limit],
+            "tracks": tracks[:limit],
+        }
+
 
 # --------------------------------------------------------------------------------------
 # Service: cache + availability + track resolution
@@ -412,8 +471,11 @@ class TidalService:
         clock: Callable[[], float] = time.monotonic,
         before: Callable[[], Awaitable[Any]] | None = None,
         service: str = SERVICE,
+        search_cache_s: float = SEARCH_CACHE_S,
     ) -> None:
         self.service = service
+        self.search_cache_s = search_cache_s
+        self._search_cache: dict[str, tuple[float, Any]] = {}
         self.catalog = catalog
         self._is_linked = is_linked
         self._availability = availability
@@ -432,8 +494,9 @@ class TidalService:
             raise NeedsLinkError(self.service, f"{label} is not connected. Link it in Settings.")
 
     def refresh(self) -> int:
-        n = len(self._cache)
+        n = len(self._cache) + len(self._search_cache)
         self._cache.clear()
+        self._search_cache.clear()
         return n
 
     async def _cached(self, key: str, loader: Callable[[], Any]) -> Any:
@@ -499,6 +562,33 @@ class TidalService:
         c = c.model_copy(deep=True)
         self._stamp([c.item, *c.tracks])
         return c
+
+    async def search(self, query: str, limit: int = 20) -> dict[str, list[BrowseItem]]:
+        """Fan-in point for ``GET /api/search``: cached 60 s per (query, limit), availability
+        stamped like every other browse result."""
+        self._require_linked()
+        limit = max(1, min(limit, PAGE_MAX))
+        key = f"{query.casefold()}:{limit}"
+        hit = self._search_cache.get(key)
+        now = self.clock()
+        if hit and now - hit[0] < self.search_cache_s:
+            groups: dict[str, list[BrowseItem]] = hit[1]
+        else:
+            if self._before is not None:
+                await self._before()
+            groups = await self.catalog.search(query, limit)
+            # Its own small budget, separate from the browse cache: a burst of typing must not
+            # evict albums and playlists the home screen relies on.
+            self._search_cache = {
+                k: v for k, v in self._search_cache.items() if now - v[0] < self.search_cache_s
+            }
+            while len(self._search_cache) >= SEARCH_CACHE_MAX:
+                self._search_cache.pop(next(iter(self._search_cache)))
+            self._search_cache[key] = (now, groups)
+        out = {k: [i.model_copy(deep=True) for i in v] for k, v in groups.items()}
+        for items in out.values():
+            self._stamp(items)
+        return out
 
     async def tracks_for(self, ref: ContentRef) -> tuple[BrowseItem, list[PlayableTrack]]:
         """The flat track list an adapter needs to build a queue, plus the item for history."""

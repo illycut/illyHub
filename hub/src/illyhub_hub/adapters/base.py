@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from ..art import ArtHelper
 from ..content import ContentRef
 from ..logsetup import get_logger
-from ..state import ConnectionStatus, ConnState, StateStore
+from ..state import ConnectionStatus, ConnState, PlayMode, QueueEntry, StateStore
 from ..tasks import cancel_all, spawn
 
 
@@ -262,6 +262,29 @@ class PlaybackAdapter(BaseAdapter, ABC):
         """Capture the coordinator's queue and transport so a failed Sync Play start can put the
         room back (Sonos: SoCo ``Snapshot``). Default: nothing to restore."""
         return None
+
+    # -- queue and play mode (Phase 8, ai-dev #77 / #79) ----------------------------------
+
+    async def get_queue(
+        self, player_id: str, limit: int = 200
+    ) -> tuple[list[QueueEntry], int | None]:
+        """The coordinator's native queue as ``(items[:limit], total)``. ``total`` is the
+        device's full length when known and ``None`` when the read hit ``limit`` without seeing
+        the end (HEOS has no count), so the router flags truncation either way. Default:
+        unsupported."""
+        raise UnsupportedCommandError(f"{self.name} cannot read the queue")
+
+    async def play_queue_index(self, player_id: str, index: int) -> None:
+        """Jump to the 0-based ``index`` of the coordinator's queue. Default: unsupported."""
+        raise UnsupportedCommandError(f"{self.name} cannot jump within the queue")
+
+    async def get_play_mode(self, player_id: str) -> PlayMode:
+        """Shuffle/repeat as the coordinator reports it. Default: unsupported."""
+        raise UnsupportedCommandError(f"{self.name} cannot read the play mode")
+
+    async def set_play_mode(self, player_id: str, mode: PlayMode) -> None:
+        """Apply shuffle/repeat on the coordinator. Default: unsupported."""
+        raise UnsupportedCommandError(f"{self.name} cannot set the play mode")
 
     async def restore_queue(self, player_id: str, snapshot: Any) -> None:
         """Undo :meth:`snapshot_queue`. Default: no-op."""

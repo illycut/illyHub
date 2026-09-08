@@ -99,6 +99,19 @@ class Settings(BaseSettings):
     browse_cache_s: float = 300.0
     history_max_rows: int = 500
     allow_restart: bool = True
+    # Phase 8 (ai-dev #72): self-update via ops/update.sh. HUB_REPO_DIR defaults to the checkout
+    # the hub runs from (inferred from this package's location).
+    # DECISION (Phase 8 review): off by default. The endpoint runs git and the dependency sync as
+    # root on the hub Mac, gated only by the LAN; ops/install.sh asks the operator and records
+    # the answer in hub/.env.
+    allow_update: bool = False
+    repo_dir: str | None = None
+    update_branch: str = "main"  # followed when the checkout's branch has no upstream
+    # Phase 8 (ai-dev #77 / #78): native queue read cap, per-service search deadline and cache.
+    queue_max: int = 200
+    search_deadline_s: float = 4.0
+    search_cache_s: float = 60.0
+    metrics_tick_s: float = 60.0  # uptime tick / daily summary cadence (ai-dev #73)
     # Request-origin policy. Bodyless cross-origin POSTs need no CORS preflight, so the hub
     # rejects state-changing requests whose Origin is not one of its own, and refuses unknown
     # Host headers (DNS rebinding). Add tailnet / mkcert names here.
@@ -144,6 +157,16 @@ class Settings(BaseSettings):
     @property
     def sync_log_path(self) -> Path:
         return self.data_path / "sync"
+
+    @property
+    def metrics_path(self) -> Path:
+        return self.data_path / "metrics.sqlite"
+
+    @property
+    def repo_path(self) -> Path:
+        if self.repo_dir:
+            return resolve_path(self.repo_dir)
+        return HUB_ROOT.parent
 
     @property
     def app_path(self) -> Path:

@@ -1,12 +1,14 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AmpIcon, ChevronLeftIcon, ChevronRightIcon, HubIcon, RefreshIcon, SpeakerIcon } from "./icons";
+import { AmpIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, HubIcon, RefreshIcon, SpeakerIcon } from "./icons";
+import { UPDATE_CHECK_DEBOUNCE_MS, UPDATE_CHECK_FAILED, UPDATE_ROW_TITLE, fromApplyRefusal, fromCheck, fromStatus, onPhase as updateOnPhase, onPollUnreachable, onSocketClosedWhileApplying, updateLog, updateRowLine, updateRowTappable, waitForSocketBounce, type UpdateRowState } from "@/lib/update";
 import { ServiceBadge } from "./ServiceBadge";
 import { Sheet } from "./Sheet";
 import { TextSkeleton } from "./Skeleton";
 import { LinkSheet, NEEDS_CLIENT_CONFIG, type LinkPhase } from "./LinkSheet";
 import { library, LibraryError, type AccountStatus, type AirPlayStatus, type Service } from "@/lib/hub/library";
+import { VENDOR_APP, VENDOR_LABEL } from "@/lib/services";
 import { SERVICE_LABEL, isHubLinked } from "@/lib/services";
 import { AIRPLAY_DISCLOSURE, AIRPLAY_OUTPUTS_NOTE, AIRPLAY_OUTPUTS_TITLE, AIRPLAY_ROW_TITLE, airplayRowStatus } from "@/lib/airplay";
 import { AirPlayGlyph } from "./PandoraSyncChip";
@@ -21,9 +23,22 @@ export const RESTART_FAILED_COPY = "The hub didn't come back. Check the Mac.";
 
 const LABEL: Record<AccountStatus["service"], string> = { ...SERVICE_LABEL, heos_account: "HEOS account" };
 
-export const COMING_LATER = "Coming later";
-
 export const HUB_SETUP_NEEDED = "Hub setup needed";
+
+/**
+ * Pandora is linked inside each vendor's app, never through the hub, so its row states where it is
+ * linked ("Linked in the HEOS app · not in Sonos") or the hub's auth-fault sentence when one is set.
+ */
+export function pandoraStatusLine(a: AccountStatus): string {
+  if (a.last_error) return a.last_error;
+  const l = a.linked_by_vendor;
+  if (!l) return a.linked ? "Linked in the vendor apps" : "Not linked in the HEOS or Sonos app";
+  const linked = (["heos", "sonos"] as const).filter((v) => l[v] === true);
+  const not = (["heos", "sonos"] as const).filter((v) => l[v] === false);
+  if (linked.length === 0) return `Not linked in the ${VENDOR_APP.heos} or the ${VENDOR_APP.sonos}`;
+  const head = `Linked in the ${linked.map((v) => VENDOR_APP[v]).join(" and the ")}`;
+  return not.length ? `${head} · not in ${not.map((v) => VENDOR_LABEL[v]).join(" or ")}` : head;
+}
 
 export function accountStatusLine(a: AccountStatus): string {
   if (a.state === "restoring") return "Reconnecting…";
@@ -55,9 +70,17 @@ export type { LinkPhase };
 export type RestartState = { kind: "idle" } | { kind: "waiting"; sawClosed: boolean; since: number } | { kind: "failed" };
 export function nextRestartState(cur: RestartState, phaseOpen: boolean, now: number): RestartState {
   if (cur.kind !== "waiting") return cur;
-  if (now - cur.since >= RESTART_TIMEOUT_MS) return { kind: "failed" };
-  if (!phaseOpen) return cur.sawClosed ? cur : { ...cur, sawClosed: true };
-  return cur.sawClosed ? { kind: "idle" } : cur;
+  const b = waitForSocketBounce(cur, phaseOpen, now, RESTART_TIMEOUT_MS);
+  if (b.kind === "timeout") return { kind: "failed" };
+  if (b.kind === "done") return { kind: "idle" };
+  return b.sawClosed === cur.sawClosed ? cur : { ...cur, sawClosed: b.sawClosed };
+}
+
+/** Last successful update check per session (module-level): a mount within the window re-uses it. */
+let lastCheck: { at: number; state: UpdateRowState } | null = null;
+/** Test seam. */
+export function _resetUpdateCheckCache(): void {
+  lastCheck = null;
 }
 
 /** Row inside a grouped bg-raised card (design system §6.9): 56px, hairline inset past the icon column. */
@@ -177,6 +200,137 @@ export function SettingsScreen({ initialLink = null }: { initialLink?: Service |
   };
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runId = useRef(0);
+
+  // Self-update (PRD SET-2, Phase 8): check on mount (debounced per session); tapping an available
+  // update confirms in a sheet, then polls the job until the hub restarts and comes back (or fails /
+  // rolls back). Updates off on the hub is a normal row state in the hub's own words.
+  const [update, setUpdate] = useState<UpdateRowState>(() => (lastCheck && now() - lastCheck.at < UPDATE_CHECK_DEBOUNCE_MS ? lastCheck.state : { kind: "idle" }));
+  const [confirmUpdate, setConfirmUpdate] = useState(false);
+  // The log disclosure is keyed to the terminal state that produced it: leaving that state folds it away.
+  const [showLog, setShowLog] = useState<string | null>(null);
+  const updateRun = useRef(0);
+  const prevUpdateKind = useRef<UpdateRowState["kind"]>(update.kind);
+  // The version the hub ran before an update, read once when the job starts (not an effect dependency).
+  const versionBefore = useRef<string | null>(null);
+  const checkUpdate = useCallback(
+    async (force = false) => {
+      if (!force && lastCheck && now() - lastCheck.at < UPDATE_CHECK_DEBOUNCE_MS) {
+        setUpdate(lastCheck.state);
+        return;
+      }
+      const me = ++updateRun.current;
+      setUpdate({ kind: "checking" });
+      try {
+        const c = await library.updateCheck(callOptions());
+        if (updateRun.current !== me) return;
+        const next = fromCheck(c);
+        lastCheck = { at: now(), state: next };
+        setUpdate(next);
+      } catch (e) {
+        if (updateRun.current !== me) return;
+        // A hub with updates turned off answers 409 update_disabled on check too (PRD SET-2 [1.2]).
+        if (e instanceof LibraryError && e.code === "update_disabled") {
+          const next = fromApplyRefusal(e.code, e.message, now());
+          lastCheck = { at: now(), state: next };
+          setUpdate(next);
+          return;
+        }
+        if (process.env.NODE_ENV !== "production") console.warn(`[illyhub] update check: ${errorMessage(e)}`);
+        setUpdate({ kind: "error", message: UPDATE_CHECK_FAILED });
+      }
+    },
+    [callOptions, now],
+  );
+  useEffect(() => {
+    // Deferred like the deep-link effect: the check is network work, not a render-time state sync.
+    const t = setTimeout(() => void checkUpdate(), 0);
+    return () => clearTimeout(t);
+  }, [checkUpdate]);
+  const applyUpdate = async () => {
+    setConfirmUpdate(false);
+    const me = ++updateRun.current;
+    versionBefore.current = useLibrary.getState().settings.data?.hub.version ?? null;
+    setUpdate({ kind: "applying", jobId: null, since: now(), failedPolls: 0 });
+    try {
+      const st = await library.updateApply(callOptions());
+      if (updateRun.current === me) setUpdate((cur) => (cur.kind === "applying" ? { ...cur, jobId: st.job_id } : cur));
+    } catch (e) {
+      if (updateRun.current !== me) return;
+      if (e instanceof LibraryError) {
+        // update_running → adopt the live job; update_disabled → the hub's sentence, not an error;
+        // anything else (e.g. a refused remote URL) → the hub's message verbatim.
+        const next = fromApplyRefusal(e.code, e.message, now());
+        if (next.kind === "disabled") lastCheck = { at: now(), state: next };
+        setUpdate(next);
+        return;
+      }
+      // Transport error: the hub may already be restarting; the status poll below decides.
+    }
+  };
+  // Poll the job while applying. A hub that cannot be reached twice in a row is restarting; the
+  // socket leaving "open" says the same thing sooner.
+  useEffect(() => {
+    if (update.kind !== "applying") return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const st = await library.updateStatus(callOptions());
+        if (!cancelled) setUpdate((cur) => fromStatus(cur, st, now(), versionBefore.current));
+      } catch {
+        if (!cancelled) setUpdate((cur) => onPollUnreachable(cur, now(), versionBefore.current));
+      }
+    };
+    void tick();
+    const id = setInterval(() => void tick(), 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [update.kind, callOptions, now]);
+  useEffect(() => {
+    if (update.kind === "applying" && phase !== "open") setUpdate((cur) => onSocketClosedWhileApplying(cur, now(), versionBefore.current));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reacts to the socket phase only
+  }, [phase]);
+  // While reconnecting, follow the socket: it must leave "open" (hub exited) and come back (new version).
+  useEffect(() => {
+    if (update.kind !== "reconnecting") return;
+    const tick = () => setUpdate((cur) => updateOnPhase(cur, useHub.getState().phase === "open", now(), useLibrary.getState().settings.data?.hub.version ?? null));
+    tick();
+    const id = setInterval(tick, 500);
+    return () => clearInterval(id);
+  }, [update.kind, phase, now]);
+  useEffect(() => {
+    // Back from an update: settings (version, uptime) changed; read the version the hub now runs.
+    if (update.kind === "succeeded") {
+      lastCheck = null;
+      void loadSettings(true).then(() => setUpdate((cur) => (cur.kind === "succeeded" ? { ...cur, version: useLibrary.getState().settings.data?.hub.version ?? cur.version } : cur)));
+    }
+    // A finished job that says "already up to date" comes back from the poll as `checking`: run the
+    // check (only on that edge; a tap already runs its own check).
+    if (update.kind === "checking" && prevUpdateKind.current === "applying") void checkUpdate(true);
+    prevUpdateKind.current = update.kind;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only on the kind edges
+  }, [update.kind]);
+  const logKey = updateLog(update) ? `${update.kind}:${updateLog(update)}` : null;
+  const logOpen = logKey !== null && showLog === logKey;
+
+  // Hub stats (Phase 8, ai-dev #73): one paragraph from GET /api/metrics/summary behind a disclosure.
+  const [stats, setStats] = useState<{ open: boolean; loading: boolean; text: string | null; error: string | null }>({ open: false, loading: false, text: null, error: null });
+  const statsRun = useRef(0);
+  const toggleStats = async () => {
+    if (stats.open) {
+      setStats((cur) => ({ ...cur, open: false }));
+      return;
+    }
+    const me = ++statsRun.current;
+    setStats({ open: true, loading: true, text: null, error: null });
+    try {
+      const text = await library.metricsSummary(callOptions());
+      if (statsRun.current === me) setStats({ open: true, loading: false, text: text || "No stats yet.", error: null });
+    } catch (e) {
+      if (statsRun.current === me) setStats({ open: true, loading: false, text: null, error: errorMessage(e) });
+    }
+  };
 
   useEffect(() => {
     void loadSettings();
@@ -357,12 +511,11 @@ export function SettingsScreen({ initialLink = null }: { initialLink?: Service |
               const svc = a.service;
               const isService = svc === "tidal" || svc === "ytmusic" || svc === "pandora";
               // Live rows are the hub-linked services (Tidal, YouTube Music). Pandora is linked in the
-              // vendor apps, so its row is informational until a later phase.
+              // vendor apps: nothing to link here, so its row is informational and says where it is linked.
               const live = isService && isHubLinked(svc);
-              const laterPhase = isService && !live;
+              const vendorLinked = isService && !live;
               const restoring = a.state === "restoring";
-              // A disabled row reads its reason, never "Connected" (UX U6, U7).
-              const line = laterPhase ? COMING_LATER : accountStatusLine(a);
+              const line = vendorLinked ? pandoraStatusLine(a) : accountStatusLine(a);
               return (
                 <Row
                   key={svc}
@@ -370,7 +523,7 @@ export function SettingsScreen({ initialLink = null }: { initialLink?: Service |
                   title={LABEL[svc]}
                   line={line}
                   skeleton={restoring}
-                  disabled={laterPhase || svc === "heos_account" || restoring}
+                  disabled={vendorLinked || svc === "heos_account" || restoring}
                   onPress={live ? () => (a.linked ? setConfirmUnlink(svc) : void startLink(svc)) : undefined}
                   testId={`account-${svc}`}
                 />
@@ -389,7 +542,39 @@ export function SettingsScreen({ initialLink = null }: { initialLink?: Service |
             }
             testId="hub-status"
           />
-          <Row icon={<RefreshIcon size={22} className="text-secondary" />} title="Check for updates" line={COMING_LATER} disabled testId="check-updates" />
+          <Row
+            icon={<RefreshIcon size={22} className="text-secondary" />}
+            title={UPDATE_ROW_TITLE}
+            line={updateRowLine(update)}
+            wrapLine
+            onPress={updateRowTappable(update) ? () => (update.kind === "available" ? setConfirmUpdate(true) : void checkUpdate(true)) : undefined}
+            disabled={!updateRowTappable(update)}
+            testId="check-updates"
+          />
+          {updateLog(update) ? (
+            <li className="px-4 pb-3" data-testid="update-log">
+              <button type="button" className="flex min-h-target items-center gap-1 text-caption text-secondary" aria-expanded={logOpen} aria-controls="update-log-text" onClick={() => setShowLog(logOpen ? null : logKey)} data-testid="update-log-toggle">
+                {logOpen ? <ChevronUpIcon size={16} /> : <ChevronDownIcon size={16} />}
+                {logOpen ? "Hide the log" : "Show the log"}
+              </button>
+              {logOpen ? (
+                <pre id="update-log-text" className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-control bg-base p-3 text-micro text-secondary" data-testid="update-log-text">
+                  {updateLog(update)}
+                </pre>
+              ) : null}
+            </li>
+          ) : null}
+          <li className="px-4 pb-3" data-testid="hub-stats-row">
+            <button type="button" className="flex min-h-target items-center gap-1 text-caption text-secondary" aria-expanded={stats.open} aria-controls="hub-stats-body" onClick={() => void toggleStats()} data-testid="hub-stats">
+              {stats.open ? <ChevronUpIcon size={16} /> : <ChevronDownIcon size={16} />}
+              {stats.open ? "Hide stats" : "Show stats"}
+            </button>
+            {stats.open ? (
+              <div id="hub-stats-body" className="mt-1" data-testid="hub-stats-body">
+                {stats.loading ? <TextSkeleton lines={2} /> : stats.error ? <p className="text-caption text-error" role="alert">{stats.error}</p> : <p className="text-caption text-secondary">{stats.text}</p>}
+              </div>
+            ) : null}
+          </li>
           {/* Pandora Sync / AirPlay bridge (Phase 7, experimental): status only; nothing here starts playback. */}
           <Row
             icon={<AirPlayGlyph className="h-5 w-5 text-secondary" />}
@@ -476,6 +661,21 @@ export function SettingsScreen({ initialLink = null }: { initialLink?: Service |
         ) : (
           <p className="py-3 text-body text-secondary">No AirPlay outputs yet. Open the Music app on the hub Mac.</p>
         )}
+      </Sheet>
+
+      <Sheet open={confirmUpdate} onClose={() => setConfirmUpdate(false)} title="Update the hub?" testId="update-sheet">
+        <p className="pb-4 text-body text-secondary">
+          {update.kind === "available" && update.summary ? `${update.summary}. ` : ""}
+          The hub restarts when the update lands; playback keeps going on the speakers. Control drops for about a minute; this screen reconnects on its own. If anything fails it goes back to the version it runs now.
+        </p>
+        <div className="flex flex-col gap-2 pb-2">
+          <button type="button" className="flex h-target items-center justify-center rounded-control bg-overlay text-body text-primary" onClick={() => void applyUpdate()} data-testid="confirm-update">
+            Update now
+          </button>
+          <button type="button" className="flex h-target items-center justify-center rounded-control text-body text-secondary" onClick={() => setConfirmUpdate(false)}>
+            Not now
+          </button>
+        </div>
       </Sheet>
 
       <Sheet open={confirmRestart} onClose={() => setConfirmRestart(false)} title="Restart the hub?" testId="restart-sheet">

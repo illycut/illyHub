@@ -1,0 +1,25 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /hub
+    schedule:
+      interval: weekly
+    groups:
+      hub-minor-patch:
+        update-types: [minor, patch]
+    # Upper bounds in pyproject (pyheos<2, soco<1, cryptography<43 for the Intel hub Mac,
+    # ytmusicapi<2) are deliberate; dependabot respects them.
+  - package-ecosystem: npm
+    directory: /app
+    schedule:
+      interval: weekly
+    groups:
+      app-minor-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        update-types: [minor, patch]

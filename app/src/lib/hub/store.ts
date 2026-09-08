@@ -12,7 +12,7 @@
 import { create } from "zustand";
 import { commands as C, sendCommand, type CommandRequest, type Fetcher } from "./commands";
 import { newCorrelationId } from "./correlation";
-import type { ContentRef } from "./library";
+import { asQueue, library, type ContentRef, type Queue, type RepeatMode } from "./library";
 import type { ConnectionPhase } from "./socket";
 import { applyDelta, asPandoraSync, emptyPandoraSync, emptyState, type DeltaMessage } from "./state";
 import type { Ack, ArtRef, HubState, PlayState, Position, ServerMessage, TransportAction, Vendor } from "./types";
@@ -24,6 +24,7 @@ import { warningToast } from "../pandora";
 import { PANDORA_SYNC_FAILED, PANDORA_SYNC_STARTED, PANDORA_SYNC_STOPPED } from "../airplay";
 import { SERVICE_LABEL, isHubLinked } from "../services";
 import { SYNC_UNSUPPORTED_TOAST, transportTargetFor } from "../sync";
+import { playModeOf } from "../playMode";
 
 /** What `play()` needs from a library item to update the UI optimistically. */
 export interface PlayItem {
@@ -76,6 +77,8 @@ export interface HubStore {
    * what the user asked for instead of flipping on the transitional delta.
    */
   intents: Record<string, PlayState>;
+  /** Sides whose `GET /api/queue/{side}` fetch is in flight (the sheet shows a skeleton meanwhile). */
+  queueLoading: Record<string, boolean>;
   /** Hook the socket installs so the store can request a resync. */
   requestResync: () => void;
   /** What the play/pause icon shows for a side: the held intent while the hub is transitional, else the hub's state. */
@@ -133,6 +136,18 @@ export interface HubStore {
    */
   pandoraSyncStart(sideIds: string[]): Promise<Ack>;
   pandoraSyncStop(): Promise<Ack>;
+  /**
+   * Up next (Phase 8): jump to a queue entry. Optimistically marks the side playing and moves the
+   * queue's `current_index`; the hub's `queues.<side>` and now-playing deltas confirm.
+   */
+  queueJump(sideId: string, index: number): Promise<Ack>;
+  /**
+   * Fetch a side's queue when the hub has not streamed one (hubs that predate the `queues` delta
+   * path, or the first open before any delta). Stored under `state.queues` like a delta would be.
+   */
+  loadQueue(sideId: string): Promise<void>;
+  /** Shuffle / repeat for a side; optimistic on `side.play_mode`. */
+  setPlayMode(sideId: string, mode: { shuffle?: boolean; repeat?: RepeatMode }): Promise<Ack>;
 
   /** Test seams. */
   _deps: {
@@ -161,6 +176,7 @@ export const useHub = create<HubStore>((set, get) => ({
   selectedTargets: [],
   pending: {},
   intents: {},
+  queueLoading: {},
   requestResync: () => {},
   _deps: defaultDeps,
 
@@ -168,7 +184,7 @@ export const useHub = create<HubStore>((set, get) => ({
     if (msg.type === "snapshot") {
       // A snapshot is authoritative: every optimistic command is superseded.
       for (const p of Object.values(get().pending)) if (p.timer) get()._deps.clearTimer(p.timer);
-      const state: HubState = { ...msg.state, pandora_sync: asPandoraSync(msg.state.pandora_sync) };
+      const state: HubState = { ...msg.state, pandora_sync: asPandoraSync(msg.state.pandora_sync), queues: normaliseQueues(msg.state.queues) };
       set({ state, pending: {}, intents: settleIntents(get().intents, state) });
       return;
     }
@@ -260,6 +276,7 @@ export const useHub = create<HubStore>((set, get) => ({
         state_version: 0,
         error: { code: "adapter_disconnected", message, target: null, correlation_id: cid },
         partial: [],
+        latency_ms: 0,
       } as Ack;
     }
   },
@@ -578,6 +595,116 @@ export const useHub = create<HubStore>((set, get) => ({
     return ack;
   },
 
+  async queueJump(sideId, index) {
+    const before = get().state;
+    const patch: Patch = (s) => {
+      const side = s.sides[sideId];
+      if (!side) return s;
+      const q = s.queues?.[sideId];
+      const item = q?.items.find((it) => it.index === index);
+      // Hold the intent so a transient `unknown` cannot flip the icon (same rule as transport).
+      set((st) => ({ intents: { ...st.intents, [sideId]: "play" } }));
+      const queues = q ? { ...(s.queues ?? {}), [sideId]: { ...q, current_index: index } } : s.queues;
+      const prev = s.now_playing[sideId];
+      const now_playing = item
+        ? {
+            ...s.now_playing,
+            [sideId]: {
+              title: item.title,
+              artist: item.artist,
+              album: item.album ?? prev?.album ?? null,
+              art: item.art.url ? item.art : (prev?.art ?? item.art),
+              source: prev?.source ?? q?.source ?? null,
+              seekable: prev?.seekable ?? true,
+              supports_next: true,
+              supports_prev: true,
+              duration_ms: item.duration_ms,
+              track_id: item.track_id,
+              content_ref: item.content_ref,
+            },
+          }
+        : s.now_playing;
+      return {
+        ...s,
+        sides: { ...s.sides, [sideId]: { ...side, play_state: "play" } },
+        queues,
+        now_playing,
+        positions: item ? { ...s.positions, [sideId]: { position_ms: 0, reported_at: new Date(get().hubNow()).toISOString(), confidence: 0.5 } } : s.positions,
+      };
+    };
+    const name = get().state?.sides[sideId]?.name ?? "that room";
+    const ack = await get().dispatch(C.queueJump(sideId, index), patch, `Play from the queue on ${name}`, { onFail: "keep" });
+    if (ack.ok) {
+      toastNotes(ack, get().state?.sides);
+      return ack;
+    }
+    // Refused (invalid_argument, unsupported_action, …): the hub touched nothing, so undo this side's
+    // optimistic entries locally and say why; a resync would also do, but the socket may be down.
+    set((s) => {
+      if (!s.state || !before) return {};
+      const st = s.state;
+      const restore = <K extends "sides" | "now_playing" | "positions">(key: K) => {
+        const bucket = { ...(st[key] as Record<string, unknown>) };
+        const prev = (before[key] as Record<string, unknown>)[sideId];
+        if (prev === undefined) delete bucket[sideId];
+        else bucket[sideId] = prev;
+        return bucket;
+      };
+      const queues = { ...(st.queues ?? {}) };
+      const prevQ = before.queues?.[sideId];
+      if (prevQ === undefined) delete queues[sideId];
+      else queues[sideId] = prevQ;
+      const intents = { ...s.intents };
+      delete intents[sideId];
+      return { state: { ...st, sides: restore("sides") as HubState["sides"], now_playing: restore("now_playing") as HubState["now_playing"], positions: restore("positions") as HubState["positions"], queues }, intents };
+    });
+    toast(ack.error?.message ?? `${name} didn't jump to that track.`);
+    return ack;
+  },
+
+  async loadQueue(sideId) {
+    // One fetch per side at a time; a delta that lands during the await wins over the REST answer.
+    if (get().queueLoading[sideId]) return;
+    const before = get().state?.queues?.[sideId];
+    set((st) => ({ queueLoading: { ...st.queueLoading, [sideId]: true } }));
+    try {
+      const q = await library.queue(sideId, { fetcher: get()._deps.fetcher });
+      set((st) => {
+        if (!st.state) return {};
+        if (st.state.queues?.[sideId] !== before) return {}; // stale: the hub streamed a newer queue meanwhile
+        return { state: { ...st.state, queues: { ...(st.state.queues ?? {}), [sideId]: q } } };
+      });
+    } catch {
+      // The sheet shows its empty line; the next `queues.<side>` delta (or reopen) fills it.
+    } finally {
+      set((st) => {
+        const rest = { ...st.queueLoading };
+        delete rest[sideId];
+        return { queueLoading: rest };
+      });
+    }
+  },
+
+  async setPlayMode(sideId, mode) {
+    const before = get().state?.sides[sideId];
+    const patch: Patch = (s) => {
+      const side = s.sides[sideId];
+      if (!side) return s;
+      const next = { ...playModeOf(side), ...mode };
+      return { ...s, sides: { ...s.sides, [sideId]: { ...side, play_mode: next } } };
+    };
+    const label = mode.shuffle !== undefined ? (mode.shuffle ? "Shuffle on" : "Shuffle off") : mode.repeat === "off" ? "Repeat off" : mode.repeat === "all" ? "Repeat all" : "Repeat one";
+    const ack = await get().dispatch(C.playMode(sideId, mode), patch, label, { onFail: "keep" });
+    if (ack.ok) {
+      toastNotes(ack, get().state?.sides);
+      return ack;
+    }
+    // Refused (sync_active while Sync Play runs, unsupported_action): put the side's mode back and say why.
+    set((s) => (s.state && before && s.state.sides[sideId] ? { state: { ...s.state, sides: { ...s.state.sides, [sideId]: { ...s.state.sides[sideId]!, play_mode: before.play_mode } } } } : {}));
+    toast(ack.error?.message ?? `${label} didn't get confirmed by the hub.`);
+    return ack;
+  },
+
   _reset() {
     for (const p of Object.values(get().pending)) if (p.timer) get()._deps.clearTimer(p.timer);
     set({
@@ -590,11 +717,20 @@ export const useHub = create<HubStore>((set, get) => ({
       selectedTargets: [],
       pending: {},
       intents: {},
+      queueLoading: {},
       requestResync: () => {},
       _deps: defaultDeps,
     });
   },
 }));
+
+/** Snapshot `queues` (absent on older hubs) through the queue normaliser. */
+function normaliseQueues(x: unknown): Record<string, Queue> {
+  if (!x || typeof x !== "object") return {};
+  const out: Record<string, Queue> = {};
+  for (const [k, v] of Object.entries(x as Record<string, unknown>)) out[k] = asQueue(v);
+  return out;
+}
 
 /** Drop every held intent whose side the hub now reports in a settled state (play/pause/stop). */
 function settleIntents(intents: Record<string, PlayState>, state: HubState): Record<string, PlayState> {

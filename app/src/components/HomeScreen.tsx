@@ -1,17 +1,18 @@
 "use client";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArtCard } from "./ArtCard";
 import { RecentsRail } from "./RecentsRail";
+import { SearchBar, SearchResultsView, type SearchState } from "./Search";
 import { GearIcon, LayersIcon } from "./icons";
 import { ArtSkeleton, ConnectCard } from "./Skeleton";
 import { useLibrary, onRefocus } from "@/lib/library/store";
 import { useChrome, type PlayRequest } from "@/lib/ui/chrome";
 import { stationSubtitle, stationsSectionModel, unlinkedVendors } from "@/lib/pandora";
 import { useHub } from "@/lib/hub/store";
-import { refKey, type AccountStatus, type ContentRef, type Home, type HistoryItem, type LibraryItem, type Section, type Service } from "@/lib/hub/library";
+import { refKey, type AccountStatus, type ContentRef, type Home, type HistoryItem, type LibraryItem, type Section, type Service, type TrackItem } from "@/lib/hub/library";
 import { HUB_LINKED_SERVICES, SERVICE_LABEL, isHubLinked } from "@/lib/services";
 
 export function detailHref(ref: ContentRef): string {
@@ -164,18 +165,49 @@ export function HomeScreen() {
   const playRecent = useCallback((item: HistoryItem) => requestPlay(historyToPlayRequest(item, data)), [requestPlay, data]);
   const goDetail = useCallback((item: { content_ref: ContentRef }) => router.push(detailHref(item.content_ref)), [router]);
   const goConnect = useCallback((service: Service) => router.push(`/settings?link=${service}`), [router]);
+  // Search (Phase 8): while a query is active the results replace the sections below the header.
+  const [search, setSearch] = useState<SearchState>({ phase: "idle" });
+  const [searchOpen, setSearchOpen] = useState(false);
+  const playTrack = useCallback(
+    (t: TrackItem) =>
+      requestPlay({ content_ref: t.content_ref, title: t.title, subtitle: t.artist ?? t.subtitle, art: t.art, preferred: [], availability: t.availability }),
+    [requestPlay],
+  );
+  // The field being open hides the header chrome; a query being active swaps the sections for results.
+  const searching = search.phase !== "idle";
+  // The sections give way to results while a query is active; the page scroll position is saved on
+  // the way in and restored on the way out so Cancel lands where the user was.
+  const savedScroll = useRef<number | null>(null);
+  const wasSearching = useRef(false);
+  useEffect(() => {
+    if (searching && !wasSearching.current) {
+      savedScroll.current = window.scrollY;
+      window.scrollTo(0, 0);
+    } else if (!searching && wasSearching.current && savedScroll.current !== null) {
+      const y = savedScroll.current;
+      savedScroll.current = null;
+      requestAnimationFrame(() => window.scrollTo(0, y));
+    }
+    wasSearching.current = searching;
+  }, [searching]);
 
   return (
     <div className="min-h-dvh bg-base pb-[calc(var(--size-mini-player)+var(--safe-bottom)+var(--space-4))]" data-testid="home">
-      <header className="screen-margin flex h-[calc(var(--size-target)+var(--space-2)+var(--safe-top))] items-end justify-between pt-safe">
-        <h1 className="pb-2 text-title-1 text-primary">illyHub</h1>
-        <div className="flex items-center gap-2">
-          <button type="button" className="hit-target flex items-center justify-center rounded-control text-secondary" aria-label="Zones" onClick={() => setZonesOpen(true)}>
-            <LayersIcon />
-          </button>
-          <Link href="/settings" className="hit-target flex items-center justify-center rounded-control text-secondary" aria-label="Settings" data-testid="open-settings">
-            <GearIcon />
-          </Link>
+      <header className="screen-margin flex h-[calc(var(--size-target)+var(--space-2)+var(--safe-top))] items-end justify-between gap-2 pt-safe">
+        {/* The h1 stays in the outline while searching (visually hidden), so the page never loses its heading. */}
+        <h1 className={searchOpen ? "sr-only" : "pb-2 text-title-1 text-primary"}>{searchOpen ? "Search illyHub" : "illyHub"}</h1>
+        <div className={`flex items-center gap-2 pb-1 ${searchOpen ? "flex-1" : ""}`}>
+          <SearchBar open={searchOpen} onOpenChange={setSearchOpen} onState={setSearch} />
+          {searchOpen ? null : (
+            <>
+              <button type="button" className="hit-target flex items-center justify-center rounded-control text-secondary" aria-label="Zones" onClick={() => setZonesOpen(true)}>
+                <LayersIcon />
+              </button>
+              <Link href="/settings" className="hit-target flex items-center justify-center rounded-control text-secondary" aria-label="Settings" data-testid="open-settings">
+                <GearIcon />
+              </Link>
+            </>
+          )}
         </div>
       </header>
       {home.error && !data ? (
@@ -184,6 +216,10 @@ export function HomeScreen() {
         </p>
       ) : null}
       <main className="screen-margin flex flex-col gap-8 pt-4">
+        {searching ? (
+          <SearchResultsView state={search} onPlay={playItem} onPlayStation={playStation} onPlayTrack={playTrack} onDetail={goDetail} />
+        ) : (
+          <>
         <section aria-labelledby="recents-h">
           <h2 id="recents-h" className="text-title-2 text-primary">Recently played</h2>
           <div className="mt-3">
@@ -245,6 +281,8 @@ export function HomeScreen() {
             </div>
           </section>
         ) : null}
+          </>
+        )}
       </main>
     </div>
   );

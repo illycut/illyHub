@@ -39,6 +39,8 @@ from .messages import (
     NOT_AVAILABLE_NOT_LINKED,
     NOT_AVAILABLE_UNSUPPORTED,
     PANDORA_CONCURRENT_MSG,
+    PLAY_MODE_LOCKED,
+    QUEUE_UNAVAILABLE,
     STATION_AUTH_FAULT,
     STATION_NOT_IN_ACCOUNT,
     UNSUPPORTED_ON_VENDOR,
@@ -47,6 +49,9 @@ from .messages import (
 from .state import (
     HubState,
     Player,
+    PlayMode,
+    QueueEntry,
+    QueueState,
     Side,
     StateStore,
     Zone,
@@ -163,6 +168,7 @@ class Ack(BaseModel):
         default_factory=dict,
         description="transport acks: side id -> the action actually sent (toggle resolved)",
     )
+    latency_ms: float = Field(default=0.0, description="hub-side time from request to ack")
 
 
 TRANSPORT_KINDS = ("transport",)
@@ -332,6 +338,10 @@ class CommandRouter:
         self._linked_ratios: dict[str, float] = {}
         self._linked_written: dict[str, int] = {}  # last level the linked master wrote
         self.latency = LatencyTracker()
+        # Set by the API wiring: whether a Sync Play session is live (play-mode changes are
+        # refused while the engine holds both sides to one mode).
+        self.sync_active: Callable[[], bool] = lambda: False
+        self.queue_max = 200
 
     # -- wiring ---------------------------------------------------------------------
 
@@ -843,6 +853,113 @@ class CommandRouter:
         except Exception:  # noqa: BLE001
             return False
 
+    # -- queue and play mode (Phase 8, ai-dev #77 / #79) -----------------------------------
+
+    async def queue(self, side_id: str) -> QueueState:
+        """Read a side's native queue from its coordinator and publish it as ``queues.<side>``.
+        Raises :class:`CommandError` (unknown_target, adapter_disconnected, unsupported_action)."""
+        side = self.state.sides.get(side_id)
+        if side is None:
+            raise CommandError("unknown_target", f"Nothing is called {side_id!r}.", side_id)
+        adapter = self._adapter_for(side.vendor, side_id)
+        try:
+            entries, total = await adapter.get_queue(side.coordinator_player_id, self.queue_max)
+        except UnsupportedCommandError as exc:
+            raise CommandError(
+                "unsupported_action", QUEUE_UNAVAILABLE.format(side=side.name), side_id
+            ) from exc
+        except CommandError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - vendor libraries raise their own types
+            log.warning("queue read failed", extra={"extra": {"side": side_id, "error": str(exc)}})
+            raise CommandError(
+                "vendor_error", f"{side.name} didn't return its queue.", side_id
+            ) from exc
+        np = self.state.now_playing.get(side_id)
+        current = None
+        if np is not None and np.track_id:
+            current = next((e.index for e in entries if e.track_id == np.track_id), None)
+        queue = QueueState(
+            items=entries,
+            current_index=current,
+            source=np.source if np else None,
+            total=total,
+            truncated=total is None or total > len(entries),
+        )
+        self.store.set_queue(side_id, queue)
+        return queue
+
+    async def queue_jump(self, target: str, index: int) -> Ack:
+        async def run(out: _Outcomes) -> None:
+            if index < 0:
+                raise CommandError(
+                    "invalid_argument", "Queue position must be zero or more.", target
+                )
+            for side in resolve_sides(self.state, target):
+                await out.attempt(side.id, self._jump_side(side, index, target))
+
+        return await self._execute("queue_jump", target, run)
+
+    async def _jump_side(self, side: Side, index: int, target: str) -> None:
+        adapter = self._adapter_for(side.vendor, target)
+        self._require_online(side.coordinator_player_id, target)
+        queued = self.state.queues.get(side.id)
+        if queued is not None and queued.total is not None and index >= queued.total:
+            raise CommandError(
+                "invalid_argument", f"{side.name}'s queue has {queued.total} tracks.", target
+            )
+        try:
+            await self._call(
+                lambda: adapter.play_queue_index(side.coordinator_player_id, index),
+                "queue_jump",
+                target,
+                side.name,
+                vendor=side.vendor,
+            )
+        except CommandError as exc:
+            if exc.code == "vendor_error" and isinstance(exc.__cause__, IndexError):
+                raise CommandError(
+                    "invalid_argument", f"{side.name}'s queue is shorter than that.", target
+                ) from exc
+            raise
+
+    async def play_mode(
+        self, target: str, *, shuffle: bool | None = None, repeat: str | None = None
+    ) -> Ack:
+        async def run(out: _Outcomes) -> None:
+            if shuffle is None and repeat is None:
+                raise CommandError(
+                    "invalid_argument", "Choose shuffle, repeat, or both to change.", target
+                )
+            if self.sync_active():
+                raise CommandError("sync_active", PLAY_MODE_LOCKED, target)
+            for side in resolve_sides(self.state, target):
+                current = side.play_mode
+                mode = PlayMode(
+                    shuffle=current.shuffle if shuffle is None else shuffle,
+                    repeat=current.repeat if repeat is None else repeat,  # type: ignore[arg-type]
+                )
+                await out.attempt(side.id, self._play_mode_side(side, mode, target))
+
+        return await self._execute("play_mode", target, run)
+
+    async def _play_mode_side(self, side: Side, mode: PlayMode, target: str) -> None:
+        adapter = self._adapter_for(side.vendor, target)
+        self._require_online(side.coordinator_player_id, target)
+        await self._call(
+            lambda: adapter.set_play_mode(side.coordinator_player_id, mode),
+            "play_mode",
+            target,
+            side.name,
+            vendor=side.vendor,
+        )
+        for pid in side.member_ids:
+            self.store.set_play_mode(pid, mode)
+
+    def queue_entries(self, side_id: str) -> list[QueueEntry]:
+        queued = self.state.queues.get(side_id)
+        return list(queued.items) if queued else []
+
     # -- internals ------------------------------------------------------------------
 
     @property
@@ -1018,6 +1135,7 @@ class CommandRouter:
             applied=list(out.applied),
             resolved=dict(out.resolved),
             warnings=list(out.warnings),
+            latency_ms=latency_ms,
         )
         log.info(
             "command",
@@ -1055,6 +1173,8 @@ def _kind(action: str) -> str:
         return "seek"
     if action in ("volume", "linked_volume", "mute"):
         return "volume"
+    if action in ("queue_jump", "play_mode"):
+        return "transport"
     return action
 
 
@@ -1079,6 +1199,8 @@ def _verb(action: str) -> str:
         "sync_play": "Sync Play",
         "sync_stop": "Sync Play stop",
         "sync_retry": "Sync Play retry",
+        "queue_jump": "Jump in the queue",
+        "play_mode": "Shuffle/repeat",
     }.get(action, action.capitalize())
 
 

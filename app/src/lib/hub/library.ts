@@ -6,6 +6,7 @@
  * logged in development so contract drift shows up early.
  */
 import { hubHttpBase } from "./config";
+import type { components } from "./openapi";
 import type { AirPlayOutput, ArtRef } from "./types";
 
 export type Service = "tidal" | "ytmusic" | "pandora";
@@ -166,6 +167,80 @@ export interface AuthStart {
   interval_s: number;
 }
 
+
+// ---------------------------------------------------------------- Phase 8 shapes (queue, search, play mode, update, metrics)
+
+/** One entry of a side's queue (docs/api.md "Queue"; `GET /api/queue/{side_id}`). */
+export interface QueueItem {
+  /** Hub canonical 0-based position; `POST /api/queue/jump` takes it as `index`. */
+  index: number;
+  title: string;
+  artist: string | null;
+  album: string | null;
+  duration_ms: number | null;
+  art: ArtRef;
+  track_id: string | null;
+  content_ref: ContentRef | null;
+}
+
+export interface Queue {
+  items: QueueItem[];
+  /** Index of the entry now playing, or null when the hub cannot tell. */
+  current_index: number | null;
+  /** Service badge for the queue as a whole (tidal, ytmusic, pandora), or null. */
+  source: string | null;
+  /** The hub capped the list (HUB_QUEUE_MAX). */
+  truncated: boolean;
+}
+
+/** `Side.play_mode` and `POST /api/playmode` (docs/api.md "Play mode"): the generated schema. */
+export type PlayMode = components["schemas"]["PlayMode"];
+export type RepeatMode = PlayMode["repeat"];
+
+/** `GET /api/search?q=` (docs/api.md "Search"): grouped hits plus per-service failures. */
+export interface SearchResults {
+  query: string;
+  albums: LibraryItem[];
+  playlists: LibraryItem[];
+  tracks: TrackItem[];
+  stations: LibraryItem[];
+  /** Services the hub asked (linked at the time). */
+  services: Service[];
+  /** Services that did not answer within the hub's deadline, with the hub's sentence. */
+  errors: Partial<Record<Service, string>>;
+  /** True when at least one linked service failed. */
+  partial: boolean;
+}
+
+/** `GET /api/hub/update/check` (docs/api.md "Update", PRD SET-2). */
+export interface UpdateCheck {
+  current: { version: string | null; commit: string | null; branch: string | null };
+  /**
+   * `summary` is the hub's list of commit subjects, joined for display; `tracking` names the branch
+   * the hub compared against (the current branch, or `HUB_UPDATE_BRANCH` when it has no upstream).
+   */
+  remote: { commit: string | null; ahead_by: number; summary: string | null; tracking: string | null };
+  available: boolean;
+  last_checked_at: string | null;
+  /** One sentence (`templates.hub.update_check_failed`) when git failed, or null. Never shown raw. */
+  error: string | null;
+}
+
+/** `up_to_date` and `failed` leave the hub running; `succeeded` and `rolled_back` make it exit for launchd. */
+export type UpdateJobState = components["schemas"]["UpdateStatus"]["state"];
+
+/** `GET /api/hub/update/status` (docs/api.md "Update"). */
+export interface UpdateStatus {
+  state: UpdateJobState;
+  /** The hub's `log_tail` lines, joined. */
+  log_tail: string;
+  started_at: string | null;
+  finished_at: string | null;
+  job_id: string | null;
+  /** The hub's one-line outcome, when it gives one. */
+  message: string | null;
+}
+
 export class LibraryError extends Error {
   code: string;
   status: number;
@@ -232,6 +307,23 @@ async function getJson<T>(path: string, opts: CallOptions): Promise<T> {
   const body = await parseBody(res);
   if (!res.ok) raise(res, body);
   return body as T;
+}
+
+/** GET that accepts JSON or plain text (the metrics summary is prose). */
+async function getJsonOrText(path: string, opts: CallOptions): Promise<unknown> {
+  const res = await (opts.fetcher ?? fetch)(hubHttpBase() + path, {
+    headers: { accept: "application/json, text/plain" },
+    signal: timeoutSignal(opts.timeoutMs ?? REQUEST_TIMEOUT_MS),
+  });
+  const text = await res.text();
+  let body: unknown = text;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = text;
+  }
+  if (!res.ok) raise(res, typeof body === "string" ? null : body);
+  return body;
 }
 
 async function postJson<T>(path: string, body: unknown, opts: CallOptions): Promise<T> {
@@ -473,6 +565,104 @@ export function asAuthStart(x: unknown): AuthStart {
   };
 }
 
+
+// ---------------------------------------------------------------- Phase 8 normalisers
+
+export function asQueueItem(x: unknown, position: number): QueueItem {
+  const r = (x ?? {}) as Record<string, unknown>;
+  warnUnknownKeys(r, ["index", "title", "artist", "album", "duration_ms", "art", "track_id", "content_ref"], "QueueItem");
+  return {
+    index: typeof r.index === "number" ? r.index : position,
+    title: String(r.title ?? ""),
+    artist: (r.artist as string | null | undefined) ?? null,
+    album: (r.album as string | null | undefined) ?? null,
+    duration_ms: (r.duration_ms as number | null | undefined) ?? null,
+    art: asArt(r.art),
+    track_id: (r.track_id as string | null | undefined) ?? null,
+    content_ref: (r.content_ref as ContentRef | null | undefined) ?? null,
+  };
+}
+
+/** A queue payload (REST or the `queues.<side>` delta path); null/garbage reads as an empty queue. */
+export function asQueue(x: unknown): Queue {
+  const r = (x ?? {}) as Record<string, unknown>;
+  // Matches the hub's QueueState (items, current_index, source, truncated, total, updated_at).
+  warnUnknownKeys(r, ["items", "current_index", "source", "truncated", "total", "updated_at", "side_id"], "Queue");
+  return {
+    items: Array.isArray(r.items) ? (r.items as unknown[]).map(asQueueItem) : [],
+    current_index: typeof r.current_index === "number" ? r.current_index : null,
+    source: (r.source as string | null | undefined) ?? null,
+    truncated: r.truncated === true,
+  };
+}
+
+const REPEATS = new Set(["off", "one", "all"]);
+/** `Side.play_mode`; absent reads as shuffle off / repeat off (a hub that predates play modes). */
+export function asPlayMode(x: unknown): PlayMode {
+  const r = (x ?? {}) as Record<string, unknown>;
+  warnUnknownKeys(r, ["shuffle", "repeat"], "PlayMode");
+  return { shuffle: r.shuffle === true, repeat: typeof r.repeat === "string" && REPEATS.has(r.repeat) ? (r.repeat as RepeatMode) : "off" };
+}
+
+export function asSearchResults(x: unknown): SearchResults {
+  const r = (x ?? {}) as Record<string, unknown>;
+  warnUnknownKeys(r, ["query", "albums", "playlists", "tracks", "stations", "services", "errors", "partial"], "SearchResults");
+  const list = (v: unknown) => (Array.isArray(v) ? (v as unknown[]).map(asItem) : []);
+  const errors: Partial<Record<Service, string>> = {};
+  if (r.errors && typeof r.errors === "object") {
+    for (const [k, v] of Object.entries(r.errors as Record<string, unknown>)) if (SERVICES.has(k) && typeof v === "string") errors[k as Service] = v;
+  }
+  const services = Array.isArray(r.services) ? (r.services as unknown[]).filter((x): x is Service => typeof x === "string" && SERVICES.has(x)) : [];
+  return {
+    query: String(r.query ?? ""),
+    albums: list(r.albums),
+    playlists: list(r.playlists),
+    tracks: Array.isArray(r.tracks) ? (r.tracks as unknown[]).map(asTrack) : [],
+    stations: list(r.stations),
+    services,
+    errors,
+    partial: r.partial === true || Object.keys(errors).length > 0,
+  };
+}
+
+export function asUpdateCheck(x: unknown): UpdateCheck {
+  const r = (x ?? {}) as Record<string, unknown>;
+  warnUnknownKeys(r, ["current", "remote", "available", "last_checked_at", "error"], "UpdateCheck");
+  const cur = (r.current ?? {}) as Record<string, unknown>;
+  const rem = (r.remote ?? {}) as Record<string, unknown>;
+  warnUnknownKeys(cur, ["version", "commit", "branch"], "UpdateCheck.current");
+  warnUnknownKeys(rem, ["commit", "ahead_by", "summary", "tracking"], "UpdateCheck.remote");
+  const lines = Array.isArray(rem.summary) ? (rem.summary as unknown[]).map(String).filter(Boolean) : typeof rem.summary === "string" && rem.summary ? [rem.summary] : [];
+  return {
+    current: { version: (cur.version as string | null | undefined) ?? null, commit: (cur.commit as string | null | undefined) ?? null, branch: (cur.branch as string | null | undefined) ?? null },
+    remote: { commit: (rem.commit as string | null | undefined) ?? null, ahead_by: typeof rem.ahead_by === "number" ? rem.ahead_by : 0, summary: lines.length ? lines.join(" · ") : null, tracking: (rem.tracking as string | null | undefined) ?? null },
+    available: r.available === true,
+    last_checked_at: (r.last_checked_at as string | null | undefined) ?? null,
+    error: (r.error as string | null | undefined) ?? null,
+  };
+}
+
+const JOB_STATES = new Set<string>(["idle", "running", "succeeded", "up_to_date", "failed", "rolled_back"] satisfies UpdateJobState[]);
+export function asUpdateStatus(x: unknown): UpdateStatus {
+  const r = (x ?? {}) as Record<string, unknown>;
+  warnUnknownKeys(r, ["state", "log_tail", "started_at", "finished_at", "job_id", "message"], "UpdateStatus");
+  return {
+    state: typeof r.state === "string" && JOB_STATES.has(r.state) ? (r.state as UpdateJobState) : "idle",
+    log_tail: typeof r.log_tail === "string" ? r.log_tail : Array.isArray(r.log_tail) ? (r.log_tail as unknown[]).map(String).join("\n") : "",
+    started_at: (r.started_at as string | null | undefined) ?? null,
+    finished_at: (r.finished_at as string | null | undefined) ?? null,
+    job_id: (r.job_id as string | null | undefined) ?? null,
+    message: (r.message as string | null | undefined) ?? null,
+  };
+}
+
+/** `GET /api/metrics/summary`: either `{summary}` JSON or plain text. */
+export function asMetricsSummary(x: unknown): string {
+  if (typeof x === "string") return x.trim();
+  const r = (x ?? {}) as Record<string, unknown>;
+  return typeof r.summary === "string" ? r.summary.trim() : typeof r.text === "string" ? r.text.trim() : "";
+}
+
 // ---------------------------------------------------------------- calls
 
 export const library = {
@@ -488,4 +678,15 @@ export const library = {
   },
   /** AirPlay bridge state and the Music app's outputs (Phase 7, read-only in the app). */
   airplay: async (opts: CallOptions = {}): Promise<AirPlayStatus> => asAirPlayStatus(await getJson("/api/airplay", opts)),
+  /** A side's queue (Phase 8, docs/api.md "Queue"); live changes arrive on the `queues.<side>` delta path. */
+  queue: async (sideId: string, opts: CallOptions = {}): Promise<Queue> => asQueue(await getJson(`/api/queue/${encodeURIComponent(sideId)}`, opts)),
+  /** Fan-out search across linked services (Phase 8, docs/api.md "Search"); partial results carry `errors`. */
+  search: async (q: string, opts: CallOptions & { limit?: number } = {}): Promise<SearchResults> =>
+    asSearchResults(await getJson(`/api/search?q=${encodeURIComponent(q)}${opts.limit ? `&limit=${opts.limit}` : ""}`, opts)),
+  /** Self-update (PRD SET-2, docs/api.md "Update"). */
+  updateCheck: async (opts: CallOptions = {}): Promise<UpdateCheck> => asUpdateCheck(await getJson("/api/hub/update/check", opts)),
+  updateApply: async (opts: CallOptions = {}): Promise<UpdateStatus> => asUpdateStatus(await postJson("/api/hub/update/apply", undefined, opts)),
+  updateStatus: async (opts: CallOptions = {}): Promise<UpdateStatus> => asUpdateStatus(await getJson("/api/hub/update/status", opts)),
+  /** One-paragraph hub stats (docs/api.md "Metrics"). */
+  metricsSummary: async (opts: CallOptions = {}): Promise<string> => asMetricsSummary(await getJsonOrText("/api/metrics/summary", opts)),
 };

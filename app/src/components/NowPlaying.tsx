@@ -11,6 +11,9 @@ import { ZoneDots } from "./ZoneDots";
 import { SyncChip } from "./SyncChip";
 import { PandoraSyncChip } from "./PandoraSyncChip";
 import { Slider } from "./Slider";
+import { PlayOptionsRow } from "./PlayOptionsRow";
+import { QueueSheet } from "./QueueSheet";
+import { playModeOf, playModesHidden } from "@/lib/playMode";
 import { PANDORA_SYNC, PANDORA_SYNC_CONTROLLED, PANDORA_SYNC_STOP, bridgedSide, pandoraSyncLabel, pandoraSyncLabelShort } from "@/lib/airplay";
 import { TextSkeleton } from "./Skeleton";
 import { artUrl } from "@/lib/hub/config";
@@ -79,6 +82,13 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
   const hubNow = useHub((s) => s.hubNow);
   const reduced = useReducedMotion();
   const [volumeOpen, setVolumeOpen] = useState(false);
+  const [queueOpen, setQueueOpen] = useState(false);
+  // Play modes (Phase 8): read from the side as two primitives (a fresh object per select would
+  // re-render forever); a hub that predates them reads as both off.
+  const shuffle = useHub((s) => playModeOf(sideId ? s.state?.sides[sideId] : undefined).shuffle);
+  const repeat = useHub((s) => playModeOf(sideId ? s.state?.sides[sideId] : undefined).repeat);
+  const playMode = useMemo(() => ({ shuffle, repeat }), [shuffle, repeat]);
+  const setPlayMode = useHub((s) => s.setPlayMode);
   const setZonesOpen = useChrome((s) => s.setZonesOpen);
   const requestPlay = useChrome((s) => s.requestPlay);
 
@@ -272,7 +282,7 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
             />
           </div>
 
-          <div className="transport-margin">
+          <div className="transport-margin flex flex-col gap-3">
             <TransportRow
               playState={playState}
               caps={caps}
@@ -285,6 +295,18 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
               onForward15={() => side && void skip(side.id, 15_000)}
               onNext={() => side && void transport("next", side.id)}
             />
+            {/* Shuffle · Up next · repeat (Phase 8). Hidden entirely while the hub Mac owns playback. */}
+            {bridged ? null : (
+              <PlayOptionsRow
+                mode={playMode}
+                modesHidden={playModesHidden(np)}
+                syncActive={syncing}
+                disabled={!side}
+                onShuffle={(on) => side && void setPlayMode(side.id, { shuffle: on })}
+                onRepeat={(repeat) => side && void setPlayMode(side.id, { repeat })}
+                onUpNext={() => setQueueOpen(true)}
+              />
+            )}
           </div>
 
           <div className="screen-margin np-landscape:px-0 mx-auto flex w-full max-w-hero items-center gap-3">
@@ -314,6 +336,7 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
       </div>
 
       <VolumeSheet open={volumeOpen} onClose={() => setVolumeOpen(false)} />
+      <QueueSheet open={queueOpen} sideId={sideId} onClose={() => setQueueOpen(false)} />
     </section>
   );
 }

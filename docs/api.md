@@ -63,6 +63,10 @@ YouTube Music (Phase 6) land later.
 | GET | `/api/history?limit=` | `{items: HistoryItem[]}` (see **History and home**) |
 | GET | `/api/home` | home-screen aggregate (see **History and home**) |
 | GET | `/api/settings` | accounts, hub info, hardware (see **Settings**) |
+| GET | `/api/queue/{side_id}` | the side's native queue (see **Queue and play mode**) |
+| GET | `/api/search?q=&limit=` | grouped results across the linked services (see **Search**) |
+| GET | `/api/metrics`, `/api/metrics/summary` | uptime, command latency, Sync Play numbers (see **Metrics**) |
+| GET | `/api/hub/update/check`, `/api/hub/update/status` | self-update (see **Settings → Self-update**) |
 
 ## Art proxy
 
@@ -147,6 +151,8 @@ from the error code.
 | POST | `/api/zone/power` | `{zone_id, on}` | Denon zone via the amplifier link. A Sonos player/side id with `on: false` means stop + leave group; `on: true` is a no-op |
 | POST | `/api/group` | `{vendor, coordinator_id, member_ids[]}` | **desired** membership, coordinator first. The adapter reconciles against the current topology: members not listed leave, new ones join. Cross-vendor lists are `invalid_argument` |
 | DELETE | `/api/group/{side_id}` | | dissolve the side. HEOS: one `group/set_group` with the leader's id (the only way HEOS removes a group). Sonos: every non-coordinator `unjoin`s |
+| POST | `/api/queue/jump` | `{target, index}` | play the 0-based `index` of the side's native queue (HEOS `player/play_queue` with the receiver's queue id, Sonos `play_from_queue`). `invalid_argument` past the end |
+| POST | `/api/playmode` | `{target, shuffle?, repeat?}` | shuffle on/off, `repeat` ∈ `off, one, all`; omitted fields keep their value; at least one required (422 otherwise). `sync_active` while a Sync Play session runs |
 
 **Multi-target commands** (`target: "all"`, side targets for volume/mute, linked volume) apply
 to every target that can be applied. `ok` is false only when nothing succeeded; the targets that
@@ -175,7 +181,8 @@ failure there is logged (the next state delta will show the true value).
 }
 ```
 
-`applied` lists the targets (side or player ids) the command actually reached.
+`applied` lists the targets (side or player ids) the command actually reached. `latency_ms`
+(Phase 8) is the hub-side time from request to ack, the number the metrics use.
 
 Exactly one ack is emitted per correlation id, whatever happens inside the hub (an unexpected
 exception becomes `vendor_error`). `state_version` is the state version the router observed
@@ -673,6 +680,83 @@ hub." (the env var name stays in logs and docs). All strings live in `messages.p
 `pandora_sync_idle`, `pandora_sync_blocked_by_sync`, `sync_blocked_by_pandora`) and in
 `GET /api/meta/messages` / the app's `messages.json`.
 
+## Queue and play mode (Phase 8)
+
+`GET /api/queue/{side_id}` reads the coordinator's native queue and publishes it as
+`HubState.queues[side_id]` (a depth-two delta path, `queues.<side id>`):
+
+```json
+{"items": [{"index": 0, "title": "Signal 1", "artist": "Analog Heart", "album": "Warm Glow",
+            "duration_ms": 180000, "art": {"url", "cache_key", "accent", "accent_is_safe"},
+            "track_id": "10101", "content_ref": {"service": "tidal", "kind": "track", "id": "10101"} | null}],
+ "current_index": 0, "source": "tidal", "total": 9, "truncated": false, "updated_at": "…"}
+```
+
+- HEOS: `player/get_queue` paged by 100 (the CLI has no total: `total` is what the pages
+  returned); `track_id` is the HEOS media id and `content_ref` is set when it is a Tidal id.
+  Sonos: SoCo `get_queue` + `queue_size`; `track_id` is the track URI and `content_ref` is parsed
+  from Tidal / YouTube Music URIs. Reads are capped at `HUB_QUEUE_MAX` (200) with `truncated`.
+- The hub re-reads a queue on its own after vendor-app changes: HEOS `player_queue_changed`
+  events and Sonos AVTransport events (`number_of_tracks`, `queue_update_id`, `current_track`)
+  are debounced 500 ms into one read. `current_index` is matched by `track_id` against
+  now-playing; it is `null` when the current track is not in the read window.
+- Stations have no queue: `items` is empty. A vendor that cannot read the queue answers
+  `unsupported_action`.
+
+**Play mode.** Every player and side carries `play_mode: {shuffle, repeat}` (`repeat` ∈
+`off | one | all`); a side's is its coordinator's. Sources: HEOS `repeat` / `shuffle` on the
+player plus `repeat_mode_changed` / `shuffle_mode_changed` events; Sonos `PlayMode`
+(`NORMAL | SHUFFLE_NOREPEAT | SHUFFLE | REPEAT_ALL | REPEAT_ONE | SHUFFLE_REPEAT_ONE`) from
+`GetTransportSettings` and AVTransport `current_play_mode`. `POST /api/playmode` writes it.
+**Sync Play forces shuffle and repeat off on both sides when it primes**, and refuses play-mode
+changes with `sync_active` while a session is live.
+
+## Search (Phase 8)
+
+`GET /api/search?q=&limit=20` (`limit` 1–50) fans out to every hub-linked library service
+(Tidal, YouTube Music) and to the merged Pandora stations, each under a soft deadline of
+`HUB_SEARCH_DEADLINE_S` (4 s; the vendor APIs regularly take 2–3 s). Service calls run on a
+dedicated bounded thread pool so a burst of typing cannot starve device I/O. Queries shorter than
+two characters are `400 invalid_argument`. Results are cached `HUB_SEARCH_CACHE_S` (60 s) per
+service in a cache separate from the browse cache. Within each group the services are
+interleaved round-robin before the list is cut to `limit`, so one service with many hits cannot
+push another off the list.
+
+```json
+{"query": "glow",
+ "albums": [BrowseItem…], "playlists": [BrowseItem…], "tracks": [BrowseItem…], "stations": [BrowseItem…],
+ "services": ["tidal", "ytmusic", "pandora"],
+ "errors": {"ytmusic": "YouTube Music didn't answer in time."},
+ "partial": true}
+```
+
+Items carry `availability` and `reasons` like every browse result, so a client plays them
+through the same picker rules. `errors` names a service that did not answer (timeout, failure,
+or not connected) with a plain sentence; `partial` is true when at least one linked service
+failed. A search never fails as a whole because one service did.
+
+## Metrics (Phase 8)
+
+`GET /api/metrics` → `{today: DayMetrics, days: DayMetrics[], ws_clients, generated_at}` and
+`GET /api/metrics/summary` → `{summary}`: two household-facing sentences, also logged once a day,
+e.g. `Running since 7:37 am today. 10 commands, all worked.` or `… 10 commands, 1 didn't.` The
+time is the hub's start in the hub Mac's local time (`yesterday at 7:37 pm` / `Sep 6 at 7:37 pm`
+after midnight). No percentages, latencies or client counts appear there; those stay in
+`GET /api/metrics`, which feeds the PRD §10 success metrics from hooks that already exist:
+
+| field | source |
+|---|---|
+| `uptime_s`, `uptime_pct` | a tick every `HUB_METRICS_TICK_S` (60 s) while the hub runs; `uptime_pct` is of the elapsed day (today) or the full day (rollups) |
+| `commands`, `commands_failed`, `commands_by_action` | every command ack |
+| `latency_by_action`, `latency_by_vendor` (`p50_ms`, `p95_ms`) | `Ack.latency_ms` (hub-side, request to ack); vendor from the applied targets |
+| `reconnects` | adapter connection state going `connected → reconnecting` |
+| `ws_clients_peak` | connected `/ws` sessions |
+| `sync` (`sessions`, `start_delta_p50/p95_ms`, `drift_mean_ms`, `drift_p95_ms`, `corrections`, `lost`) | every finished Sync Play session's report |
+
+Days roll up at UTC midnight into `HUB_DATA_DIR/metrics.sqlite`; 30 days are kept. The live day
+is also written on shutdown so a restart does not lose it. Commands per day is the proxy for
+"the household stopped opening the vendor apps".
+
 ## History and home
 
 The hub keeps its own play log in SQLite (`HUB_DATA_DIR/history.sqlite`, retention
@@ -740,6 +824,25 @@ natively per ecosystem, PRD §3.5, so there is no hub-side Pandora account to li
 The row also carries `linked_by_vendor: {heos, sonos}` (the same `true` / `false` / `null` map as
 the station browse) and `last_error` (an auth fault on either side, e.g. "Sonos: Pandora on Sonos
 
+### Self-update (Phase 8, PRD SET-2)
+
+| Method | Path | Returns |
+|---|---|---|
+| GET | `/api/hub/update/check` | `{current: {version, commit, branch}, remote: {commit, ahead_by, summary[], tracking}, available, last_checked_at, error}` — runs `git fetch` in the checkout the hub runs from (`HUB_REPO_DIR`, default: the repo root above `hub/`) and compares HEAD with `origin/<tracking>`; `tracking` names the branch compared (the current branch, or `HUB_UPDATE_BRANCH` when the current branch has no upstream). When git fails, `available` is false and `error` is the one sentence `templates.hub.update_check_failed` ("Couldn't check for updates right now."); the raw git stderr goes to `hub.log` only; never a 5xx |
+| POST | `/api/hub/update/apply` (requires `X-Illyhub: 1`) | 202 `{job_id, state: "running", message}`. Launches `ops/update.sh` **detached** (own session, log under `HUB_DATA_DIR/update/<job>.log`; the last 10 jobs are kept). 409 `update_disabled` unless `HUB_ALLOW_UPDATE=1` (**off by default**); 409 `update_refused` when the `origin` remote is not `https://` / `ssh://`; 409 `update_running` while a job runs. Every apply logs the remote and target commit at WARNING |
+| GET | `/api/hub/update/status` | `{state: idle \| running \| succeeded \| up_to_date \| failed \| rolled_back, job_id, started_at, finished_at, log_tail[], message}`. The log tail is the last 8 KB, read off the event loop |
+
+The script refuses a dirty or detached checkout, fast-forwards (`git merge --ff-only`), runs
+`uv sync` and `npm ci && npm run build` (when npm is on the daemon's PATH) **as the checkout's
+owner**, and writes its state atomically. On **succeeded** or **rolled_back** the hub exits so
+launchd relaunches it on the new (or restored) code; **up_to_date** and **failed** leave the hub
+running. A refused merge never resets anything; only a failure *after* HEAD moved rolls back
+(`git reset --hard <previous commit>` + `uv sync`). A `running` job whose child process is gone
+for more than 15 minutes is reported `failed` ("run ops/update.sh by hand"); the hub also gives
+up watching after 20 minutes. The app's "Check for updates" row reads `check`, shows the commit
+summaries, and polls `status` after `apply` until the socket reconnects; when the hub answers
+`update_disabled` the row says updates are turned off on this hub.
+
 `POST /api/hub/restart` (requires `X-Illyhub: 1`) → 202 `{restarting: true}`; the process exits
 with code 0 half a second later and launchd's `KeepAlive=true` relaunches it regardless of exit
 code. Repeated calls while a restart is scheduled return 202 without scheduling another exit.
@@ -769,6 +872,8 @@ queue per side: `next`/`prev` walk it and now-playing follows.
 | `link_pandora` / `unlink_pandora` (`?vendor=heos\|sonos`, both when omitted) | With `HUB_FAKE_PANDORA=1`: link/unlink Pandora inside one vendor app (per-ecosystem, unlike Tidal). Result `{pandora_linked: {heos, sonos}}`. Follow with `POST /api/browse/refresh` to drop the 5-minute station cache |
 | `pandora_auth_fault` / `pandora_auth_ok` (`?vendor=`) | Simulate a broken Pandora session inside a vendor app (linked, but browsing faults): `linked` flips to `false` for that vendor with the sign-in-again message; plays on that side refuse with the "sign in again" copy |
 | `station_track_change` | Every side playing a fake station advances to Pandora's "next pick" |
+| `queue_change` | The HEOS app appended a track to the Living Room queue → `queues.heos:heos-1` delta |
+| `play_mode_change` | Shuffle toggled from the HEOS app → `players.heos-1` / `sides.heos:heos-1` `play_mode` delta |
 
 With `HUB_FAKE_PANDORA=1` the fakes expose five stations per vendor (four names shared, one
 exclusive each: "Living Room Mix" on HEOS, "Patio Party" on Sonos), station plays rotate through
@@ -787,7 +892,7 @@ All frames are JSON objects with a `type`.
 | type | fields | when |
 |---|---|---|
 | `snapshot` | `version`, `state` (full HubState) | on connect, after `resync`, and after the client's outbound queue overflowed (queue is cleared first) |
-| `delta` | `from_version`, `to_version`, `changed` | every state commit. `changed` maps a depth-two path (`players.heos-1`, `sides.sonos:…`, `positions.…`, `connections.heos`, `sync`) to its **full new value**, or `null` when removed. Apply by replacing that key. |
+| `delta` | `from_version`, `to_version`, `changed` | every state commit. `changed` maps a depth-two path (`players.heos-1`, `sides.sonos:…`, `positions.…`, `queues.…`, `connections.heos`, `sync`, `pandora_sync`) to its **full new value**, or `null` when removed. Apply by replacing that key. |
 | `ack` | the Ack fields | every command issued over REST, **broadcast to every client**. The `correlation_id` is the routing key: a client matches acks to its own requests by the id it sent (or received in the `x-correlation-id` response header) and ignores the rest. Acks travel on a small separate queue that a state-queue overflow does not clear |
 | `ping` | | every 20 s; reply with `pong`. Two missed pongs close the socket |
 | `pong` | `server_time_ms` | reply to a client `ping` |
@@ -808,12 +913,13 @@ revert the optimistic state, and send `resync`.
 ```json
 {
   "version": 412,
-  "players":     {"heos-1": {"id", "name", "vendor", "ip", "model", "online", "volume", "muted", "play_state", "group_id", "capabilities"}},
+  "players":     {"heos-1": {"id", "name", "vendor", "ip", "model", "online", "volume", "muted", "play_state", "group_id", "capabilities", "play_mode": {"shuffle", "repeat"}}},
   "zones":       {"denon-10.0.0.5:main": {"id", "key", "name", "power", "online", "volume", "muted", "supports_volume", "supports_mute", "host", "device_id", "player_ids"}},
   "groups":      {"sonos-gRINCON_…": {"id", "vendor", "coordinator_player_id", "member_ids", "name"}},
-  "sides":       {"sonos:sonos-gRINCON_…": {"id", "vendor", "coordinator_player_id", "member_ids", "name", "play_state", "volume", "muted", "capabilities"}},
+  "sides":       {"sonos:sonos-gRINCON_…": {"id", "vendor", "coordinator_player_id", "member_ids", "name", "play_state", "volume", "muted", "capabilities", "play_mode"}},
   "now_playing": {"<side id>": {"title", "artist", "album", "art": {"url", "cache_key", "accent", "accent_is_safe"}, "source", "seekable", "supports_next", "supports_prev", "duration_ms", "track_id", "content_ref": {"service", "kind", "id"} | null}},   // Tidal track id, or the Pandora station ref
   "positions":   {"<side id>": {"position_ms", "reported_at", "confidence"}},
+  "queues":      {"<side id>": {"items": [{"index", "title", "artist", "album", "duration_ms", "art", "track_id", "content_ref"}], "current_index", "source", "total", "truncated", "updated_at"}},
   "sync":        {"status", "session_id", "master_side", "follower_side", "content_ref", "title", "drift_ms", "start_delta_ms", "last_correction_at", "corrections", "reason", "started_at"},
   "pandora_sync": {"active": false, "side_ids": [], "output_ids": [], "outputs": [], "previous_output_ids": [], "started_at": null, "note": null},
   "connections": {"heos": {"state", "last_error", "since"}, "sonos": {...}, "denon": {...}}

@@ -82,6 +82,9 @@ src/illyhub_hub/
                    service-direct resolver (Tidal CDN, YT Music thumbnails, device fallback)
   static.py        PWA export + fonts serving with SPA fallback and cache headers
   ws.py            WebSocket sessions: snapshot/delta/ack stream, heartbeat, bounded queues
+  metrics.py       Phase 8: uptime, command latency, reconnects, Sync Play numbers; daily SQLite rollups
+  update.py        Phase 8: self-update (git check, detached ops/update.sh, status + rollback)
+  services/search.py  Phase 8: search fan-out across the linked services with soft deadlines
   tasks.py         tracked fire-and-forget tasks, cancellation-safe stop_task()
   api.py           FastAPI app factory: read, command, ws, and dev routes
   main.py          uvicorn entrypoint (HUB_TLS_CERT/HUB_TLS_KEY → HTTPS)
@@ -184,3 +187,37 @@ GUI session and Automation permission for Music (`ops/RUNBOOK.md` § AirPlay bri
 - Play state holds the last known value across the vendors' start-up transient (Sonos
   `TRANSITIONING`, HEOS `unknown`), so a tapped play never flicks back.
 - `HUB_DENON_MAX_VOLUME` is the only volume scale; `MVMAX` read-backs are recorded, never applied.
+
+## Phase 8: cross-cutting (queue, play mode, search, metrics, self-update)
+
+```
+GET    /api/queue/{side_id}             the side's native queue → HubState.queues.<side>
+POST   /api/queue/jump                  {target, index}   0-based; HEOS play_queue / Sonos play_from_queue
+POST   /api/playmode                    {target, shuffle?, repeat?}   repeat: off | one | all
+GET    /api/search?q=&limit=            {albums, playlists, tracks, stations, services, errors, partial}
+GET    /api/metrics                     today + 30 daily rollups (HUB_DATA_DIR/metrics.sqlite)
+GET    /api/metrics/summary             "Running since 7:37 am today. 10 commands, all worked."
+GET    /api/hub/update/check            git fetch + rev-list against origin/<branch>
+POST   /api/hub/update/apply            X-Illyhub: 1; runs ops/update.sh detached; 202 {job_id}
+GET    /api/hub/update/status           idle | running | succeeded | failed | rolled_back + log tail
+```
+
+- Queues are published on read and re-read after vendor-app changes (HEOS `player_queue_changed`,
+  Sonos AVTransport queue variables), debounced 500 ms. `HUB_QUEUE_MAX` (200) caps a read.
+- `play_mode` lives on every player and side. Sync Play forces shuffle and repeat off on both
+  sides at prime time and refuses `POST /api/playmode` with `sync_active` while a session runs.
+- Search runs each linked service under `HUB_SEARCH_DEADLINE_S` (1.5 s); a slow or failing service
+  lands in `errors` and the others still answer.
+- Metrics hook the router acks (`Ack.latency_ms`), the store (adapter reconnects), the WebSocket
+  layer (client count) and the sync engine (`on_ended`). Days roll up at UTC midnight; the live day
+  is flushed on shutdown.
+- Self-update: `ops/update.sh` records HEAD, `git pull --ff-only`, `uv sync`, `npm ci && npm run
+  build` when npm exists, then writes `succeeded` and the hub exits for launchd to relaunch. Any
+  failure resets to the recorded commit (`rolled_back`); if even that fails the hub stays up
+  (`failed`). `HUB_ALLOW_UPDATE=0` disables the endpoint; `HUB_REPO_DIR` overrides the checkout.
+  The script has a bash-level test against a temp git repo (`tests/test_update_script.py`).
+- Dev scenarios: `queue_change` (HEOS app appended a track), `play_mode_change` (shuffle toggled).
+
+Verification: mock-verified only. HEOS `player/get_queue` paging and `play_queue` ids, Sonos
+`get_queue` / `play_mode`, and the real-device event variables need the LAN checklist
+(`../ops/RUNBOOK.md` §5).

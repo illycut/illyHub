@@ -59,9 +59,32 @@ esac
 
 $SUDO mkdir -p "$LOGDIR"
 
+# Self-update (Phase 8) is off unless the operator opts in: the endpoint runs git and the
+# dependency sync as root on this machine, gated only by the LAN. Ask once; record the answer.
+if ! grep -Eq '^HUB_ALLOW_UPDATE=' "$REPO/hub/.env"; then
+  if [[ -t 0 ]]; then
+    read -r -p "Allow in-app self-update (POST /api/hub/update/apply runs git + uv as root)? [y/N] " ans
+  else
+    ans="n"
+  fi
+  case "$ans" in
+    y|Y|yes|YES) echo "HUB_ALLOW_UPDATE=1" >> "$REPO/hub/.env"; echo "Self-update enabled (HUB_ALLOW_UPDATE=1).";;
+    *) echo "HUB_ALLOW_UPDATE=0" >> "$REPO/hub/.env"; echo "Self-update left off (HUB_ALLOW_UPDATE=0); flip it in hub/.env to enable.";;
+  esac
+fi
+
+# The daemon's PATH is fixed by the plist, so resolve the tools the self-updater needs now and
+# bake their directories in: uv always, node/npm when present (PWA rebuilds).
+TOOL_PATH=""
+for tool in uv node npm; do
+  dir="$(dirname "$(command -v "$tool" 2>/dev/null || echo /nonexistent/x)")"
+  [[ -d "$dir" && ":$TOOL_PATH:" != *":$dir:"* ]] && TOOL_PATH="${TOOL_PATH}${dir}:"
+done
+echo "Daemon PATH prefix: ${TOOL_PATH:-<none>}"
+
 # Render to a temp file and lint before installing so a bad render never lands in LaunchDaemons.
 TMP_PLIST="$(mktemp)"
-sed -e "s|__REPO__|$REPO|g" -e "s|__LOGDIR__|$LOGDIR|g" "$PLIST_SRC" > "$TMP_PLIST"
+sed -e "s|__REPO__|$REPO|g" -e "s|__LOGDIR__|$LOGDIR|g" -e "s|__TOOL_PATH__|$TOOL_PATH|g" "$PLIST_SRC" > "$TMP_PLIST"
 plutil -lint "$TMP_PLIST" >/dev/null
 $SUDO install -o root -g wheel -m 644 "$TMP_PLIST" "$PLIST_DST"
 rm -f "$TMP_PLIST"

@@ -40,7 +40,9 @@
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <!-- install.sh prepends the directories of uv, node and npm as found at install time, so the
+         self-updater (ops/update.sh) can run them from the daemon's environment. -->
+    <string>__TOOL_PATH__/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HUB_ENV_FILE</key>
     <string>__REPO__/hub/.env</string>
     <!-- The hub rotates its own log (10 MB x 7). The launchd files below only catch output

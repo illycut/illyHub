@@ -741,6 +741,159 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/queue/{side_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Queue */
+        get: operations["queue_api_queue__side_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/queue/jump": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Queue Jump */
+        post: operations["queue_jump_api_queue_jump_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/playmode": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Play Mode */
+        post: operations["play_mode_api_playmode_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Search */
+        get: operations["search_api_search_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Metrics View */
+        get: operations["metrics_view_api_metrics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/metrics/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Metrics Summary */
+        get: operations["metrics_summary_api_metrics_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/hub/update/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Update Check */
+        get: operations["update_check_api_hub_update_check_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/hub/update/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Update Status */
+        get: operations["update_status_api_hub_update_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/hub/update/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Update Apply */
+        post: operations["update_apply_api_hub_update_apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/airplay": {
         parameters: {
             query?: never;
@@ -913,6 +1066,12 @@ export interface components {
             resolved?: {
                 [key: string]: string;
             };
+            /**
+             * Latency Ms
+             * @description hub-side time from request to ack
+             * @default 0
+             */
+            latency_ms: number;
         };
         /**
          * AckWarning
@@ -1173,6 +1332,50 @@ export interface components {
             /** Id */
             id: string;
         };
+        /** DayMetrics */
+        DayMetrics: {
+            /** Day */
+            day: string;
+            /**
+             * Uptime S
+             * @default 0
+             */
+            uptime_s: number;
+            /** Uptime Pct */
+            uptime_pct?: number | null;
+            /**
+             * Commands
+             * @default 0
+             */
+            commands: number;
+            /**
+             * Commands Failed
+             * @default 0
+             */
+            commands_failed: number;
+            /** Commands By Action */
+            commands_by_action?: {
+                [key: string]: number;
+            };
+            /** Latency By Action */
+            latency_by_action?: {
+                [key: string]: components["schemas"]["LatencyStats"];
+            };
+            /** Latency By Vendor */
+            latency_by_vendor?: {
+                [key: string]: components["schemas"]["LatencyStats"];
+            };
+            /** Reconnects */
+            reconnects?: {
+                [key: string]: number;
+            };
+            /**
+             * Ws Clients Peak
+             * @default 0
+             */
+            ws_clients_peak: number;
+            sync?: components["schemas"]["SyncStats"];
+        };
         /** DevicesResponse */
         DevicesResponse: {
             /** Players */
@@ -1385,6 +1588,18 @@ export interface components {
             fake_devices: boolean;
             airplay: components["schemas"]["AirPlayInfo"];
         };
+        /** LatencyStats */
+        LatencyStats: {
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /** P50 Ms */
+            p50_ms?: number | null;
+            /** P95 Ms */
+            p95_ms?: number | null;
+        };
         /** LinkStartResponse */
         LinkStartResponse: {
             /** Service */
@@ -1397,6 +1612,19 @@ export interface components {
             expires_in_s: number;
             /** Interval S */
             interval_s: number;
+        };
+        /** MetricsResponse */
+        MetricsResponse: {
+            today: components["schemas"]["DayMetrics"];
+            /** Days */
+            days: components["schemas"]["DayMetrics"][];
+            /** Ws Clients */
+            ws_clients: number;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
         };
         /** MuteBody */
         MuteBody: {
@@ -1478,6 +1706,39 @@ export interface components {
              */
             start_index: number;
         };
+        /**
+         * PlayMode
+         * @description Shuffle / repeat as the coordinator reports it (Phase 8, ai-dev #79).
+         *
+         *     HEOS: ``player/get_play_mode`` → ``repeat`` ∈ on_all|on_one|off and ``shuffle`` on|off.
+         *     Sonos: ``PlayMode`` ∈ NORMAL|SHUFFLE_NOREPEAT|SHUFFLE|REPEAT_ALL|REPEAT_ONE|SHUFFLE_REPEAT_ONE.
+         *     Both map onto the same two fields here.
+         */
+        PlayMode: {
+            /**
+             * Shuffle
+             * @default false
+             */
+            shuffle: boolean;
+            /**
+             * Repeat
+             * @default off
+             * @enum {string}
+             */
+            repeat: "off" | "one" | "all";
+        };
+        /** PlayModeBody */
+        PlayModeBody: {
+            /**
+             * Target
+             * @description player id, side id, or 'all'
+             */
+            target: string;
+            /** Shuffle */
+            shuffle?: boolean | null;
+            /** Repeat */
+            repeat?: ("off" | "one" | "all") | null;
+        };
         /** Player */
         Player: {
             /** Id */
@@ -1517,11 +1778,80 @@ export interface components {
             /** Group Id */
             group_id?: string | null;
             capabilities?: components["schemas"]["Capabilities"];
+            play_mode?: components["schemas"]["PlayMode"];
+        };
+        /**
+         * QueueEntry
+         * @description One track in a side's native queue, in the shape the client renders (ai-dev #77).
+         */
+        QueueEntry: {
+            /** Index */
+            index: number;
+            /** Title */
+            title?: string | null;
+            /** Artist */
+            artist?: string | null;
+            /** Album */
+            album?: string | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            art?: components["schemas"]["ArtRef"];
+            /** Track Id */
+            track_id?: string | null;
+            content_ref?: components["schemas"]["ContentRef"] | null;
+        };
+        /** QueueJumpBody */
+        QueueJumpBody: {
+            /**
+             * Target
+             * @description player id, side id, or 'all'
+             */
+            target: string;
+            /** Index */
+            index: number;
+        };
+        /**
+         * QueueState
+         * @description A side's queue as last read from the coordinator; streamed as ``queues.<side>``.
+         */
+        QueueState: {
+            /** Items */
+            items?: components["schemas"]["QueueEntry"][];
+            /** Current Index */
+            current_index?: number | null;
+            /** Source */
+            source?: string | null;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+            /** Total */
+            total?: number | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at?: string;
         };
         /** RefreshResponse */
         RefreshResponse: {
             /** Cleared */
             cleared: number;
+        };
+        /** RemoteVersion */
+        RemoteVersion: {
+            /** Commit */
+            commit?: string | null;
+            /**
+             * Ahead By
+             * @default 0
+             */
+            ahead_by: number;
+            /** Summary */
+            summary?: string[];
+            /** Tracking */
+            tracking?: string | null;
         };
         /** ScenarioResponse */
         ScenarioResponse: {
@@ -1533,6 +1863,30 @@ export interface components {
             };
             /** State Version */
             state_version: number;
+        };
+        /** SearchResponse */
+        SearchResponse: {
+            /** Query */
+            query: string;
+            /** Albums */
+            albums?: components["schemas"]["BrowseItem"][];
+            /** Playlists */
+            playlists?: components["schemas"]["BrowseItem"][];
+            /** Tracks */
+            tracks?: components["schemas"]["BrowseItem"][];
+            /** Stations */
+            stations?: components["schemas"]["BrowseItem"][];
+            /** Errors */
+            errors?: {
+                [key: string]: string;
+            };
+            /** Services */
+            services?: string[];
+            /**
+             * Partial
+             * @default false
+             */
+            partial: boolean;
         };
         /** SeekBody */
         SeekBody: {
@@ -1584,6 +1938,7 @@ export interface components {
              */
             muted: boolean;
             capabilities?: components["schemas"]["Capabilities"];
+            play_mode?: components["schemas"]["PlayMode"];
         };
         /** SkipBody */
         SkipBody: {
@@ -1770,6 +2125,32 @@ export interface components {
             /** Started At */
             started_at?: string | null;
         };
+        /** SyncStats */
+        SyncStats: {
+            /**
+             * Sessions
+             * @default 0
+             */
+            sessions: number;
+            /** Start Delta P50 Ms */
+            start_delta_p50_ms?: number | null;
+            /** Start Delta P95 Ms */
+            start_delta_p95_ms?: number | null;
+            /** Drift Mean Ms */
+            drift_mean_ms?: number | null;
+            /** Drift P95 Ms */
+            drift_p95_ms?: number | null;
+            /**
+             * Corrections
+             * @default 0
+             */
+            corrections: number;
+            /**
+             * Lost
+             * @default 0
+             */
+            lost: number;
+        };
         /** TargetBody */
         TargetBody: {
             /**
@@ -1777,6 +2158,60 @@ export interface components {
              * @description player id, side id, or 'all'
              */
             target: string;
+        };
+        /** UpdateApplyResponse */
+        UpdateApplyResponse: {
+            /** Job Id */
+            job_id: string;
+            /** State */
+            state: string;
+            /** Message */
+            message: string;
+        };
+        /** UpdateCheck */
+        UpdateCheck: {
+            current: components["schemas"]["UpdateVersion"];
+            remote: components["schemas"]["RemoteVersion"];
+            /**
+             * Available
+             * @default false
+             */
+            available: boolean;
+            /**
+             * Last Checked At
+             * Format: date-time
+             */
+            last_checked_at: string;
+            /** Error */
+            error?: string | null;
+        };
+        /** UpdateStatus */
+        UpdateStatus: {
+            /**
+             * State
+             * @default idle
+             * @enum {string}
+             */
+            state: "idle" | "running" | "succeeded" | "up_to_date" | "failed" | "rolled_back";
+            /** Job Id */
+            job_id?: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Log Tail */
+            log_tail?: string[];
+            /** Message */
+            message?: string | null;
+        };
+        /** UpdateVersion */
+        UpdateVersion: {
+            /** Version */
+            version: string;
+            /** Commit */
+            commit?: string | null;
+            /** Branch */
+            branch?: string | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -3041,6 +3476,237 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    queue_api_queue__side_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                side_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    queue_jump_api_queue_jump_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QueueJumpBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Ack"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    play_mode_api_playmode_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlayModeBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Ack"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    search_api_search_get: {
+        parameters: {
+            query?: {
+                q?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    metrics_view_api_metrics_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricsResponse"];
+                };
+            };
+        };
+    };
+    metrics_summary_api_metrics_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+    };
+    update_check_api_hub_update_check_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdateCheck"];
+                };
+            };
+        };
+    };
+    update_status_api_hub_update_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdateStatus"];
+                };
+            };
+        };
+    };
+    update_apply_api_hub_update_apply_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdateApplyResponse"];
                 };
             };
         };

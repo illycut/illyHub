@@ -57,6 +57,19 @@ PANDORA_SYNC_STOPPED = "Pandora Sync ended; the Mac's outputs are back to how th
 PANDORA_SYNC_IDLE = "Pandora Sync isn't running."
 PANDORA_SYNC_BLOCKED_BY_SYNC = "Stop Sync Play first."
 SYNC_BLOCKED_BY_PANDORA = "Stop Pandora Sync first."
+# Phase 8: self-update, queue, search, play mode.
+UPDATE_DISABLED = "Updates are turned off on this hub."
+UPDATE_RUNNING = "An update is already running."
+UPDATE_STARTED = "Updating the hub. It restarts on its own when the update finishes."
+UPDATE_NONE = "The hub is up to date."
+UPDATE_STALE = "The update did not finish; run ops/update.sh by hand on the hub Mac."
+UPDATE_CHECK_FAILED = "Couldn't check for updates right now."
+UPDATE_REMOTE_REFUSED = (
+    "The hub's git remote is not an https:// or ssh:// URL; updates are refused."
+)
+QUEUE_UNAVAILABLE = "{side} can't show its queue from this hub."
+SEARCH_TOO_SHORT = "Type at least two characters to search."
+PLAY_MODE_LOCKED = "Shuffle and repeat are off during Sync Play."
 # Reason → template the app should show for a disabled side before the user taps.
 REASON_TEMPLATES: dict[str, str] = {
     "unsupported": NOT_AVAILABLE_UNSUPPORTED,
@@ -107,6 +120,18 @@ def export() -> dict[str, Any]:
             },
             "pandora_concurrent": PANDORA_CONCURRENT_MSG,
             "sync_unsupported_content": SYNC_UNSUPPORTED_CONTENT,
+            "hub": {
+                "update_disabled": UPDATE_DISABLED,
+                "update_running": UPDATE_RUNNING,
+                "update_started": UPDATE_STARTED,
+                "update_none": UPDATE_NONE,
+                "update_stale": UPDATE_STALE,
+                "update_check_failed": UPDATE_CHECK_FAILED,
+                "update_remote_refused": UPDATE_REMOTE_REFUSED,
+                "queue_unavailable": QUEUE_UNAVAILABLE,
+                "search_too_short": SEARCH_TOO_SHORT,
+                "play_mode_locked": PLAY_MODE_LOCKED,
+            },
             "airplay": {
                 "airplay_unavailable": AIRPLAY_UNAVAILABLE,
                 "airplay_off": AIRPLAY_OFF,

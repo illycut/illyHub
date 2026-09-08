@@ -51,6 +51,7 @@ export async function sendCommand(req: CommandRequest, fetcher: Fetcher = fetch,
       state_version: 0,
       error: { code: env.code, message: env.message ?? `The hub answered ${res.status}.`, target: null, correlation_id: correlationId },
       partial: [],
+      latency_ms: 0,
     } as Ack;
   }
   if (!ack || typeof ack !== "object" || !("correlation_id" in ack)) {
@@ -67,6 +68,7 @@ export async function sendCommand(req: CommandRequest, fetcher: Fetcher = fetch,
         correlation_id: correlationId,
       },
       partial: [],
+      latency_ms: 0,
     } as Ack;
   }
   return ack;
@@ -147,6 +149,18 @@ export const commands = {
     correlationId,
   }),
   pandoraSyncStop: (correlationId?: string): CommandRequest => ({ path: "/api/pandora-sync/stop", body: {}, correlationId }),
+  /** Jump to a queue entry by the hub's canonical index (Phase 8, docs/api.md "Queue"). */
+  queueJump: (target: string, index: number, correlationId?: string): CommandRequest => ({
+    path: "/api/queue/jump",
+    body: { target, index: Math.max(0, Math.round(index)) },
+    correlationId,
+  }),
+  /** Shuffle / repeat for a side (Phase 8, docs/api.md "Play mode"); only the given fields change. */
+  playMode: (target: string, mode: { shuffle?: boolean; repeat?: "off" | "one" | "all" }, correlationId?: string): CommandRequest => ({
+    path: "/api/playmode",
+    body: { target, ...(mode.shuffle !== undefined ? { shuffle: mode.shuffle } : {}), ...(mode.repeat !== undefined ? { repeat: mode.repeat } : {}) },
+    correlationId,
+  }),
   /** Play library content on one target (Phase 3, docs/api.md "Play"). */
   play: (target: string, content_ref: { service: string; kind: string; id: string }, start_index?: number, correlationId?: string): CommandRequest => ({
     path: "/api/play",

@@ -147,7 +147,7 @@ export function sampleState(nowMs = Date.now()): HubState {
 }
 
 export function okAck(cid: string | undefined, over: Record<string, unknown> = {}) {
-  return { correlation_id: cid ?? "cid", ok: true, action: "x", target: null, state_version: 11, error: null, partial: [], ...over };
+  return { correlation_id: cid ?? "cid", ok: true, action: "x", target: null, state_version: 11, error: null, partial: [], latency_ms: 12, ...over };
 }
 
 export function jsonResponse(body: unknown, status = 200): Response {

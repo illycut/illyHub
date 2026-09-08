@@ -4,7 +4,7 @@
  * and docs/api.md.
  */
 import type { components } from "./openapi";
-import type { ContentRef } from "./library";
+import type { ContentRef, Queue } from "./library";
 
 export type Ack = components["schemas"]["Ack"];
 export type ErrorEnvelope = components["schemas"]["ErrorEnvelope"];
@@ -140,7 +140,13 @@ export interface HubState {
   connections: Record<string, ConnectionStatus>;
   /** Absent on hubs without the AirPlay bridge; treated as inactive. */
   pandora_sync?: PandoraSyncState;
+  /**
+   * Per-side queues (Phase 8, docs/api.md "Queue"), a depth-two delta path like `players`. Absent on
+   * hubs that predate queues; the app then fetches `GET /api/queue/{side}` when the sheet opens.
+   */
+  queues?: Record<string, Queue>;
 }
+
 
 /** Top-level collections a delta path may address (depth two), plus the depth-one `sync` and `pandora_sync`. */
 export type DeltaCollection = Exclude<keyof HubState, "version" | "sync" | "pandora_sync">;

@@ -120,6 +120,16 @@
   li:last-child > .settings-row::after {
     display: none;
   }
+  /* The search field draws its own Cancel; the native clear affordance would be a second one. */
+  input[type="search"] {
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  input[type="search"]::-webkit-search-cancel-button,
+  input[type="search"]::-webkit-search-decoration {
+    -webkit-appearance: none;
+    display: none;
+  }
   .no-scrollbar::-webkit-scrollbar {
     display: none;
   }
@@ -131,8 +141,10 @@
   .hero-size {
     width: auto;
     max-width: 100%;
-    /* 526: the badge row is always 48px tall (UX S7) so the Sync Play / Stop sync button never shifts layout. */
-    max-height: min(var(--size-hero-max), calc(100dvh - 526px));
+    /* 526 + 80: the badge row is always 48px tall (UX S7) so the Sync Play / Stop sync button never shifts
+       layout; Phase 8 adds the 48px shuffle · Up next · repeat row under the transport plus its 12px gap
+       and a permanent 14px caption slot plus its 4px gap (U3: play/pause never moves when Sync Play starts). */
+    max-height: min(var(--size-hero-max), calc(100dvh - 606px));
     aspect-ratio: 1 / 1;
     margin-inline: auto;
   }
@@ -161,7 +173,19 @@
     min-width: 0;
   }
   /* Measured at 375x667: header 48 + title 34 + meta 30 + scrubber 62 + transport 64 + volume 48 + gaps/padding 72 = 358. */
-  /* Compact: the 48px badge/sync row adds 18px over the plain meta line. */
+  /* Compact: the 48px badge/sync row adds 18px over the plain meta line; the Phase 8 options row
+     (48 + 4 + 14px caption slot + 12px gap) adds 78; 80 reserved. */
+  .hero-size {
+    max-height: min(var(--size-hero-max), calc(100dvh - 464px));
+  }
+}
+/* Phones in landscape (under 420px tall) cannot hold the shuffle · Up next · repeat row and keep
+   play/pause on screen (the rule that never bends, §13 1.1.6); the row returns in portrait. */
+@media (max-height: 420px) {
+  [data-np-options] {
+    display: none;
+  }
+  /* The row is gone, so the hero gets the Phase 7 compact budget back. */
   .hero-size {
     max-height: min(var(--size-hero-max), calc(100dvh - 384px));
   }

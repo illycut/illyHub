@@ -125,7 +125,30 @@ curl -s http://127.0.0.1:8080/api/health | python3 -m json.tool   # with mkcert 
   `localhost`, `127.0.0.1`, the LAN IP and `*.local` are always allowed. A 400 "Invalid host
   header" or a 403 `forbidden_origin` in the app means a name is missing here.
 - Stop: `sudo launchctl bootout system/com.illyhub.hub`
-- Update: `git pull && ./ops/install.sh`
+- Update, by hand: `git pull && ./ops/install.sh`.
+- Update, from the app (Phase 8, `Settings → Hub → Check for updates`). **Off unless you opted
+  in**: `install.sh` asks once ("Allow in-app self-update?") and writes `HUB_ALLOW_UPDATE=0|1`
+  to `hub/.env`; the endpoint runs git and the dependency sync on this Mac, gated only by the LAN,
+  so the default is no. When on: `GET /api/hub/update/check` runs `git fetch` in the checkout;
+  `POST /api/hub/update/apply` (X-Illyhub header) starts `ops/update.sh` detached (log:
+  `$HUB_DATA_DIR/update/<job>.log`, state file next to it, last 10 jobs kept). The script refuses
+  a dirty or detached checkout and a remote that is not `https://`/`ssh://`, fast-forwards, runs
+  `uv sync` and `npm ci && npm run build` **as the checkout's owner** (not root), then the hub
+  exits and launchd relaunches it on the new code. A refused merge (local commits, uncommitted
+  edits) leaves the checkout untouched and reports `failed` with the reason; a failure after the
+  merge resets to the previous commit and re-syncs (`rolled_back`); if even that fails the state
+  is `failed` and the hub keeps running the old code. `up_to_date` means nothing changed and the
+  hub stays up. A `running` job whose process is gone for 15 minutes is reported `failed`
+  ("run ops/update.sh by hand").
+  **PATH:** the daemon's PATH is fixed by the plist. `install.sh` resolves `uv`, `node` and
+  `npm` at install time and bakes their directories in, so re-run `./ops/install.sh` after
+  installing or moving Node (nvm) or uv; otherwise the updater reports `uv not found on PATH`
+  or skips the PWA build.
+- Metrics (Phase 8): `curl -s http://127.0.0.1:8080/api/metrics/summary` for the household
+  sentence ("Running since 7:37 am today. 10 commands, all worked."); `GET /api/metrics` for the
+  numbers (uptime %, transport/volume p95, reconnects, Sync Play start delta and drift, peak
+  clients) for today plus 30 daily rollups
+  (`$HUB_DATA_DIR/metrics.sqlite`). The summary is also logged once a day in `hub.log`.
 - Uninstall: `./ops/install.sh --uninstall`
 
 ## 3a. HTTPS for the PWA
@@ -321,6 +344,23 @@ Sync Play has only ever run against the fakes. First real run, in this order:
       `POST /api/sync/config` (no restart). If the follower starts late every time, raise the
       lookahead. If `verifying` fails (`sync_mismatch`), the HEOS or Sonos queue did not load the
       expected track: check `docs/spikes/tidal-refs.md` (ai-dev #10).
+
+### Queue, play mode, search, self-update (Phase 8) on the LAN
+
+Mock-verified only. First real run:
+
+1. Play an album on the receiver, then `curl -s http://127.0.0.1:8080/api/queue/heos:heos-<pid> | python3 -m json.tool`:
+   items should list the album with `current_index` matching the playing track. Add a track from
+   the HEOS app; the hub should re-read within a second (`queues.<side>` delta on `/ws`).
+2. `POST /api/queue/jump {"target": "heos-<pid>", "index": 3}` → the receiver jumps to track 4
+   (HEOS queue ids are 1-based; the hub maps from the read). Same on the Sonos Amp.
+3. `POST /api/playmode {"target": "<side>", "shuffle": true}` → the vendor app shows shuffle on;
+   toggle repeat in the vendor app → `play_mode` follows on `/ws`.
+4. `GET /api/search?q=<something in your library>` → albums/playlists/tracks from Tidal and
+   YouTube Music, stations from Pandora; `errors` names anything that timed out.
+5. `GET /api/hub/update/check` → `available` true when the hub Mac is behind `origin/main`;
+   `POST /api/hub/update/apply -H 'X-Illyhub: 1'` → status `running`, then the hub restarts on
+   the new commit (or `rolled_back` with the reason). Check `/api/health` `version`/uptime after.
 
 ### AirPlay bridge / Pandora Sync (Phase 7, experimental) on the LAN
 

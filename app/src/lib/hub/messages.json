@@ -25,6 +25,18 @@
       "pandora_sync_stopped": "Pandora Sync ended; the Mac's outputs are back to how they were.",
       "sync_blocked_by_pandora": "Stop Pandora Sync first."
     },
+    "hub": {
+      "play_mode_locked": "Shuffle and repeat are off during Sync Play.",
+      "queue_unavailable": "{side} can't show its queue from this hub.",
+      "search_too_short": "Type at least two characters to search.",
+      "update_check_failed": "Couldn't check for updates right now.",
+      "update_disabled": "Updates are turned off on this hub.",
+      "update_none": "The hub is up to date.",
+      "update_remote_refused": "The hub's git remote is not an https:// or ssh:// URL; updates are refused.",
+      "update_running": "An update is already running.",
+      "update_stale": "The update did not finish; run ops/update.sh by hand on the hub Mac.",
+      "update_started": "Updating the hub. It restarts on its own when the update finishes."
+    },
     "not_available": {
       "auth_fault": "{side} can't reach {service} right now; sign in again in the {vendor_app}.",
       "not_in_account": "That station isn't in the {vendor} {service} account, so {side} can't play it.",

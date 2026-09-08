@@ -44,7 +44,7 @@ from .content import BrowseItem, ContentRef, NeedsLinkError
 from .history import PlayHistory
 from .logsetup import correlation_id, get_logger
 from .messages import SYNC_BLOCKED_BY_PANDORA, SYNC_UNSUPPORTED_CONTENT
-from .state import NowPlaying, Side, StateStore, SyncState, SyncStatus, vendor_label
+from .state import NowPlaying, PlayMode, Side, StateStore, SyncState, SyncStatus, vendor_label
 from .tasks import spawn, stop_task
 
 log = get_logger("sync")
@@ -316,6 +316,7 @@ class SyncSession:
     snapshots: dict[str, Any] = field(default_factory=dict)  # side id -> queue snapshot
     created_groups: list[str] = field(default_factory=list)  # side ids grouped for this session
     targets: list[str] = field(default_factory=list)
+    saved_modes: dict[str, PlayMode] = field(default_factory=dict)  # side id -> mode before sync
 
     def summary(self) -> SyncSessionSummary:
         return SyncSessionSummary(
@@ -367,6 +368,14 @@ class SyncEngine:
         self._mirror_queue: asyncio.Queue[tuple[SyncSession, str, bool]] = asyncio.Queue()
         self._mirror_worker: asyncio.Task[None] | None = None
         self._unsubscribe_acks = router.on_ack(self._on_ack)
+        # Phase 8: observers of finished sessions (metrics). Called with the SyncReport.
+        self.on_ended: list[Callable[[SyncReport], Any]] = []
+        router.sync_active = self.active  # play-mode changes are refused while a session runs
+
+    def active(self) -> bool:
+        """True while a session is being started or held (not idle/stopped/lost)."""
+        session = self.session
+        return session is not None and not session.terminal
 
     # -- public ---------------------------------------------------------------------
 
@@ -695,6 +704,8 @@ class SyncEngine:
                 snap = await self._snapshot(follower_ad, session.follower)
                 if snap is not None:
                     session.snapshots[session.follower.id] = snap
+            await self._shuffle_off(session, master_ad, follower_ad, both=both)
+            if both:
                 await self._prime_both(session, master_ad, follower_ad)
                 self._publish(session, "verifying")
                 self._verify(session)
@@ -748,6 +759,49 @@ class SyncEngine:
                 "queue snapshot failed", extra={"extra": {"side": side.id, "error": str(exc)}}
             )
             return None
+
+    async def _shuffle_off(
+        self,
+        session: SyncSession,
+        master_ad: PlaybackAdapter,
+        follower_ad: PlaybackAdapter,
+        *,
+        both: bool,
+    ) -> None:
+        """Sync Play needs both queues to advance in the same order, so shuffle and repeat are
+        forced off before priming, after the queue snapshot so the snapshot holds the user's
+        mode. With ``both=False`` (a re-prime of the follower only) the master is left alone.
+        Each side's previous mode is remembered and restored when the session ends. Best effort:
+        a vendor that cannot set the mode is left alone and the session proceeds (ai-dev #79)."""
+        targets = [(session.follower, follower_ad)]
+        if both:
+            targets.insert(0, (session.master, master_ad))
+        for side, adapter in targets:
+            current = self.store.state.sides.get(side.id)
+            if current is not None and side.id not in session.saved_modes:
+                session.saved_modes[side.id] = current.play_mode
+            if current is not None and current.play_mode == PlayMode():
+                continue
+            try:
+                await adapter.set_play_mode(side.coordinator_player_id, PlayMode())
+            except Exception as exc:  # noqa: BLE001 - optional on some adapters
+                log.debug(
+                    "shuffle off skipped", extra={"extra": {"side": side.id, "error": str(exc)}}
+                )
+
+    async def _restore_modes(self, session: SyncSession) -> None:
+        """Put back the shuffle/repeat each side had before Sync Play (best effort)."""
+        for side_id, mode in list(session.saved_modes.items()):
+            side = self.store.state.sides.get(side_id)
+            if side is None or mode == PlayMode():
+                continue
+            try:
+                await self._adapter(side).set_play_mode(side.coordinator_player_id, mode)
+            except Exception as exc:  # noqa: BLE001 - best effort
+                log.debug(
+                    "mode restore skipped", extra={"extra": {"side": side_id, "error": str(exc)}}
+                )
+        session.saved_modes.clear()
 
     async def _prime_both(
         self, session: SyncSession, master_ad: PlaybackAdapter, follower_ad: PlaybackAdapter
@@ -1294,12 +1348,19 @@ class SyncEngine:
         session.reason = reason
         session.log.add(now, None, None, None, action)
         self._publish(session, status)
+        report = self._report(session)
         try:
             await session.log.flush()
-            await session.log.write_meta(session.summary(), self._report(session))
+            await session.log.write_meta(session.summary(), report)
             await asyncio.to_thread(trim_sessions, self.log_dir, self.max_sessions)
         except OSError:
             log.exception("sync log write failed", extra={"extra": {"session": session.id}})
+        for cb in list(self.on_ended):
+            try:
+                cb(report)
+            except Exception:  # noqa: BLE001 - an observer must not break the engine
+                log.exception("sync on_ended observer failed")
+        await self._restore_modes(session)
         if asyncio.current_task() is not self._monitor:
             await stop_task(self._monitor)
             self._monitor = None

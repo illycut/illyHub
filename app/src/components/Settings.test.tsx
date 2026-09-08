@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { axe } from "vitest-axe";
-import { COMING_LATER, RESTART_FAILED_COPY, RESTART_TIMEOUT_MS, SettingsScreen, accountStatusLine, formatUptime, nextRestartState } from "./SettingsScreen";
+import { RESTART_FAILED_COPY, RESTART_TIMEOUT_MS, SettingsScreen, accountStatusLine, formatUptime, nextRestartState, pandoraStatusLine } from "./SettingsScreen";
 import { useHub } from "@/lib/hub/store";
 import { useLibrary } from "@/lib/library/store";
 import { useToasts } from "@/lib/ui/toasts";
@@ -57,6 +57,8 @@ function boot(opts: Opts = {}) {
       linked = false;
       return jsonResponse(acct("tidal"));
     }
+    if (url === "/api/hub/update/check") return jsonResponse({ current: { version: "0.3.0", commit: "abc", branch: "main" }, remote: { commit: "abc", ahead_by: 0, summary: null }, available: false, last_checked_at: null });
+    if (url === "/api/metrics/summary") return jsonResponse({ summary: "Up 3 days. 42 commands today." });
     if (url === "/api/hub/restart") {
       const st = opts.restartStatus ?? 202;
       return st === 409 ? jsonResponse({ code: "restart_disabled", message: "Restarting from the app is turned off on this hub." }, 409) : jsonResponse({ restarting: true }, 202);
@@ -95,6 +97,34 @@ describe("helpers", () => {
   });
 });
 
+describe("pandoraStatusLine", () => {
+  const base = { service: "pandora" as const, state: "linked" as const, linked: true, account_name: null, expires_at: null, pending: null, last_error: null, last_error_code: null };
+  it("says where Pandora is linked from linked_by_vendor, or the hub's error", () => {
+    expect(pandoraStatusLine({ ...base, linked_by_vendor: { heos: true, sonos: false } })).toBe("Linked in the HEOS app · not in Sonos");
+    expect(pandoraStatusLine({ ...base, linked_by_vendor: { heos: true, sonos: true } })).toBe("Linked in the HEOS app and the Sonos app");
+    expect(pandoraStatusLine({ ...base, linked: false, linked_by_vendor: { heos: false, sonos: false } })).toBe("Not linked in the HEOS app or the Sonos app");
+    expect(pandoraStatusLine({ ...base, linked_by_vendor: null })).toBe("Linked in the vendor apps");
+    expect(pandoraStatusLine({ ...base, linked_by_vendor: { heos: true, sonos: false }, last_error: "Sonos: Pandora on Sonos needs to be signed in again." })).toBe("Sonos: Pandora on Sonos needs to be signed in again.");
+  });
+});
+
+describe("no placeholder copy ships", () => {
+  it("'Coming later' is gone from the source tree", async () => {
+    const { readdirSync, readFileSync, statSync } = await import("node:fs");
+    const path = await import("node:path");
+    const walk = (dir: string, out: string[] = []): string[] => {
+      for (const f of readdirSync(dir)) {
+        const p = path.join(dir, f);
+        if (statSync(p).isDirectory()) walk(p, out);
+        else if (/\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f)) out.push(p);
+      }
+      return out;
+    };
+    const offenders = walk(path.resolve(__dirname, "..")).filter((f) => readFileSync(f, "utf8").includes("Coming later"));
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe("SettingsScreen", () => {
   it("renders the three groups from /api/settings; the YouTube Music row is live (Phase 6); the Pandora row is disabled without opacity and reads 'Coming later' (U5–U7); offline hardware is muted with a trailing Offline label (U8); passes axe", async () => {
     boot({ linked: true });
@@ -103,18 +133,20 @@ describe("SettingsScreen", () => {
     const yt = screen.getByTestId("account-ytmusic");
     expect(yt).not.toBeDisabled();
     expect(yt).toHaveTextContent("Not connected");
-    expect(yt).not.toHaveTextContent(COMING_LATER);
-    // Pandora is "linked" per the hub but linked in the vendor apps, not here: the line is the reason, never "Connected" (U6)
+    expect(yt).not.toHaveTextContent("Coming later");
+    // Pandora is linked in the vendor apps, not here: the row stays disabled and says where it is linked (never "Connected", never "Coming later")
     const pandora = screen.getByTestId("account-pandora");
     expect(pandora).toBeDisabled();
     expect(pandora).toHaveAttribute("aria-disabled", "true");
-    expect(pandora).toHaveTextContent(COMING_LATER);
+    expect(pandora).toHaveTextContent("Linked in the vendor apps");
     expect(pandora.className).not.toContain("opacity");
     expect(pandora).not.toHaveTextContent("Connected");
+    expect(document.body.textContent).not.toContain("Coming later");
     expect(screen.getByTestId("account-heos_account")).toHaveTextContent("Connected · james@home");
     expect(screen.getByTestId("hub-status")).toHaveTextContent("10.0.0.5:8080");
     expect(screen.getByTestId("hub-status")).toHaveTextContent("Version 0.3.0 · up 1h 1m");
-    expect(screen.getByTestId("check-updates")).toHaveTextContent(COMING_LATER);
+    // Phase 8: the update row is live and reports the check result (PRD SET-2).
+    await waitFor(() => expect(screen.getByTestId("check-updates")).toHaveTextContent("Up to date · 0.3.0"));
     const hw = screen.getAllByTestId("hardware-row");
     expect(hw).toHaveLength(2);
     expect(hw[0]).toHaveTextContent("HEOS · AVR-X3700H · 10.0.0.5");

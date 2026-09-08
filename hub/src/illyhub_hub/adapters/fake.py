@@ -27,8 +27,11 @@ from ..state import (
     GroupTopology,
     NowPlaying,
     Player,
+    PlayMode,
     PlayState,
     Position,
+    QueueEntry,
+    QueueState,
     StateStore,
     Zone,
     now,
@@ -273,6 +276,7 @@ class FakeVendorMixin:
             )
         side = self._side_for(player_id)
         self._queues.pop(side, None)
+        self._publish_queue(side)
         self._stations[side] = (station, ref, 0)
         self.change_track(player_id, station_track(station, 0), content_ref=ref)
         self.sim_play_state(player_id, "play")
@@ -286,6 +290,84 @@ class FakeVendorMixin:
         self._stations[side] = (station, ref, n + 1)
         self.change_track(player_id, station_track(station, n + 1), content_ref=ref)
         return True
+
+    # -- queue exposure and play mode (Phase 8) -------------------------------------------
+
+    def _queue_entry(self, index: int, t: PlayableTrack) -> QueueEntry:
+        """One builder for both the pushed snapshot and the pulled read, art included."""
+        return QueueEntry(
+            index=index,
+            title=t.title,
+            artist=t.artist,
+            album=t.album,
+            duration_ms=t.duration_ms,
+            art=self.art.ref(
+                ArtHints(
+                    device_url=f"fake://art/{(t.album_id or t.track_id).replace(':', '-')}",
+                    service=t.service,
+                )
+            ),
+            track_id=self.vendor_track_id(t.track_id, t.service),
+            content_ref=ContentRef(service=t.service, kind="track", id=t.track_id)  # type: ignore[arg-type]
+            if t.service in ("tidal", "ytmusic")
+            else None,
+        )
+
+    def _publish_queue(self, side: str) -> None:
+        """Mirror the fake queue into ``HubState.queues[side]`` like a real queue event would."""
+        queued = self._queues.get(side)
+        if not queued:
+            self.store.set_queue(side, None)
+            return
+        tracks, idx = queued
+        np = self.store.state.now_playing.get(side)
+        self.store.set_queue(
+            side,
+            QueueState(
+                items=[self._queue_entry(i, t) for i, t in enumerate(tracks)],
+                current_index=idx,
+                source=(np.source if np and np.source else tracks[0].service),
+                total=len(tracks),
+            ),
+        )
+
+    async def get_queue(
+        self, player_id: str, limit: int = 200
+    ) -> tuple[list[QueueEntry], int | None]:
+        self._check(player_id)
+        side = self._side_for(player_id)
+        queued = self._queues.get(side)
+        if not queued:
+            return [], 0
+        tracks, _idx = queued
+        return [self._queue_entry(i, t) for i, t in enumerate(tracks[:limit])], len(tracks)
+
+    async def play_queue_index(self, player_id: str, index: int) -> None:
+        self._check(player_id)
+        side = self._side_for(player_id)
+        queued = self._queues.get(side)
+        if not queued:
+            raise UnsupportedCommandError("nothing is queued")
+        tracks, _idx = queued
+        if not 0 <= index < len(tracks):
+            raise IndexError(f"queue index {index} out of range for {len(tracks)} tracks")
+        self._queues[side] = (tracks, index)
+        self.change_track(
+            player_id, self._track_from_playable(tracks[index]), track_id=tracks[index].track_id
+        )
+        self.sim_play_state(player_id, "play")
+        self._publish_queue(side)
+
+    async def get_play_mode(self, player_id: str) -> PlayMode:
+        self._check(player_id)
+        return self.store.state.players[player_id].play_mode
+
+    async def set_play_mode(self, player_id: str, mode: PlayMode) -> None:
+        self._check(player_id)
+        side_players = self.store.state.sides[self._side_for(player_id)].member_ids
+        for pid in side_players:
+            self.store.set_play_mode(pid, mode)
+        self._emit("play_mode", player_id=player_id)
 
     def _track_from_playable(self, t: PlayableTrack) -> FakeTrack:
         return FakeTrack(
@@ -316,6 +398,7 @@ class FakeVendorMixin:
             track_id=tracks[start_index].track_id,
         )
         self.sim_play_state(player_id, "play")
+        self._publish_queue(side)
 
     async def prime_content(
         self, player_id: str, ref: ContentRef, tracks: list[PlayableTrack], start_index: int = 0
@@ -334,6 +417,7 @@ class FakeVendorMixin:
         self.sim_play_state(player_id, "pause")
         track = tracks[start_index]
         self.change_track(player_id, self._track_from_playable(track), track_id=track.track_id)
+        self._publish_queue(side)
         return PrimedQueue(track_id=track.track_id, title=track.title)
 
     async def start_primed(self, player_id: str, start_index: int = 0) -> None:
@@ -374,6 +458,7 @@ class FakeVendorMixin:
         self.change_track(
             player_id, self._track_from_playable(tracks[nxt]), track_id=tracks[nxt].track_id
         )
+        self._publish_queue(side)
         return True
 
     # -- scripting (simulates the vendor app) -----------------------------------------
@@ -981,6 +1066,8 @@ class FakeBundle:
         "pandora_auth_fault",
         "pandora_auth_ok",
         "station_track_change",
+        "queue_change",
+        "play_mode_change",
     )
 
     def run_scenario(self, name: str, *, vendor: str | None = None) -> dict[str, object]:
@@ -999,6 +1086,37 @@ class FakeBundle:
             return {"pandora_linked": self.set_pandora_linked(vendor, True)}
         if name == "unlink_pandora":
             return {"pandora_linked": self.set_pandora_linked(vendor, False)}
+        if name == "queue_change":
+            # The vendor app appended a track to a queue (like a real queue event). Default HEOS;
+            # ?vendor=sonos targets the Kitchen group instead.
+            fake = self.sonos if vendor == "sonos" else self.heos
+            side = (
+                self.sonos.side_id()
+                if vendor == "sonos"
+                else side_id_for_group("heos", HEOS_PLAYER)
+            )
+            queued = fake._queues.get(side)
+            if not queued:
+                return {"side": side, "queued": 0}
+            tracks, idx = queued
+            extra = PlayableTrack(
+                service=tracks[0].service,
+                track_id=f"{tracks[0].track_id}x{len(tracks)}",
+                title=f"Encore {len(tracks) + 1}",
+                artist=tracks[0].artist,
+                album=tracks[0].album,
+                album_id=tracks[0].album_id,
+                duration_ms=180_000,
+            )
+            fake._queues[side] = ([*tracks, extra], idx)
+            fake._publish_queue(side)
+            return {"side": side, "queued": len(tracks) + 1}
+        if name == "play_mode_change":
+            # Shuffle toggled from the HEOS app.
+            current = self.store.state.players[HEOS_PLAYER].play_mode
+            mode = PlayMode(shuffle=not current.shuffle, repeat=current.repeat)
+            self.store.set_play_mode(HEOS_PLAYER, mode)
+            return {"player": HEOS_PLAYER, "play_mode": mode.model_dump()}
         if name == "station_track_change":
             advanced = [
                 a.vendor

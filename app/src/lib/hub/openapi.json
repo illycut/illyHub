@@ -1514,6 +1514,294 @@
     }
    }
   },
+  "/api/queue/{side_id}": {
+   "get": {
+    "tags": [
+     "queue"
+    ],
+    "summary": "Queue",
+    "operationId": "queue_api_queue__side_id__get",
+    "parameters": [
+     {
+      "name": "side_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Side Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/QueueState"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/queue/jump": {
+   "post": {
+    "tags": [
+     "queue"
+    ],
+    "summary": "Queue Jump",
+    "operationId": "queue_jump_api_queue_jump_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/QueueJumpBody"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Ack"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/playmode": {
+   "post": {
+    "tags": [
+     "queue"
+    ],
+    "summary": "Play Mode",
+    "operationId": "play_mode_api_playmode_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PlayModeBody"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Ack"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/search": {
+   "get": {
+    "tags": [
+     "search"
+    ],
+    "summary": "Search",
+    "operationId": "search_api_search_get",
+    "parameters": [
+     {
+      "name": "q",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "",
+       "title": "Q"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 50,
+       "minimum": 1,
+       "default": 20,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SearchResponse"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/metrics": {
+   "get": {
+    "tags": [
+     "metrics"
+    ],
+    "summary": "Metrics View",
+    "operationId": "metrics_view_api_metrics_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MetricsResponse"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/metrics/summary": {
+   "get": {
+    "tags": [
+     "metrics"
+    ],
+    "summary": "Metrics Summary",
+    "operationId": "metrics_summary_api_metrics_summary_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": {
+          "type": "string"
+         },
+         "type": "object",
+         "title": "Response Metrics Summary Api Metrics Summary Get"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/update/check": {
+   "get": {
+    "tags": [
+     "settings"
+    ],
+    "summary": "Update Check",
+    "operationId": "update_check_api_hub_update_check_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/UpdateCheck"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/update/status": {
+   "get": {
+    "tags": [
+     "settings"
+    ],
+    "summary": "Update Status",
+    "operationId": "update_status_api_hub_update_status_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/UpdateStatus"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/update/apply": {
+   "post": {
+    "tags": [
+     "settings"
+    ],
+    "summary": "Update Apply",
+    "operationId": "update_apply_api_hub_update_apply_post",
+    "responses": {
+     "202": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/UpdateApplyResponse"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/airplay": {
    "get": {
     "tags": [
@@ -1907,6 +2195,12 @@
       "type": "object",
       "title": "Resolved",
       "description": "transport acks: side id -> the action actually sent (toggle resolved)"
+     },
+     "latency_ms": {
+      "type": "number",
+      "title": "Latency Ms",
+      "description": "hub-side time from request to ack",
+      "default": 0.0
      }
     },
     "type": "object",
@@ -2453,6 +2747,81 @@
     "title": "ContentRef",
     "description": "Canonical service id: what the hub browses by and plays from (\"browse once, play\nanywhere\", PRD review \u00a72.1). Also the cross-vendor identity of the current track."
    },
+   "DayMetrics": {
+    "properties": {
+     "day": {
+      "type": "string",
+      "title": "Day"
+     },
+     "uptime_s": {
+      "type": "number",
+      "title": "Uptime S",
+      "default": 0.0
+     },
+     "uptime_pct": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Uptime Pct"
+     },
+     "commands": {
+      "type": "integer",
+      "title": "Commands",
+      "default": 0
+     },
+     "commands_failed": {
+      "type": "integer",
+      "title": "Commands Failed",
+      "default": 0
+     },
+     "commands_by_action": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "type": "object",
+      "title": "Commands By Action"
+     },
+     "latency_by_action": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/LatencyStats"
+      },
+      "type": "object",
+      "title": "Latency By Action"
+     },
+     "latency_by_vendor": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/LatencyStats"
+      },
+      "type": "object",
+      "title": "Latency By Vendor"
+     },
+     "reconnects": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "type": "object",
+      "title": "Reconnects"
+     },
+     "ws_clients_peak": {
+      "type": "integer",
+      "title": "Ws Clients Peak",
+      "default": 0
+     },
+     "sync": {
+      "$ref": "#/components/schemas/SyncStats"
+     }
+    },
+    "type": "object",
+    "required": [
+     "day"
+    ],
+    "title": "DayMetrics"
+   },
    "DevicesResponse": {
     "properties": {
      "players": {
@@ -2974,6 +3343,39 @@
     ],
     "title": "HubInfo"
    },
+   "LatencyStats": {
+    "properties": {
+     "count": {
+      "type": "integer",
+      "title": "Count",
+      "default": 0
+     },
+     "p50_ms": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "P50 Ms"
+     },
+     "p95_ms": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "P95 Ms"
+     }
+    },
+    "type": "object",
+    "title": "LatencyStats"
+   },
    "LinkStartResponse": {
     "properties": {
      "service": {
@@ -3006,6 +3408,37 @@
      "interval_s"
     ],
     "title": "LinkStartResponse"
+   },
+   "MetricsResponse": {
+    "properties": {
+     "today": {
+      "$ref": "#/components/schemas/DayMetrics"
+     },
+     "days": {
+      "items": {
+       "$ref": "#/components/schemas/DayMetrics"
+      },
+      "type": "array",
+      "title": "Days"
+     },
+     "ws_clients": {
+      "type": "integer",
+      "title": "Ws Clients"
+     },
+     "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Generated At"
+     }
+    },
+    "type": "object",
+    "required": [
+     "today",
+     "days",
+     "ws_clients",
+     "generated_at"
+    ],
+    "title": "MetricsResponse"
    },
    "MuteBody": {
     "properties": {
@@ -3195,6 +3628,69 @@
     ],
     "title": "PlayBody"
    },
+   "PlayMode": {
+    "properties": {
+     "shuffle": {
+      "type": "boolean",
+      "title": "Shuffle",
+      "default": false
+     },
+     "repeat": {
+      "type": "string",
+      "enum": [
+       "off",
+       "one",
+       "all"
+      ],
+      "title": "Repeat",
+      "default": "off"
+     }
+    },
+    "type": "object",
+    "title": "PlayMode",
+    "description": "Shuffle / repeat as the coordinator reports it (Phase 8, ai-dev #79).\n\nHEOS: ``player/get_play_mode`` \u2192 ``repeat`` \u2208 on_all|on_one|off and ``shuffle`` on|off.\nSonos: ``PlayMode`` \u2208 NORMAL|SHUFFLE_NOREPEAT|SHUFFLE|REPEAT_ALL|REPEAT_ONE|SHUFFLE_REPEAT_ONE.\nBoth map onto the same two fields here."
+   },
+   "PlayModeBody": {
+    "properties": {
+     "target": {
+      "type": "string",
+      "title": "Target",
+      "description": "player id, side id, or 'all'"
+     },
+     "shuffle": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Shuffle"
+     },
+     "repeat": {
+      "anyOf": [
+       {
+        "type": "string",
+        "enum": [
+         "off",
+         "one",
+         "all"
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Repeat"
+     }
+    },
+    "type": "object",
+    "required": [
+     "target"
+    ],
+    "title": "PlayModeBody"
+   },
    "Player": {
     "properties": {
      "id": {
@@ -3276,6 +3772,9 @@
      },
      "capabilities": {
       "$ref": "#/components/schemas/Capabilities"
+     },
+     "play_mode": {
+      "$ref": "#/components/schemas/PlayMode"
      }
     },
     "type": "object",
@@ -3285,6 +3784,165 @@
      "vendor"
     ],
     "title": "Player"
+   },
+   "QueueEntry": {
+    "properties": {
+     "index": {
+      "type": "integer",
+      "title": "Index"
+     },
+     "title": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Title"
+     },
+     "artist": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Artist"
+     },
+     "album": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Album"
+     },
+     "duration_ms": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Duration Ms"
+     },
+     "art": {
+      "$ref": "#/components/schemas/ArtRef"
+     },
+     "track_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Track Id"
+     },
+     "content_ref": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/ContentRef"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "type": "object",
+    "required": [
+     "index"
+    ],
+    "title": "QueueEntry",
+    "description": "One track in a side's native queue, in the shape the client renders (ai-dev #77)."
+   },
+   "QueueJumpBody": {
+    "properties": {
+     "target": {
+      "type": "string",
+      "title": "Target",
+      "description": "player id, side id, or 'all'"
+     },
+     "index": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Index"
+     }
+    },
+    "type": "object",
+    "required": [
+     "target",
+     "index"
+    ],
+    "title": "QueueJumpBody"
+   },
+   "QueueState": {
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/QueueEntry"
+      },
+      "type": "array",
+      "title": "Items"
+     },
+     "current_index": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Current Index"
+     },
+     "source": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Source"
+     },
+     "truncated": {
+      "type": "boolean",
+      "title": "Truncated",
+      "default": false
+     },
+     "total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Total"
+     },
+     "updated_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Updated At"
+     }
+    },
+    "type": "object",
+    "title": "QueueState",
+    "description": "A side's queue as last read from the coordinator; streamed as ``queues.<side>``."
    },
    "RefreshResponse": {
     "properties": {
@@ -3298,6 +3956,46 @@
      "cleared"
     ],
     "title": "RefreshResponse"
+   },
+   "RemoteVersion": {
+    "properties": {
+     "commit": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Commit"
+     },
+     "ahead_by": {
+      "type": "integer",
+      "title": "Ahead By",
+      "default": 0
+     },
+     "summary": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Summary"
+     },
+     "tracking": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Tracking"
+     }
+    },
+    "type": "object",
+    "title": "RemoteVersion"
    },
    "ScenarioResponse": {
     "properties": {
@@ -3322,6 +4020,66 @@
      "state_version"
     ],
     "title": "ScenarioResponse"
+   },
+   "SearchResponse": {
+    "properties": {
+     "query": {
+      "type": "string",
+      "title": "Query"
+     },
+     "albums": {
+      "items": {
+       "$ref": "#/components/schemas/BrowseItem"
+      },
+      "type": "array",
+      "title": "Albums"
+     },
+     "playlists": {
+      "items": {
+       "$ref": "#/components/schemas/BrowseItem"
+      },
+      "type": "array",
+      "title": "Playlists"
+     },
+     "tracks": {
+      "items": {
+       "$ref": "#/components/schemas/BrowseItem"
+      },
+      "type": "array",
+      "title": "Tracks"
+     },
+     "stations": {
+      "items": {
+       "$ref": "#/components/schemas/BrowseItem"
+      },
+      "type": "array",
+      "title": "Stations"
+     },
+     "errors": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "type": "object",
+      "title": "Errors"
+     },
+     "services": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Services"
+     },
+     "partial": {
+      "type": "boolean",
+      "title": "Partial",
+      "default": false
+     }
+    },
+    "type": "object",
+    "required": [
+     "query"
+    ],
+    "title": "SearchResponse"
    },
    "SeekBody": {
     "properties": {
@@ -3423,6 +4181,9 @@
      },
      "capabilities": {
       "$ref": "#/components/schemas/Capabilities"
+     },
+     "play_mode": {
+      "$ref": "#/components/schemas/PlayMode"
      }
     },
     "type": "object",
@@ -3961,6 +4722,71 @@
     "title": "SyncState",
     "description": "Sync Play session as streamed to clients (docs/api.md \u2192 Sync Play, docs/sync-engine.md).\n\n``master_side`` is always the HEOS side (it cannot be seeked, so it is the clock);\n``follower_side`` the Sonos side. ``drift_ms`` is follower minus master."
    },
+   "SyncStats": {
+    "properties": {
+     "sessions": {
+      "type": "integer",
+      "title": "Sessions",
+      "default": 0
+     },
+     "start_delta_p50_ms": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Start Delta P50 Ms"
+     },
+     "start_delta_p95_ms": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Start Delta P95 Ms"
+     },
+     "drift_mean_ms": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Drift Mean Ms"
+     },
+     "drift_p95_ms": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Drift P95 Ms"
+     },
+     "corrections": {
+      "type": "integer",
+      "title": "Corrections",
+      "default": 0
+     },
+     "lost": {
+      "type": "integer",
+      "title": "Lost",
+      "default": 0
+     }
+    },
+    "type": "object",
+    "title": "SyncStats"
+   },
    "TargetBody": {
     "properties": {
      "target": {
@@ -3974,6 +4800,174 @@
      "target"
     ],
     "title": "TargetBody"
+   },
+   "UpdateApplyResponse": {
+    "properties": {
+     "job_id": {
+      "type": "string",
+      "title": "Job Id"
+     },
+     "state": {
+      "type": "string",
+      "title": "State"
+     },
+     "message": {
+      "type": "string",
+      "title": "Message"
+     }
+    },
+    "type": "object",
+    "required": [
+     "job_id",
+     "state",
+     "message"
+    ],
+    "title": "UpdateApplyResponse"
+   },
+   "UpdateCheck": {
+    "properties": {
+     "current": {
+      "$ref": "#/components/schemas/UpdateVersion"
+     },
+     "remote": {
+      "$ref": "#/components/schemas/RemoteVersion"
+     },
+     "available": {
+      "type": "boolean",
+      "title": "Available",
+      "default": false
+     },
+     "last_checked_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Last Checked At"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Error"
+     }
+    },
+    "type": "object",
+    "required": [
+     "current",
+     "remote",
+     "last_checked_at"
+    ],
+    "title": "UpdateCheck"
+   },
+   "UpdateStatus": {
+    "properties": {
+     "state": {
+      "type": "string",
+      "enum": [
+       "idle",
+       "running",
+       "succeeded",
+       "up_to_date",
+       "failed",
+       "rolled_back"
+      ],
+      "title": "State",
+      "default": "idle"
+     },
+     "job_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Job Id"
+     },
+     "started_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Started At"
+     },
+     "finished_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Finished At"
+     },
+     "log_tail": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Log Tail"
+     },
+     "message": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Message"
+     }
+    },
+    "type": "object",
+    "title": "UpdateStatus"
+   },
+   "UpdateVersion": {
+    "properties": {
+     "version": {
+      "type": "string",
+      "title": "Version"
+     },
+     "commit": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Commit"
+     },
+     "branch": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Branch"
+     }
+    },
+    "type": "object",
+    "required": [
+     "version"
+    ],
+    "title": "UpdateVersion"
    },
    "ValidationError": {
     "properties": {
@@ -4206,7 +5200,19 @@
   },
   {
    "name": "settings",
-   "description": "Accounts, hub info, hardware, restart"
+   "description": "Accounts, hub info, hardware, restart, update"
+  },
+  {
+   "name": "queue",
+   "description": "Native queues and play mode (shuffle/repeat)"
+  },
+  {
+   "name": "search",
+   "description": "Search across the linked services"
+  },
+  {
+   "name": "metrics",
+   "description": "Uptime, command latency, Sync Play metrics"
   },
   {
    "name": "dev",

@@ -32,6 +32,9 @@ from ..state import (
     GroupTopology,
     NowPlaying,
     Player,
+    PlayMode,
+    QueueEntry,
+    QueueState,
     StateStore,
     optimistic_position,
     side_id_for,
@@ -52,6 +55,33 @@ SUBSCRIPTION_TIMEOUT_S = 600
 RESNAPSHOT_MIN_GAP_S = 2.0  # topology events re-run discovery at most this often
 # Sonos music-service ids seen in stream URIs (``sid=``). Best-effort; unknown ids stay None.
 SERVICE_IDS = {"174": "tidal", "236": "pandora", "284": "ytmusic"}
+
+
+QUEUE_DEBOUNCE_S = 0.5  # coalesce AVTransport bursts into one queue re-read
+
+# SoCo PLAY_MODES: name -> (shuffle, repeat) where repeat is False | True | "ONE".
+_SONOS_MODES: dict[tuple[bool, str], str] = {
+    (False, "off"): "NORMAL",
+    (True, "off"): "SHUFFLE_NOREPEAT",
+    (True, "all"): "SHUFFLE",
+    (False, "all"): "REPEAT_ALL",
+    (True, "one"): "SHUFFLE_REPEAT_ONE",
+    (False, "one"): "REPEAT_ONE",
+}
+_MODES_TO_HUB: dict[str, tuple[bool, str]] = {v: k for k, v in _SONOS_MODES.items()}
+
+
+def play_mode_from_sonos(mode: str | None) -> PlayMode | None:
+    """``NORMAL`` … ``SHUFFLE_REPEAT_ONE`` → hub shuffle/repeat; None for anything unknown."""
+    hit = _MODES_TO_HUB.get(str(mode or "").upper())
+    if hit is None:
+        return None
+    shuffle, repeat = hit
+    return PlayMode(shuffle=shuffle, repeat=repeat)  # type: ignore[arg-type]
+
+
+def play_mode_to_sonos(mode: PlayMode) -> str:
+    return _SONOS_MODES[(mode.shuffle, mode.repeat)]
 
 
 @dataclass(frozen=True)
@@ -571,6 +601,7 @@ class SoCoAdapter(SonosAdapter):
         self._run_sync = run_sync
         self._clock = clock or (lambda: asyncio.get_running_loop().time())
         self._trackers: dict[str, PositionTracker] = {}
+        self._queue_refresh: dict[str, asyncio.Task[None]] = {}  # side id -> debounced re-read
         self._pollers: dict[str, asyncio.Task[None]] = {}
         self._last_snapshot_at: float | None = None
         self._topology = Topology()
@@ -946,6 +977,150 @@ class SoCoAdapter(SonosAdapter):
             return
         await self._run_sync(snapshot.restore)
 
+    # -- queue and play mode (Phase 8) -----------------------------------------------------
+
+    async def get_queue(self, player_id: str, limit: int = 200) -> tuple[list[QueueEntry], int]:
+        """SoCo ``get_queue(start, max_items)`` (DIDL tracks) plus ``queue_size``; the coordinator
+        holds the group's queue. Runs in a worker thread; only plain data comes back."""
+        raw = self._raw(player_id)
+        uid = player_id.removeprefix("sonos-")
+        zone_ip = next((z.ip for z in self._topology.zones if z.uid == uid), None)
+
+        def work() -> tuple[list[dict[str, Any]], int]:
+            items = raw.get_queue(0, limit, full_album_art_uri=True)
+            total = getattr(items, "total_matches", None)
+            if total is None:
+                try:
+                    total = int(raw.queue_size)
+                except Exception:  # noqa: BLE001 - optional
+                    total = len(items)
+            out: list[dict[str, Any]] = []
+            for it in items:
+                res = getattr(it, "resources", None) or []
+                uri = getattr(res[0], "uri", None) if res else None
+                duration = getattr(res[0], "duration", None) if res else None
+                out.append(
+                    {
+                        "title": getattr(it, "title", None),
+                        "creator": getattr(it, "creator", None),
+                        "album": getattr(it, "album", None),
+                        "album_art_uri": getattr(it, "album_art_uri", None),
+                        "uri": uri,
+                        "duration": duration,
+                    }
+                )
+            return out, int(total)
+
+        rows, total = await self._run_sync(work)
+        entries = [
+            QueueEntry(
+                index=i,
+                title=r["title"],
+                artist=r["creator"],
+                album=r["album"],
+                duration_ms=_hms_to_ms(str(r["duration"])) if r["duration"] else None,
+                art=self.art.ref(
+                    ArtHints(
+                        device_url=absolutize(r["album_art_uri"], zone_ip) if zone_ip else None,
+                        service=source_from_uri(r["uri"]),
+                    )
+                ),
+                track_id=r["uri"],
+                content_ref=tidal_ref_from_uri(r["uri"]) or ytmusic_ref_from_uri(r["uri"]),
+            )
+            for i, r in enumerate(rows[:limit])
+        ]
+        return entries, total
+
+    async def play_queue_index(self, player_id: str, index: int) -> None:
+        """``play_from_queue(index)`` after a ``queue_size`` bound check; a UPnP refusal for a
+        position the player does not have is reported as ``IndexError`` (→ invalid_argument)."""
+        raw = self._raw(player_id)
+
+        def work() -> None:
+            try:
+                size = int(raw.queue_size)
+            except Exception:  # noqa: BLE001 - optional on some firmware
+                size = None
+            if size is not None and not 0 <= index < size:
+                raise IndexError(f"queue index {index} out of range for {size} tracks")
+            try:
+                raw.play_from_queue(index)
+            except Exception as exc:  # noqa: BLE001 - SoCoUPnPException 7xx for a bad position
+                if "SoCoUPnPException" in type(exc).__name__ or "UPnP" in type(exc).__name__:
+                    raise IndexError(f"queue index {index} refused by the player: {exc}") from exc
+                raise
+
+        await self._run_sync(work)
+
+    async def get_play_mode(self, player_id: str) -> PlayMode:
+        raw = self._raw(player_id)
+        mode = await self._run_sync(lambda: raw.play_mode)
+        return play_mode_from_sonos(mode) or PlayMode()
+
+    async def set_play_mode(self, player_id: str, mode: PlayMode) -> None:
+        raw = self._raw(player_id)
+        target = play_mode_to_sonos(mode)
+
+        def work() -> None:
+            raw.play_mode = target
+
+        await self._run_sync(work)
+        self.store.set_play_mode(player_id, mode)
+
+    def _move_queue_pointer(self, p_id: str, current_track: Any) -> None:
+        """AVTransport ``CurrentTrack`` is the 1-based queue position; keep ``current_index``
+        in step without re-reading the whole queue."""
+        player = self.store.state.players.get(p_id)
+        if player is None:
+            return
+        side = side_id_for(player)
+        queued = self.store.state.queues.get(side)
+        try:
+            idx = int(str(current_track)) - 1
+        except (TypeError, ValueError):
+            return
+        if queued is None or idx < 0 or queued.current_index == idx:
+            return
+        self.store.set_queue(side, queued.model_copy(update={"current_index": idx}))
+
+    def _schedule_queue_refresh(self, p_id: str) -> None:
+        player = self.store.state.players.get(p_id)
+        if player is None:
+            return
+        side = side_id_for(player)
+        pending = self._queue_refresh.get(side)
+        if pending is not None and not pending.done():
+            pending.cancel()
+        task = self._spawn(self._refresh_queue(side, p_id))
+        if task is not None:
+            self._queue_refresh[side] = task
+
+    async def _refresh_queue(self, side: str, p_id: str) -> None:
+        await asyncio.sleep(QUEUE_DEBOUNCE_S)
+        try:
+            entries, total = await self.get_queue(p_id)
+        except Exception as exc:  # noqa: BLE001 - keep the last snapshot
+            self.log.debug("queue re-read failed", extra={"extra": {"error": str(exc)}})
+            return
+        if side not in self.store.state.sides:
+            return
+        np = self.store.state.now_playing.get(side)
+        current = None
+        if np is not None and np.track_id:
+            current = next((e.index for e in entries if e.track_id == np.track_id), None)
+        self.store.set_queue(
+            side,
+            QueueState(
+                items=entries,
+                current_index=current,
+                source=np.source if np else None,
+                total=total,
+                truncated=total > len(entries),
+            ),
+        )
+        self._emit("queue", player_id=p_id)
+
     def _sync_pollers(self) -> None:
         """One poller per side whose coordinator is playing; stop the rest."""
         state = self.store.state
@@ -1075,6 +1250,17 @@ class SoCoAdapter(SonosAdapter):
             self._emit("volume", player_id=p_id)
 
     def _apply_transport(self, p_id: str, zone: ZoneSnapshot, variables: dict[str, Any]) -> None:
+        mode = variables.get("current_play_mode")
+        if mode:
+            mapped_mode = play_mode_from_sonos(str(mode))
+            if mapped_mode is not None:
+                self.store.set_play_mode(p_id, mapped_mode)
+        # The queue itself changed (add/remove/reorder): re-read. A plain track advance only
+        # moves the pointer, which ``current_track`` (1-based) gives us for free.
+        if any(k in variables for k in ("number_of_tracks", "queue_update_id")):
+            self._schedule_queue_refresh(p_id)
+        elif "current_track" in variables:
+            self._move_queue_pointer(p_id, variables.get("current_track"))
         state = variables.get("transport_state")
         if state:
             mapped = _play_state(state)

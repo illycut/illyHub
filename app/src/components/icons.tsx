@@ -108,3 +108,26 @@ export const RefreshIcon = (p: P) =>
   base(p, <><path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 3v6h-6" /></>);
 export const HubIcon = (p: P) =>
   base(p, <><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8" /><path d="M12 16v4" /></>);
+
+/** Phase 8: playback options and search (Lucide-weight strokes). */
+export const ShuffleIcon = (p: P) =>
+  base(p, <><path d="M16 3h5v5" /><path d="M4 20 21 3" /><path d="M21 16v5h-5" /><path d="m15 15 6 6" /><path d="m4 4 5 5" /></>);
+export const RepeatIcon = (p: P) =>
+  base(p, <><path d="m17 2 4 4-4 4" /><path d="M3 11v-1a4 4 0 0 1 4-4h14" /><path d="m7 22-4-4 4-4" /><path d="M21 13v1a4 4 0 0 1-4 4H3" /></>);
+export const RepeatOneIcon = (p: P) =>
+  base(
+    p,
+    <>
+      <path d="m17 2 4 4-4 4" />
+      <path d="M3 11v-1a4 4 0 0 1 4-4h14" />
+      <path d="m7 22-4-4 4-4" />
+      <path d="M21 13v1a4 4 0 0 1-4 4H3" />
+      <text x="12" y="15.4" textAnchor="middle" fontSize="8" fontWeight="700" fill="currentColor" stroke="none" fontFamily="inherit">
+        1
+      </text>
+    </>,
+  );
+export const ListIcon = (p: P) => base(p, <><path d="M8 6h13" /><path d="M8 12h13" /><path d="M8 18h13" /><path d="M3 6h.01" /><path d="M3 12h.01" /><path d="M3 18h.01" /></>);
+export const SearchIcon = (p: P) => base(p, <><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></>);
+export const CloseIcon = (p: P) => base(p, <><path d="M18 6 6 18" /><path d="m6 6 12 12" /></>);
+export const ChevronUpIcon = (p: P) => base(p, <path d="m18 15-6-6-6 6" />);

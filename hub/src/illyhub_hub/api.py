@@ -15,10 +15,11 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, Request, Response, WebSocket
+from fastapi import FastAPI, Query, Request, Response, WebSocket
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -55,15 +56,20 @@ from .content import (
 from .discovery import DiscoveredDevice, DiscoveryService, Registry, SearchFn
 from .history import HistoryItem, PlayHistory
 from .logsetup import correlation_id, get_logger
+from .messages import UPDATE_DISABLED, UPDATE_RUNNING, UPDATE_STARTED
 from .messages import export as messages_export
+from .metrics import Metrics, MetricsResponse, vendors_of
 from .services.pandora import PAGE_MAX as STATIONS_PAGE_MAX
 from .services.pandora import PandoraService
+from .services.search import SearchResponse, SearchService
 from .services.tidal import FakeTidalCatalog, TidalCatalog, TidalService
 from .services.ytmusic import FakeYTMusicCatalog, YTMusicCatalog
 from .state import (
     ConnectionStatus,
+    HubState,
     PandoraSyncState,
     Player,
+    QueueState,
     Side,
     StateStore,
     SyncState,
@@ -73,6 +79,7 @@ from .state import (
 from .static import StaticMounts, mount_static
 from .sync import SyncConfig, SyncEngine, SyncReport, SyncSessionSummary
 from .tasks import spawn
+from .update import TERMINAL, UpdateCheck, UpdateManager, UpdateStatus
 from .ws import ClientSession, DumpCache
 
 log = get_logger("api")
@@ -317,6 +324,27 @@ class SyncConfigBody(BaseModel):
     track_grace_s: float | None = Field(default=None, ge=0.1, le=30.0)
 
 
+class QueueJumpBody(TargetBody):
+    index: int = Field(ge=0)
+
+
+class PlayModeBody(TargetBody):
+    shuffle: bool | None = None
+    repeat: Literal["off", "one", "all"] | None = None
+
+    @model_validator(mode="after")
+    def _one_of(self) -> PlayModeBody:
+        if self.shuffle is None and self.repeat is None:
+            raise ValueError("choose shuffle, repeat, or both")
+        return self
+
+
+class UpdateApplyResponse(BaseModel):
+    job_id: str
+    state: str
+    message: str
+
+
 class SyncSessionsResponse(BaseModel):
     sessions: list[SyncSessionSummary]
 
@@ -344,6 +372,9 @@ class HubRuntime:
     history: PlayHistory | None = None
     sync: SyncEngine | None = None
     airplay: PandoraSyncController | None = None
+    metrics: Metrics | None = None
+    update: UpdateManager | None = None
+    search: SearchService | None = None
     vault_error: str | None = None
     # os._exit is wired only by main.py; anything else (tests, embedding) gets a logged no-op.
     exit_fn: Callable[[int], Any] = lambda code: log.warning(  # noqa: E731
@@ -372,6 +403,98 @@ class HubRuntime:
             for a in self.adapters:
                 await a.connect()
         self.started_at = time.monotonic()
+        if self.metrics is not None:
+            self.metrics.started_at = datetime.now(UTC)
+        self._wire_metrics()
+
+    def _wire_metrics(self) -> None:
+        """Feed the metrics from hooks that already exist (Phase 8, ai-dev #73)."""
+        metrics = self.metrics
+        if metrics is None:
+            return
+
+        def on_ack(ack: Any) -> None:
+            metrics.record_command(ack.action, ack.ok, ack.latency_ms, vendors_of(ack.applied))
+
+        self.router.on_ack(on_ack)
+        last_states: dict[str, str] = {
+            name: conn.state for name, conn in self.store.state.connections.items()
+        }
+
+        def on_commit(state: HubState, changed: list[str]) -> None:
+            for path in changed:
+                if not path.startswith("connections."):
+                    continue
+                name = path.split(".", 1)[1]
+                conn = state.connections.get(name)
+                if conn is None:
+                    continue
+                if conn.state == "reconnecting" and last_states.get(name) == "connected":
+                    metrics.record_reconnect(name)
+                last_states[name] = conn.state
+
+        self.store.subscribe(on_commit)
+        if self.sync is not None:
+            self.sync.on_ended.append(
+                lambda report: metrics.record_sync_session(
+                    start_delta_ms=report.start_delta_ms,
+                    drift_mean_ms=report.drift_mean_ms,
+                    drift_p95_ms=report.drift_p95_ms,
+                    corrections=report.corrections,
+                    lost=report.lost_reason is not None,
+                )
+            )
+
+        async def uptime_loop() -> None:
+            tick = max(0.01, self.settings.metrics_tick_s)
+            while True:
+                await asyncio.sleep(tick)
+                metrics.tick_uptime(tick)
+                await asyncio.to_thread(metrics.drain_rollup)
+                metrics.maybe_log_summary()
+
+        spawn(uptime_loop(), self._tasks)
+
+    UPDATE_WATCH_MAX_S = 20 * 60
+
+    async def watch_update(self, job_id: str) -> None:
+        """After ``apply``, exit once the script reports ``succeeded`` or ``rolled_back`` so launchd
+        relaunches the hub on the new (or restored) code. ``failed`` and ``up_to_date`` leave the
+        hub running. Bounded: a job that never reports within 20 minutes is marked failed."""
+        if self.update is None:
+            return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.UPDATE_WATCH_MAX_S
+        while True:
+            await asyncio.sleep(1.0)
+            status = await self.update.status()
+            if status.job_id != job_id:
+                return
+            if status.state in ("succeeded", "rolled_back"):
+                log.warning(
+                    "update finished; exiting for launchd to relaunch",
+                    extra={"extra": {"job": job_id, "state": status.state}},
+                )
+                await self.flush_metrics()
+                self.restarting = True
+                self.exit_fn(0)
+                return
+            if status.state in TERMINAL:
+                log.log(
+                    40 if status.state == "failed" else 20,
+                    "update ended without a restart",
+                    extra={"extra": {"job": job_id, "state": status.state}},
+                )
+                return
+            if loop.time() > deadline:
+                log.error("update watch timed out", extra={"extra": {"job": job_id}})
+                self.update.mark_failed(job_id, "the update did not report within 20 minutes")
+                return
+
+    async def flush_metrics(self) -> None:
+        if self.metrics is not None:
+            await asyncio.to_thread(self.metrics.drain_rollup)
+            await asyncio.to_thread(self.metrics.flush_today)
 
     async def stop(self) -> None:
         await self.discovery.stop()
@@ -385,6 +508,7 @@ class HubRuntime:
                 await a.disconnect()
         if self.art is not None:
             await self.art.stop()
+        await self.flush_metrics()
         if self.tidal_auth is not None:
             await self.tidal_auth.aclose()
         if self.ytmusic_auth is not None:
@@ -471,6 +595,7 @@ def build_runtime(
                 is_linked=lambda: fake_catalog.linked,
                 availability=lambda: router.service_availability("tidal"),
                 cache_ttl_s=settings.browse_cache_s,
+                search_cache_s=settings.search_cache_s,
             )
         else:
             tidal = _real_tidal_service(settings, router, tidal_auth, art)
@@ -484,6 +609,7 @@ def build_runtime(
                 availability=lambda: router.service_availability("ytmusic"),
                 cache_ttl_s=settings.browse_cache_s,
                 service="ytmusic",
+                search_cache_s=settings.search_cache_s,
             )
         else:
             fakes.set_ytmusic_linked(False)  # no canned library: Sonos side has no account
@@ -491,6 +617,7 @@ def build_runtime(
         fakes.pandora_enabled = settings.fake_pandora
         pandora = _pandora_service(settings, router, art)
         fakes.on_pandora_link = lambda: pandora.refresh()  # link state changed: cache is stale
+        router.queue_max = settings.queue_max
         return HubRuntime(
             settings,
             store,
@@ -510,6 +637,9 @@ def build_runtime(
             history=history,
             sync=_sync_engine(settings, store, router, tidal, history),
             airplay=PandoraSyncController(store, router, build_bridge(settings), enabled=True),
+            metrics=Metrics(settings.metrics_path),
+            update=_update_manager(settings),
+            search=_search_service(settings, tidal, ytmusic, pandora),
             vault_error=vault_error,
         )
 
@@ -538,6 +668,9 @@ def build_runtime(
     else:
         store.set_connection("denon", "disabled", DENON_DISABLED_MSG)
     tidal = _real_tidal_service(settings, router, tidal_auth, art)
+    ytmusic = _real_ytmusic_service(settings, router, ytmusic_auth, art)
+    pandora = _pandora_service(settings, router, art)
+    router.queue_max = settings.queue_max
     runtime = HubRuntime(
         settings,
         store,
@@ -550,18 +683,44 @@ def build_runtime(
         tidal_auth=tidal_auth,
         tidal=tidal,
         ytmusic_auth=ytmusic_auth,
-        ytmusic=_real_ytmusic_service(settings, router, ytmusic_auth, art),
-        pandora=_pandora_service(settings, router, art),
+        ytmusic=ytmusic,
+        pandora=pandora,
         history=history,
         sync=_sync_engine(settings, store, router, tidal, history),
         airplay=PandoraSyncController(
             store, router, build_bridge(settings), enabled=settings.airplay_enabled
         ),
+        metrics=Metrics(settings.metrics_path),
+        update=_update_manager(settings),
+        search=_search_service(settings, tidal, ytmusic, pandora),
         vault_error=vault_error,
     )
     if not heos_host:
         discovery.on_new_devices(runtime.adopt_discovered)
     return runtime
+
+
+def _update_manager(settings: Settings) -> UpdateManager:
+    return UpdateManager(
+        settings.repo_path,
+        settings.data_path,
+        version=__version__,
+        allow=settings.allow_update,
+        fallback_branch=settings.update_branch,
+    )
+
+
+def _search_service(
+    settings: Settings, tidal: TidalService, ytmusic: TidalService, pandora: PandoraService
+) -> SearchService:
+    return SearchService(
+        [
+            ("tidal", lambda: tidal.linked, tidal.search),
+            ("ytmusic", lambda: ytmusic.linked, ytmusic.search),
+        ],
+        stations=pandora.stations,
+        deadline_s=settings.search_deadline_s,
+    )
 
 
 def _sync_engine(
@@ -672,6 +831,7 @@ HEADER_REQUIRED_PATHS = frozenset(
         "/api/airplay/outputs",
         "/api/pandora-sync/start",
         "/api/pandora-sync/stop",
+        "/api/hub/update/apply",
     }
 )
 
@@ -801,7 +961,10 @@ def create_app(
             {"name": "play", "description": "Play content by canonical id on any target"},
             {"name": "home", "description": "Home screen aggregate and play history"},
             {"name": "sync", "description": "Sync Play: HEOS master + Sonos follower (Phase 4)"},
-            {"name": "settings", "description": "Accounts, hub info, hardware, restart"},
+            {"name": "settings", "description": "Accounts, hub info, hardware, restart, update"},
+            {"name": "queue", "description": "Native queues and play mode (shuffle/repeat)"},
+            {"name": "search", "description": "Search across the linked services"},
+            {"name": "metrics", "description": "Uptime, command latency, Sync Play metrics"},
             {"name": "dev", "description": "Fake-device scenario triggers (HUB_FAKE_DEVICES=1)"},
         ],
     )
@@ -1528,6 +1691,7 @@ def create_app(
             return JSONResponse(status_code=202, content={"restarting": True})
         runtime.restarting = True
         log.warning("restart requested; exiting with code 0 for launchd KeepAlive to relaunch")
+        await runtime.flush_metrics()
         loop = asyncio.get_running_loop()
         loop.call_later(0.5, runtime.exit_fn, 0)
         return JSONResponse(status_code=202, content={"restarting": True})
@@ -1536,11 +1700,95 @@ def create_app(
 
     dumps = DumpCache()
 
+    ws_clients = {"n": 0}
+
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
         await websocket.accept()
         session = ClientSession(websocket, runtime.store, dumps=dumps)
-        await session.run(router)
+        ws_clients["n"] += 1
+        if runtime.metrics is not None:
+            runtime.metrics.set_ws_clients(ws_clients["n"])
+        try:
+            await session.run(router)
+        finally:
+            ws_clients["n"] -= 1
+            if runtime.metrics is not None:
+                runtime.metrics.set_ws_clients(ws_clients["n"])
+
+    # -- Phase 8: queue, play mode, search, metrics, self-update ----------------------
+
+    @app.get("/api/queue/{side_id}", response_model=QueueState, tags=["queue"])
+    async def queue(side_id: str) -> QueueState:
+        return await router.queue(side_id)
+
+    @app.post("/api/queue/jump", response_model=Ack, tags=["queue"])
+    async def queue_jump(body: QueueJumpBody) -> JSONResponse:
+        return _respond(await router.queue_jump(body.target, body.index))
+
+    @app.post("/api/playmode", response_model=Ack, tags=["queue"])
+    async def play_mode(body: PlayModeBody) -> JSONResponse:
+        return _respond(
+            await router.play_mode(body.target, shuffle=body.shuffle, repeat=body.repeat)
+        )
+
+    @app.get("/api/search", response_model=SearchResponse, tags=["search"])
+    async def search(q: str = "", limit: int = Query(default=20, ge=1, le=50)) -> Any:
+        if runtime.search is None:  # pragma: no cover - build_runtime always wires it
+            raise RuntimeError("search not wired")
+        try:
+            return await runtime.search.search(q, limit)
+        except ValueError as exc:
+            return _envelope(400, "invalid_argument", str(exc))
+
+    @app.get("/api/metrics", response_model=MetricsResponse, tags=["metrics"])
+    async def metrics_view() -> Any:
+        if runtime.metrics is None:  # pragma: no cover
+            raise RuntimeError("metrics not wired")
+        return await runtime.metrics.report()
+
+    @app.get("/api/metrics/summary", tags=["metrics"])
+    async def metrics_summary() -> dict[str, str]:
+        if runtime.metrics is None:  # pragma: no cover
+            raise RuntimeError("metrics not wired")
+        return {"summary": runtime.metrics.summary()}
+
+    @app.get("/api/hub/update/check", response_model=UpdateCheck, tags=["settings"])
+    async def update_check() -> UpdateCheck:
+        if runtime.update is None:  # pragma: no cover
+            raise RuntimeError("update not wired")
+        return await runtime.update.check()
+
+    @app.get("/api/hub/update/status", response_model=UpdateStatus, tags=["settings"])
+    async def update_status() -> UpdateStatus:
+        if runtime.update is None:  # pragma: no cover
+            raise RuntimeError("update not wired")
+        return await runtime.update.status()
+
+    @app.post(
+        "/api/hub/update/apply",
+        response_model=UpdateApplyResponse,
+        tags=["settings"],
+        status_code=202,
+    )
+    async def update_apply() -> JSONResponse:
+        if runtime.update is None:  # pragma: no cover
+            raise RuntimeError("update not wired")
+        try:
+            job = await runtime.update.apply()
+        except PermissionError as exc:
+            if not runtime.update.allow:
+                return _envelope(409, "update_disabled", UPDATE_DISABLED)
+            return _envelope(409, "update_refused", str(exc))
+        except RuntimeError:
+            return _envelope(409, "update_running", UPDATE_RUNNING)
+        spawn(runtime.watch_update(job.job_id), runtime._tasks)  # noqa: SLF001 - same module
+        return JSONResponse(
+            status_code=202,
+            content=UpdateApplyResponse(
+                job_id=job.job_id, state=job.state, message=UPDATE_STARTED
+            ).model_dump(),
+        )
 
     # -- AirPlay bridge / Pandora Sync (Phase 7, experimental) ----------------------
 

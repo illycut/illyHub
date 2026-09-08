@@ -164,6 +164,27 @@ class YTMusicCatalog:
 
     # -- sync workers -------------------------------------------------------------------
 
+    def _search(self, query: str, limit: int) -> dict[str, list[BrowseItem]]:
+        """``YTMusic.search(query, filter=albums|playlists|songs)``, one call per group."""
+        c = self._client()
+        albums = [
+            self._album_item(a) for a in (c.search(query, filter="albums", limit=limit) or [])
+        ][:limit]
+        playlists = [
+            self._playlist_item(p) for p in (c.search(query, filter="playlists", limit=limit) or [])
+        ][:limit]
+        tracks: list[BrowseItem] = []
+        for i, t in enumerate((c.search(query, filter="songs", limit=limit) or [])[:limit]):
+            if not t.get("videoId"):
+                continue
+            parent = BrowseItem(
+                content_ref=ContentRef(service=SERVICE, kind="track", id=str(t["videoId"])),
+                title=str(t.get("title") or ""),
+                art=self._art(t.get("thumbnails"), f"track:{t['videoId']}"),
+            )
+            tracks.append(self._track_item(t, i, parent))
+        return {"albums": albums, "playlists": playlists, "tracks": tracks}
+
     def _library_page(self, items: list[BrowseItem], limit: int, offset: int) -> BrowsePage:
         """ytmusicapi pages continuations internally up to the ``limit`` we pass; when the library
         is at least that long we cannot know the total, so ``next_offset`` follows the
@@ -245,6 +266,17 @@ class YTMusicCatalog:
         )
 
     # -- async surface (Catalog protocol) ---------------------------------------------------
+
+    async def search(self, query: str, limit: int) -> dict[str, list[BrowseItem]]:
+        """The three filters run concurrently on the search pool (one HTTP call each)."""
+        from .search import in_search_pool
+
+        albums, playlists, tracks = await asyncio.gather(
+            in_search_pool(self._search_group, query, limit, "albums"),
+            in_search_pool(self._search_group, query, limit, "playlists"),
+            in_search_pool(self._search_group, query, limit, "songs"),
+        )
+        return {"albums": albums, "playlists": playlists, "tracks": tracks}
 
     async def favorite_albums(self, limit: int, offset: int) -> BrowsePage:
         return await asyncio.to_thread(self._library_albums, limit, offset)
@@ -382,6 +414,29 @@ class FakeYTMusicCatalog:
         for i, t in enumerate(tracks):
             t.index = i
         return Container(item=item, tracks=tracks)
+
+    async def search(self, query: str, limit: int) -> dict[str, list[BrowseItem]]:
+        self._check()
+        q = query.casefold()
+        albums = [
+            self._album_item(r)
+            for r in _FAKE_ALBUMS
+            if q in r[1].casefold() or q in r[2].casefold()
+        ]
+        playlists = [self._playlist_item(r) for r in _FAKE_PLAYLISTS if q in r[1].casefold()]
+        tracks: list[BrowseItem] = []
+        for r in _FAKE_ALBUMS:
+            item = self._album_item(r)
+            tracks.extend(
+                t
+                for t in self._tracks(r[0], item)
+                if q in t.title.casefold() or q in (t.artist or "").casefold()
+            )
+        return {
+            "albums": albums[:limit],
+            "playlists": playlists[:limit],
+            "tracks": tracks[:limit],
+        }
 
     async def track(self, track_id: str) -> BrowseItem:
         self._check()

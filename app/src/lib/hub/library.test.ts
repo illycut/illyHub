@@ -148,6 +148,14 @@ describe("calls", () => {
     if (u === "/api/auth/tidal/status") return jsonResponse(account);
     if (u === "/api/auth/tidal/unlink") return jsonResponse({ ...account, state: "unlinked", linked: false, account_name: null });
     if (u === "/api/hub/restart") return jsonResponse({ restarting: true }, 202);
+    if (u === "/api/hub/update/apply") return jsonResponse({ job_id: "j1", state: "running", message: "Updating." }, 202);
+    if (u === "/api/hub/update/check") return jsonResponse({ current: { version: "0.8.0", commit: "a", branch: "main" }, remote: { commit: "b", ahead_by: 1, summary: ["x"], tracking: "main" }, available: true, last_checked_at: "2026-09-08T00:00:00Z", error: null });
+    if (u === "/api/hub/update/status") return jsonResponse({ state: "running", job_id: "j1", started_at: null, finished_at: null, log_tail: ["a", "b"], message: null });
+    if (u === "/api/queue/jump") return jsonResponse({ correlation_id: "c", ok: true, action: "queue_jump", target: "sonos:x", state_version: 1, error: null, partial: [], latency_ms: 3 });
+    if (u === "/api/playmode") return jsonResponse({ correlation_id: "c", ok: true, action: "playmode", target: "sonos:x", state_version: 1, error: null, partial: [], latency_ms: 3 });
+    if (u === "/api/metrics/summary") return new Response("Running since 7:37 today.", { status: 200, headers: { "content-type": "text/plain" } });
+    if (u === "/api/metrics/summary?json") return jsonResponse({ summary: "Ten commands today." });
+    if (u === "/api/metrics/summary?fail") return new Response("nope", { status: 503, headers: { "content-type": "text/plain" } });
     return new Response("not json", { status: 500 });
   }) as typeof fetch;
 
@@ -163,6 +171,12 @@ describe("calls", () => {
     expect((await library.authStatus("tidal", { fetcher })).linked).toBe(true);
     expect((await library.authUnlink("tidal", { fetcher })).linked).toBe(false);
     await library.restart({ fetcher });
+    // Phase 8
+    const chk = await library.updateCheck({ fetcher });
+    expect(chk.remote.summary).toBe("x");
+    expect(chk.remote.tracking).toBe("main");
+    expect((await library.updateApply({ fetcher })).job_id).toBe("j1");
+    expect((await library.updateStatus({ fetcher })).log_tail).toBe("a\nb");
     expect(calls.map((c) => `${c.m} ${c.url}`)).toEqual([
       "GET /api/home",
       "GET /api/browse/tidal/album/101",
@@ -171,8 +185,22 @@ describe("calls", () => {
       "GET /api/auth/tidal/status",
       "POST /api/auth/tidal/unlink",
       "POST /api/hub/restart",
+      "GET /api/hub/update/check",
+      "POST /api/hub/update/apply",
+      "GET /api/hub/update/status",
     ]);
+    expect(calls.filter((c) => c.m === "POST")).toHaveLength(4);
     for (const c of calls.filter((c) => c.m === "POST")) expect(c.headers["X-Illyhub"]).toBe("1");
+  });
+
+  it("metrics summary accepts plain text or {summary}, and a non-2xx plain-text answer raises http_<status>", async () => {
+    expect(await library.metricsSummary({ fetcher })).toBe("Running since 7:37 today.");
+    const f2 = (async () => jsonResponse({ summary: "Ten commands today." })) as typeof fetch;
+    expect(await library.metricsSummary({ fetcher: f2 })).toBe("Ten commands today.");
+    const f3 = (async () => new Response("nope", { status: 503 })) as typeof fetch;
+    const err = await library.metricsSummary({ fetcher: f3 }).catch((e) => e);
+    expect(err).toBeInstanceOf(LibraryError);
+    expect(err.code).toBe("http_503");
   });
 
   it("surfaces the hub error envelope as LibraryError, and a non-JSON failure as http_<status>", async () => {

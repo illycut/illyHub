@@ -40,6 +40,9 @@ SyncStatus = Literal[
 ]
 
 
+Repeat = Literal["off", "one", "all"]
+
+
 def now() -> datetime:
     return datetime.now(UTC)
 
@@ -96,6 +99,42 @@ class ContentRef(BaseModel):
         return f"{self.service}:{self.kind}:{self.id}"
 
 
+class PlayMode(BaseModel):
+    """Shuffle / repeat as the coordinator reports it (Phase 8, ai-dev #79).
+
+    HEOS: ``player/get_play_mode`` → ``repeat`` ∈ on_all|on_one|off and ``shuffle`` on|off.
+    Sonos: ``PlayMode`` ∈ NORMAL|SHUFFLE_NOREPEAT|SHUFFLE|REPEAT_ALL|REPEAT_ONE|SHUFFLE_REPEAT_ONE.
+    Both map onto the same two fields here.
+    """
+
+    shuffle: bool = False
+    repeat: Repeat = "off"
+
+
+class QueueEntry(BaseModel):
+    """One track in a side's native queue, in the shape the client renders (ai-dev #77)."""
+
+    index: int
+    title: str | None = None
+    artist: str | None = None
+    album: str | None = None
+    duration_ms: int | None = None
+    art: ArtRef = Field(default_factory=ArtRef)
+    track_id: str | None = None  # vendor-native id (HEOS queue id / media id, Sonos URI)
+    content_ref: ContentRef | None = None  # canonical service id when derivable
+
+
+class QueueState(BaseModel):
+    """A side's queue as last read from the coordinator; streamed as ``queues.<side>``."""
+
+    items: list[QueueEntry] = Field(default_factory=list)
+    current_index: int | None = None
+    source: str | None = None
+    truncated: bool = False
+    total: int | None = None
+    updated_at: datetime = Field(default_factory=now)
+
+
 class Capabilities(BaseModel):
     """What a player or side can do, so Phase 1 does not hard-code vendor checks.
 
@@ -122,6 +161,7 @@ class Player(BaseModel):
     play_state: PlayState = "stop"
     group_id: str | None = None
     capabilities: Capabilities = Field(default_factory=Capabilities)
+    play_mode: PlayMode = Field(default_factory=PlayMode)
 
 
 class Zone(BaseModel):
@@ -163,6 +203,7 @@ class Side(BaseModel):
     volume: int = 0  # coordinator volume for solo sides; member average for groups (Sonos style)
     muted: bool = False  # every member muted
     capabilities: Capabilities = Field(default_factory=Capabilities)
+    play_mode: PlayMode = Field(default_factory=PlayMode)  # the coordinator's shuffle/repeat
 
 
 class NowPlaying(BaseModel):
@@ -244,6 +285,7 @@ class HubState(BaseModel):
     sides: dict[str, Side] = Field(default_factory=dict)
     now_playing: dict[str, NowPlaying] = Field(default_factory=dict)
     positions: dict[str, Position] = Field(default_factory=dict)
+    queues: dict[str, QueueState] = Field(default_factory=dict)  # side id -> native queue
     sync: SyncState = Field(default_factory=SyncState)
     pandora_sync: PandoraSyncState = Field(default_factory=PandoraSyncState)
     connections: dict[str, ConnectionStatus] = Field(default_factory=dict)
@@ -294,6 +336,7 @@ def compute_sides(
             play_state=coordinator.play_state,
             volume=round(sum(p.volume for p in member_players) / len(member_players)),
             muted=all(p.muted for p in member_players),
+            play_mode=coordinator.play_mode,
             capabilities=Capabilities(
                 # The protocol must support it *and* the current source must allow it.
                 supports_seek=coordinator.capabilities.supports_seek
@@ -436,6 +479,7 @@ class StateStore:
         new.sides = compute_sides(new.players, new.groups, new.now_playing, new.zones)
         new.now_playing = {k: v for k, v in new.now_playing.items() if k in new.sides}
         new.positions = {k: v for k, v in new.positions.items() if k in new.sides}
+        new.queues = {k: v for k, v in new.queues.items() if k in new.sides}
         return self._commit(new)
 
     # -- mutation helpers -------------------------------------------------------------
@@ -504,6 +548,20 @@ class StateStore:
                     s.now_playing[side_id] = np.model_copy(update={"art": art})
 
         return self._mutate(apply)
+
+    def set_queue(self, side_id: str, queue: QueueState | None) -> list[str]:
+        """Replace (or drop, with ``None``) a side's queue snapshot."""
+
+        def apply(s: HubState) -> None:
+            if queue is None:
+                s.queues.pop(side_id, None)
+            else:
+                s.queues[side_id] = queue
+
+        return self._mutate(apply)
+
+    def set_play_mode(self, player_id: str, mode: PlayMode) -> list[str]:
+        return self.update_player(player_id, play_mode=mode)
 
     def set_sync(self, sync: SyncState) -> list[str]:
         return self._mutate(lambda s: setattr(s, "sync", sync))

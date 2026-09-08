@@ -26,6 +26,9 @@ from ..state import (
     GroupTopology,
     NowPlaying,
     Player,
+    PlayMode,
+    QueueEntry,
+    QueueState,
     StateStore,
     optimistic_position,
     side_id_for,
@@ -48,6 +51,10 @@ EVENT_PLAYER_STATE_CHANGED = "event/player_state_changed"
 EVENT_PLAYER_VOLUME_CHANGED = "event/player_volume_changed"
 EVENT_NOW_PLAYING_CHANGED = "event/player_now_playing_changed"
 EVENT_NOW_PLAYING_PROGRESS = "event/player_now_playing_progress"
+EVENT_QUEUE_CHANGED = "event/player_queue_changed"
+EVENT_REPEAT_MODE_CHANGED = "event/repeat_mode_changed"
+EVENT_SHUFFLE_MODE_CHANGED = "event/shuffle_mode_changed"
+QUEUE_DEBOUNCE_S = 0.5  # coalesce bursts of queue events into one re-read
 
 
 class HeosClient(Protocol):
@@ -156,6 +163,8 @@ class PyHeosAdapter(HeosAdapter):
         # side id -> (station ref, station name): the ref rides on now_playing.content_ref while
         # the receiver still reports that station (Phase 5).
         self._station_playing: dict[str, tuple[ContentRef, str]] = {}
+        self._queue_refresh: dict[str, asyncio.Task[None]] = {}  # side id -> debounced re-read
+        self._queue_ids: dict[str, list[int]] = {}  # player id -> receiver queue ids, last read
         self._disconnected = asyncio.Event()
         self._closing = False
 
@@ -599,6 +608,125 @@ class PyHeosAdapter(HeosAdapter):
         p = self.store.state.players.get(player_id(pid))
         return side_id_for(p) if p else None
 
+    # -- queue and play mode (Phase 8) -----------------------------------------------------
+
+    async def get_queue(
+        self, player_id: str, limit: int = 200
+    ) -> tuple[list[QueueEntry], int | None]:
+        """``player/get_queue`` (pyheos ``get_queue(range_start, range_end)``, 0-based). HEOS
+        returns at most 100 items per range, so the read pages up to ``limit``. The CLI has no
+        total: when the last page came back short the total is known (the item count); when it
+        came back full there may be more, and the total is ``None`` (unknown, truncated)."""
+        raw = self._raw(player_id)
+        get_queue = getattr(raw, "get_queue", None)
+        if get_queue is None:
+            raise UnsupportedCommandError("HEOS client cannot read the queue")
+        items: list[Any] = []
+        start = 0
+        complete = False
+        while len(items) < limit:
+            end = min(start + 99, limit - 1)
+            page = list(await get_queue(start, end))
+            items.extend(page)
+            if len(page) < (end - start + 1):
+                complete = True
+                break
+            start = end + 1
+        source_id = getattr(getattr(raw, "now_playing_media", None), "source_id", None)
+        entries = [self._queue_entry(i, item, source_id) for i, item in enumerate(items[:limit])]
+        self._queue_ids[player_id] = [_queue_id(item, i) for i, item in enumerate(items)]
+        return entries, (len(items) if complete else None)
+
+    def _queue_entry(self, index: int, item: Any, source_id: Any = None) -> QueueEntry:
+        """A queue item does not name its source; the playing media's ``source_id`` is the best
+        signal for which service the queue came from (never assume Tidal)."""
+        media_id = getattr(item, "media_id", None)
+        sid = getattr(item, "source_id", None)
+        sid = source_id if sid is None else sid
+        return QueueEntry(
+            index=index,
+            title=getattr(item, "song", None),
+            artist=getattr(item, "artist", None),
+            album=getattr(item, "album", None),
+            art=self.art.ref(
+                ArtHints(
+                    device_url=getattr(item, "image_url", None) or None,
+                    service=_service_name(sid),
+                )
+            ),
+            track_id=str(media_id) if media_id is not None else None,
+            content_ref=_tidal_ref(sid, media_id),
+        )
+
+    async def play_queue_index(self, player_id: str, index: int) -> None:
+        """``player/play_queue`` with the queue id captured by the last read (1-based on the
+        receiver); re-reads the queue when the index is beyond what was cached."""
+        raw = self._raw(player_id)
+        play_queue = getattr(raw, "play_queue", None)
+        if play_queue is None:
+            raise UnsupportedCommandError("HEOS client cannot play a queue position")
+        ids = self._queue_ids.get(player_id) or []
+        if index >= len(ids):
+            _entries, _total = await self.get_queue(player_id, limit=max(index + 1, 200))
+            ids = self._queue_ids.get(player_id) or []
+        if not 0 <= index < len(ids):
+            raise IndexError(f"queue index {index} out of range for {len(ids)} items")
+        await play_queue(ids[index])
+
+    async def get_play_mode(self, player_id: str) -> PlayMode:
+        raw = self._raw(player_id)
+        return _play_mode_from_raw(raw)
+
+    async def set_play_mode(self, player_id: str, mode: PlayMode) -> None:
+        raw = self._raw(player_id)
+        setter = getattr(raw, "set_play_mode", None)
+        if setter is None:
+            raise UnsupportedCommandError("HEOS client cannot set the play mode")
+        from pyheos.types import RepeatType
+
+        repeat = {"off": RepeatType.OFF, "one": RepeatType.ON_ONE, "all": RepeatType.ON_ALL}[
+            mode.repeat
+        ]
+        await setter(repeat, mode.shuffle)
+        self.store.set_play_mode(player_id, mode)
+
+    def _schedule_queue_refresh(self, p_id: str) -> None:
+        """Queue events arrive in bursts (one per added item); re-read once after a quiet gap."""
+        side = self._side_id(raw_pid(p_id))
+        if side is None:
+            return
+        pending = self._queue_refresh.get(side)
+        if pending is not None and not pending.done():
+            pending.cancel()
+        task = self._spawn(self._refresh_queue(side, p_id))
+        if task is not None:
+            self._queue_refresh[side] = task
+
+    async def _refresh_queue(self, side: str, p_id: str) -> None:
+        await asyncio.sleep(QUEUE_DEBOUNCE_S)
+        try:
+            entries, total = await self.get_queue(p_id)
+        except Exception as exc:  # noqa: BLE001 - a failed re-read leaves the last snapshot
+            self.log.debug("queue re-read failed", extra={"extra": {"error": str(exc)}})
+            return
+        if side not in self.store.state.sides:
+            return
+        np = self.store.state.now_playing.get(side)
+        current = None
+        if np is not None and np.track_id:
+            current = next((e.index for e in entries if e.track_id == np.track_id), None)
+        self.store.set_queue(
+            side,
+            QueueState(
+                items=entries,
+                current_index=current,
+                source=np.source if np else None,
+                total=total,
+                truncated=total is None or total > len(entries),
+            ),
+        )
+        self._emit("queue", player_id=p_id)
+
     def _apply_now_playing(self, p: Player, raw: Any) -> None:
         media = getattr(raw, "now_playing_media", None)
         if media is None:
@@ -692,6 +820,12 @@ class PyHeosAdapter(HeosAdapter):
             side = self._side_id(pid)
             if pos is not None and side:
                 self._observe_position(side, int(pos), p_id)
+        elif event == EVENT_QUEUE_CHANGED:
+            self._queue_ids.pop(p_id, None)  # the cached queue ids no longer match the receiver
+            self._schedule_queue_refresh(p_id)
+        elif event in (EVENT_REPEAT_MODE_CHANGED, EVENT_SHUFFLE_MODE_CHANGED):
+            self.store.set_play_mode(p_id, _play_mode_from_raw(raw))
+            self._emit("play_mode", player_id=p_id)
 
     def _observe_position(self, side: str, position_ms: int, p_id: str) -> None:
         """Progress events arrive right after the device ticks: an edge observation."""
@@ -706,6 +840,13 @@ class PyHeosAdapter(HeosAdapter):
 
 
 HEOS_SOURCE_NAMES: dict[int, str] = {1: "pandora", 4: "spotify", 10: "tidal", 13: "amazon"}
+
+
+def _play_mode_from_raw(raw: Any) -> PlayMode:
+    """pyheos ``HeosPlayer.repeat`` (RepeatType on_all|on_one|off) and ``shuffle`` (bool)."""
+    repeat = _enum_value(getattr(raw, "repeat", "off")) or "off"
+    mapped = {"on_all": "all", "on_one": "one", "off": "off"}.get(repeat, "off")
+    return PlayMode(shuffle=bool(getattr(raw, "shuffle", False)), repeat=mapped)  # type: ignore[arg-type]
 
 
 def _queue_id(item: Any, index: int) -> int:

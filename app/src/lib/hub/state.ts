@@ -1,4 +1,5 @@
 import type { DeltaCollection, HubState, ServerMessage } from "./types";
+import { asQueue } from "./library";
 
 export function emptyState(): HubState {
   return {
@@ -25,6 +26,7 @@ export function emptyState(): HubState {
     },
     connections: {},
     pandora_sync: emptyPandoraSync(),
+    queues: {},
   };
 }
 
@@ -57,6 +59,7 @@ const COLLECTIONS: ReadonlySet<string> = new Set<DeltaCollection>([
   "now_playing",
   "positions",
   "connections",
+  "queues",
 ]);
 
 export type DeltaMessage = Extract<ServerMessage, { type: "delta" }>;
@@ -88,12 +91,13 @@ export function applyDelta(state: HubState, delta: DeltaMessage): HubState | nul
     if (!COLLECTIONS.has(collection)) continue;
     const c = collection as DeltaCollection;
     if (!touched.has(c)) {
-      next[c] = { ...(state[c] as Record<string, unknown>) } as never;
+      next[c] = { ...((state[c] ?? {}) as Record<string, unknown>) } as never;
       touched.add(c);
     }
     const bucket = next[c] as Record<string, unknown>;
     if (value === null) delete bucket[key];
-    else bucket[key] = value;
+    // A queue delta carries the full new queue; coerce it like a snapshot would.
+    else bucket[key] = c === "queues" ? asQueue(value) : value;
   }
   return next;
 }

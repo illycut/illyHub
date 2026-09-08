@@ -25,6 +25,7 @@ export function VirtualList<T>({
   threshold = 60,
   testId,
   rowTestId,
+  scrollRoot,
 }: {
   items: T[];
   rowHeight: number;
@@ -33,6 +34,8 @@ export function VirtualList<T>({
   threshold?: number;
   testId?: string;
   rowTestId?: string;
+  /** A scrolling ancestor (a sheet's content pane) to window against instead of the page. */
+  scrollRoot?: HTMLElement | null;
 }) {
   const ref = useRef<HTMLUListElement>(null);
   const [range, setRange] = useState({ start: 0, end: Math.min(items.length, threshold) });
@@ -41,25 +44,31 @@ export function VirtualList<T>({
 
   useEffect(() => {
     if (!virtual) return;
+    const root = scrollRoot ?? null;
+    const scrollY = () => (root ? root.scrollTop : window.scrollY);
+    const viewport = () => (root ? root.clientHeight : window.innerHeight);
     const update = () => {
-      const top = (ref.current?.getBoundingClientRect().top ?? 0) + window.scrollY;
+      const listRect = ref.current?.getBoundingClientRect();
+      const rootTop = root ? root.getBoundingClientRect().top : 0;
+      const top = (listRect?.top ?? 0) - rootTop + scrollY();
       setRange((cur) => {
-        const next = windowRange(count, rowHeight, top, window.scrollY, window.innerHeight);
+        const next = windowRange(count, rowHeight, top, scrollY(), viewport());
         return next.start === cur.start && next.end === cur.end ? cur : next;
       });
     };
     update();
-    window.addEventListener("scroll", update, { passive: true });
+    const target: HTMLElement | Window = root ?? window;
+    target.addEventListener("scroll", update, { passive: true });
     window.addEventListener("resize", update);
     // Layout above the list can change without a resize (art loading, fonts): watch the document.
     const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
-    ro?.observe(document.documentElement);
+    ro?.observe(root ?? document.documentElement);
     return () => {
-      window.removeEventListener("scroll", update);
+      target.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
       ro?.disconnect();
     };
-  }, [virtual, count, rowHeight]);
+  }, [virtual, count, rowHeight, scrollRoot]);
 
   const divider = (i: number) => (i === count - 1 ? "" : "border-b border-stroke");
 
