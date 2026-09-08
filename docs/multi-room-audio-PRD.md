@@ -341,6 +341,9 @@ Full-state snapshot on connect, deltas thereafter, plus `ack` messages carrying 
 - [ ] **[1.2] LaunchDaemon** plist in `/Library/LaunchDaemons`, running as root:
       `KeepAlive`, `RunAtLoad`, stdout/stderr to rotating logs. `ops/install.sh` installs it and
       retires any older user agent. A user LaunchAgent cannot reach the LAN (see 5).
+      Run the script **as yourself, not under `sudo`**: it escalates only the steps that need
+      root, and running the whole thing as root leaves a root-owned `hub/.venv` that then needs
+      `sudo` for `pytest` and `uv`.
 - [ ] **[1.2] `HUB_DATA_DIR` must be an absolute path outside the repo** (`/usr/local/var/illyhub`,
       mode 0700, `vault.key` 0600). As root the hub would otherwise leave root-owned files through
       the checkout and break running the hub or the tests as yourself.
@@ -436,7 +439,9 @@ device change over UPnP events, Denon zone power, and per-zone volume and mute e
 through REST. Not yet exercised on hardware: Sync Play (Phase 4), Pandora browse and play
 (Phase 5), YouTube Music (Phase 6), and the two Phase 0 gates ai-dev #9 and #10. The PWA is not
 built on the hub Mac yet (`/api/health` reports `static.app: false`), so the API is running
-without a UI in front of it.
+without a UI in front of it. That is also a supported steady state: a separate mobile or native
+client consumes the REST and WebSocket API directly and never asks the hub for a page, in which
+case `static.app: false` is correct and the hub Mac needs no Node toolchain at all.
 
 ---
 

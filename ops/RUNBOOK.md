@@ -92,9 +92,18 @@ curl -LsSf https://astral.sh/uv/install.sh | sh          # no Homebrew needed
 git clone https://github.com/illycut/illyHub.git ~/illyHub
 cd ~/illyHub
 cp hub/.env.example hub/.env   # then edit: HUB_HOST, HUB_PORT, HUB_STATIC_DEVICES, HUB_DENON_HOST, HUB_HEOS_HOST, HUB_DATA_DIR
-./ops/install.sh               # prompts for sudo; only the launchctl and /Library steps use it
-curl -s http://127.0.0.1:8080/api/health | python3 -m json.tool   # with mkcert TLS: curl -sk https://127.0.0.1:8080/api/health
+./ops/install.sh               # NOT `sudo ./ops/install.sh` — see below
+curl -s 'http://127.0.0.1:8080/api/health'    # with mkcert TLS add -k and use https://
 ```
+
+- **Run `./ops/install.sh` as yourself, without `sudo`.** It escalates the two steps that need
+  root (`launchctl`, writing `/Library`) and prompts you once. Running the whole script under
+  `sudo` still works, but `uv sync` then runs as root too and creates a **root-owned
+  `hub/.venv`**, after which `pytest` and `uv` need `sudo` as well. On an existing checkout the
+  venv already exists so nothing breaks and the mistake is invisible; on a clean clone it bites.
+  If it has already happened: `sudo chown -R "$(id -un):staff" hub/.venv`.
+- `install.sh` printing `illyHub running: http://<host>.local:8080/api/health` **is** the health
+  check passing — it polls that endpoint itself. No need to re-run curl to confirm.
 
 - **Do not clone into `~/Documents`, `~/Desktop` or `~/Downloads`.** Those are TCC-protected and
   a launchd job has no consent grant, so it gets `Operation not permitted` and the hub **hangs
@@ -204,8 +213,11 @@ hit either of these, so they surface only at deploy time.
   being `cp37-abi3` it also works on 3.12 through 3.14. Only `Fernet` is used
   (`hub/src/illyhub_hub/auth/vault.py`), so nothing is lost. Do not "upgrade" this pin without
   checking wheels for `macosx_*_x86_64` on PyPI.
-- **Node 20+ is required to build the PWA** (`next` 16, `react` 19, `vitest` 4). A stock Intel Mac
-  may still have Node 16. `app/package.json` declares `engines.node >=20.9` and `app/.npmrc`
+- **Node 20+ is required only to build the PWA** (`next` 16, `react` 19, `vitest` 4). The hub
+  itself is pure Python and needs no Node at all: if your client is a separate mobile or native
+  app hitting the REST and WebSocket API, skip this entirely and expect
+  `/api/health` → `static.app: false` (see section 4 item 9). A stock Intel Mac may still have
+  Node 16. `app/package.json` declares `engines.node >=20.9` and `app/.npmrc`
   sets `engine-strict=true`, so `npm install` now stops with `EBADENGINE` instead of failing
   deep inside a Next build. No Homebrew needed: install Node 22 from the official pkg at
   nodejs.org, or use `nvm`/`fnm`. Then `cd app && npm ci && npm run build`. Until the export
@@ -229,10 +241,21 @@ hit either of these, so they surface only at deploy time.
    — it must say `root`. A user LaunchAgent will never work. Then `ping <sonos_ip>`; with static
    devices configured the hub comes up regardless. Check IGMP snooping on the switch if multicast
    never works.
-7. `/api/health` shows `fake_devices: true`: `hub/.env` still has `HUB_FAKE_DEVICES=1`. Remove it and kickstart.
-8. `/` returns 404 but `/api/health` works: the PWA export is not at `HUB_APP_DIR`. Build the app (`cd app && npm run build`) or fix the path, then kickstart.
-9. Artwork shows grey squares: `/api/art/...` is answering with `X-Art-Fallback: upstream_error` (200 + placeholder). Check `hub.log` for "art fetch failed"; the device URL (Sonos `/getaa?...`, HEOS CDN) must be reachable from the hub Mac. `X-Art-Fallback: proxy_disabled` means `HUB_ART_PROXY=0` is set.
-10. Disk: the art cache is capped at `HUB_ART_MAX_MB` (500) and swept daily; `/api/health` → `art_cache.bytes` shows current usage.
+7. **`{"code": "not_found", "message": "No route for /api/health\u00a0"}`** — note the
+   `\u00a0` in the echoed path. That is a **non-breaking space**: the URL was pasted from a
+   rendered document, chat window or web page that turned a space into U+00A0, so the request
+   really did ask for a path that does not exist. The hub is fine. Retype the command, or quote
+   the URL (`curl -s 'http://127.0.0.1:8080/api/health'`). To confirm what was actually sent:
+   `curl -sv 'http://…' 2>&1 | grep '^> GET'` — an NBSP shows up as `%C2%A0`. Nothing in this
+   repo contains NBSPs; they always come from the copy.
+8. `/api/health` shows `fake_devices: true`: `hub/.env` still has `HUB_FAKE_DEVICES=1`. Remove it and kickstart.
+9. `/` returns 404 but `/api/health` works, and `/api/health` reports `static.app: false`: there
+   is no PWA export at `HUB_APP_DIR`. **This is normal and needs no fix if your client is not the
+   PWA** — a separate mobile or native app talks to the REST and WebSocket API and never asks the
+   hub for a page. The hub is API-only in that mode and healthy (`status: ok`). Only build the app
+   (`cd app && npm ci && npm run build`, needs Node 20+) if you want the hub to serve the PWA.
+10. Artwork shows grey squares: `/api/art/...` is answering with `X-Art-Fallback: upstream_error` (200 + placeholder). Check `hub.log` for "art fetch failed"; the device URL (Sonos `/getaa?...`, HEOS CDN) must be reachable from the hub Mac. `X-Art-Fallback: proxy_disabled` means `HUB_ART_PROXY=0` is set.
+11. Disk: the art cache is capped at `HUB_ART_MAX_MB` (500) and swept daily; `/api/health` → `art_cache.bytes` shows current usage.
 
 ## 5. Hardware verification status
 

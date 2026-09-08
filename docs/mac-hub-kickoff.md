@@ -46,8 +46,19 @@ Edit it:
 ## 4. Install the service
 
 ```bash
-cd ~/illyHub && ./ops/install.sh    # prompts for sudo
+cd ~/illyHub && ./ops/install.sh    # as yourself; it prompts for sudo where it needs root
 ```
+
+Do **not** run `sudo ./ops/install.sh`. The script escalates only the steps that need root. Under
+`sudo` the dependency sync runs as root too and leaves a root-owned `hub/.venv`, after which
+`pytest` and `uv` need `sudo` as well. Recover with
+`sudo chown -R "$(id -un):staff" hub/.venv`.
+
+When it prints `illyHub running: http://<host>.local:8080/api/health`, the health check has
+already passed — it polls that endpoint itself, so there is nothing to re-check by hand.
+
+If a URL you paste 404s with `No route for /api/health\u00a0`, that `\u00a0` is a non-breaking
+space picked up from the copy, not a hub fault. Retype it or quote it (RUNBOOK section 4 item 7).
 
 The hub installs as a **root LaunchDaemon**, not a user LaunchAgent. That is forced by macOS
 Sequoia's Local Network gate: a LaunchAgent, and a system daemon with `UserName` set, are both
@@ -74,8 +85,8 @@ a Sonos Amp "Outside" at `192.168.50.224`. Kept here for reference when the hub 
 Work through `ops/RUNBOOK.md` **section 5** and report anything that fails:
 
 ```bash
-curl -s http://127.0.0.1:8080/api/health  | python3 -m json.tool
-curl -s http://127.0.0.1:8080/api/devices | python3 -m json.tool
+curl -s 'http://127.0.0.1:8080/api/health'
+curl -s 'http://127.0.0.1:8080/api/devices'
 ```
 
 - `/api/health` shows heos, sonos, denon all `connected`, `fake_devices: false`
