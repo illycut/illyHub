@@ -743,13 +743,19 @@ class FakeDenon(DenonAdapter):
     async def connect(self) -> None:
         if self._connected:
             return
-        for key, name, power in (("main", "Main zone", True), ("zone2", "Zone 2", False)):
+        # The receiver's MV read-back is the volume source for the HEOS player it hosts (the
+        # HEOS CLI reports 0 for it), so the fake seeds a plausible level like a real read-back.
+        for key, name, power, volume in (
+            ("main", "Main zone", True, 30),
+            ("zone2", "Zone 2", False, 20),
+        ):
             self.store.set_zone(
                 Zone(
                     id=fake_zone_id(key),
                     key=key,
                     name=name,
                     power=power,
+                    volume=volume,
                     host=FAKE_DENON_HOST,
                     device_id=f"denon-{FAKE_DENON_HOST}",
                     player_ids=[HEOS_PLAYER],

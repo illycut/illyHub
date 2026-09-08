@@ -10,6 +10,21 @@
     "ytmusic": "YouTube Music"
   },
   "templates": {
+    "airplay": {
+      "airplay_daemon": "The hub runs as a system daemon; Pandora Sync needs the logged-in user's session.",
+      "airplay_needs_output": "Pandora Sync needs at least one AirPlay output.",
+      "airplay_no_match": "No AirPlay outputs match {rooms}. Rename them to match in the Music app on the hub Mac, or choose outputs there.",
+      "airplay_nothing_to_restore": "Pandora Sync ended; the Mac's outputs were left as they are.",
+      "airplay_off": "Pandora Sync is turned off on this hub.",
+      "airplay_restore_failed": "Pandora Sync ended, but the Mac's outputs could not be restored.",
+      "airplay_unavailable": "Pandora Sync isn't available on the hub right now: {reason}",
+      "pandora_sync_blocked_by_sync": "Stop Sync Play first.",
+      "pandora_sync_idle": "Pandora Sync isn't running.",
+      "pandora_sync_outputs_only": "Pandora Sync set the AirPlay outputs. Open pandora.com on the hub Mac and press play there.",
+      "pandora_sync_started": "Pandora opened on the hub Mac. Press play there; the rooms follow.",
+      "pandora_sync_stopped": "Pandora Sync ended; the Mac's outputs are back to how they were.",
+      "sync_blocked_by_pandora": "Stop Pandora Sync first."
+    },
     "not_available": {
       "auth_fault": "{side} can't reach {service} right now; sign in again in the {vendor_app}.",
       "not_in_account": "That station isn't in the {vendor} {service} account, so {side} can't play it.",

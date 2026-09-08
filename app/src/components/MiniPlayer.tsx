@@ -4,10 +4,13 @@ import { motion } from "framer-motion";
 import { PauseIcon, PlayIcon } from "./icons";
 import { ZoneDots } from "./ZoneDots";
 import { SyncChip } from "./SyncChip";
+import { PandoraSyncChip } from "./PandoraSyncChip";
 import { TextSkeleton } from "./Skeleton";
 import { artUrl } from "@/lib/hub/config";
 import { useHub } from "@/lib/hub/store";
 import { resolveActiveSide, zoneDotsForState } from "@/lib/selectors";
+import { isPlayingState } from "@/lib/playState";
+import { bridgedSide } from "@/lib/airplay";
 import { useReducedMotion } from "@/lib/reducedMotion";
 import { HERO_LAYOUT_TRANSITION } from "./NowPlaying";
 
@@ -29,13 +32,18 @@ export const MiniPlayer = memo(function MiniPlayer({ onExpand, hideArt = false }
   const sideId = side?.id ?? null;
   const np = useHub((s) => (sideId ? s.state?.now_playing[sideId] : undefined));
   const sync = useHub((s) => s.state?.sync);
+  const pandoraSync = useHub((s) => s.state?.pandora_sync);
   const hasState = useHub((s) => s.state !== null);
   const dots = useHub((s) => zoneDotsForState(s.state));
   const transport = useHub((s) => s.transport);
   const syncRetry = useHub((s) => s.syncRetry);
+  // Held intent while the hub is still buffering, else the hub's state (S11).
+  const playState = useHub((s) => s.displayPlayState(sideId));
+  // While the hub Mac streams Pandora over AirPlay, THIS room's transport belongs to the Mac (B3).
+  const bridged = bridgedSide(sideId, pandoraSync);
   const reduced = useReducedMotion();
   const thumb = artUrl(np?.art, 96);
-  const playing = side?.play_state === "play";
+  const playing = isPlayingState(playState);
   const loading = !hasState || (!!side && !np);
 
   return (
@@ -68,6 +76,8 @@ export const MiniPlayer = memo(function MiniPlayer({ onExpand, hideArt = false }
               </>
             )}
           </div>
+          {/* Status only (UX U4): a tap here expands Now Playing, where the single Stop lives. */}
+          {bridged ? <PandoraSyncChip state={pandoraSync} compact hidden={hideArt} /> : null}
         </button>
         <SyncChip sync={sync} compact hidden={hideArt} onRetry={() => void syncRetry()} />
         <button
@@ -75,7 +85,7 @@ export const MiniPlayer = memo(function MiniPlayer({ onExpand, hideArt = false }
           className="hit-target flex items-center justify-center rounded-control text-primary disabled:opacity-40"
           aria-label={playing ? "Pause" : "Play"}
           aria-pressed={playing}
-          disabled={!side}
+          disabled={!side || bridged}
           onClick={() => side && void transport("toggle", side.id)}
         >
           {playing ? <PauseIcon size={26} /> : <PlayIcon size={26} />}

@@ -136,6 +136,17 @@ export const commands = {
   }),
   syncStop: (correlationId?: string): CommandRequest => ({ path: "/api/sync/stop", body: {}, correlationId }),
   syncRetry: (correlationId?: string): CommandRequest => ({ path: "/api/sync/retry", body: {}, correlationId }),
+  /**
+   * Pandora Sync via the hub Mac's AirPlay bridge (Phase 7, docs/api.md "Pandora Sync",
+   * experimental). The app sends the chosen side ids; the hub matches rooms to AirPlay outputs and
+   * refuses with `invalid_argument` (naming the rooms) when none match.
+   */
+  pandoraSyncStart: (side_ids: string[], correlationId?: string): CommandRequest => ({
+    path: "/api/pandora-sync/start",
+    body: { side_ids },
+    correlationId,
+  }),
+  pandoraSyncStop: (correlationId?: string): CommandRequest => ({ path: "/api/pandora-sync/stop", body: {}, correlationId }),
   /** Play library content on one target (Phase 3, docs/api.md "Play"). */
   play: (target: string, content_ref: { service: string; kind: string; id: string }, start_index?: number, correlationId?: string): CommandRequest => ({
     path: "/api/play",

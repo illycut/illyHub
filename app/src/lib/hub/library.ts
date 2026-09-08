@@ -6,7 +6,7 @@
  * logged in development so contract drift shows up early.
  */
 import { hubHttpBase } from "./config";
-import type { ArtRef } from "./types";
+import type { AirPlayOutput, ArtRef } from "./types";
 
 export type Service = "tidal" | "ytmusic" | "pandora";
 export type ContentKind = "album" | "playlist" | "track" | "station";
@@ -120,12 +120,27 @@ export interface AccountStatus {
   linked_by_vendor: VendorLinked | null;
 }
 
+/** AirPlay bridge capability as Settings reports it (docs/api.md "AirPlay", Phase 7, experimental). */
+export interface AirPlayInfo {
+  /** HUB_AIRPLAY_ENABLED on the hub. Off means the hub never touches the Mac's Music app. */
+  enabled: boolean;
+  /** Enabled and the Music app answered; false with `reason` otherwise. */
+  available: boolean;
+  reason: string | null;
+}
+
+/** GET /api/airplay: the bridge state plus the Music app's AirPlay outputs (read-only in the app). */
+export interface AirPlayStatus extends AirPlayInfo {
+  outputs: AirPlayOutput[];
+}
+
 export interface HubInfo {
   address: string | null;
   version: string | null;
   uptime_s: number | null;
   https: boolean;
   fake_devices: boolean;
+  airplay: AirPlayInfo;
 }
 
 export interface Hardware {
@@ -385,11 +400,41 @@ export function asAccountStatus(x: unknown): AccountStatus {
   };
 }
 
+/** `hub.airplay` defaults to off when a hub predates the bridge. */
+export function asAirPlayInfo(x: unknown): AirPlayInfo {
+  const a = (x ?? {}) as Record<string, unknown>;
+  warnUnknownKeys(a, ["enabled", "available", "reason", "outputs"], "AirPlayInfo");
+  const enabled = a.enabled === true;
+  return { enabled, available: enabled && a.available === true, reason: (a.reason as string | null | undefined) ?? null };
+}
+
+export function asAirPlayOutput(x: unknown, i: number): AirPlayOutput {
+  const o = (x ?? {}) as Record<string, unknown>;
+  warnUnknownKeys(o, ["id", "name", "kind", "kind_label", "selected", "active", "available", "volume"], "AirPlayOutput");
+  return {
+    id: String(o.id ?? o.name ?? i),
+    name: String(o.name ?? o.id ?? "Output"),
+    kind: (o.kind as string | null | undefined) ?? null,
+    kind_label: (o.kind_label as string | null | undefined) ?? null,
+    selected: o.selected === true,
+    active: o.active === true,
+    available: o.available !== false,
+    volume: typeof o.volume === "number" ? o.volume : null,
+  };
+}
+
+/** GET /api/airplay: `{enabled, available, reason, outputs}` (docs/api.md "AirPlay bridge"); `enabled` comes from the payload only. */
+export function asAirPlayStatus(x: unknown): AirPlayStatus {
+  const r = (x ?? {}) as Record<string, unknown>;
+  const outputs = Array.isArray(r.outputs) ? (r.outputs as unknown[]).map(asAirPlayOutput) : [];
+  return { ...asAirPlayInfo(r), outputs };
+}
+
 export function asSettings(x: unknown): Settings {
   const r = (x ?? {}) as Record<string, unknown>;
   warnUnknownKeys(r, ["accounts", "hub", "hardware"], "SettingsResponse");
   const h = (r.hub ?? {}) as Record<string, unknown>;
-  warnUnknownKeys(h, ["address", "port", "https", "version", "uptime_s", "fake_devices"], "HubInfo");
+  warnUnknownKeys(h, ["address", "port", "https", "version", "uptime_s", "fake_devices", "airplay"], "HubInfo");
   const address = (h.address as string | null | undefined) ?? null;
   const hw = Array.isArray(r.hardware) ? (r.hardware as Record<string, unknown>[]) : [];
   return {
@@ -400,6 +445,7 @@ export function asSettings(x: unknown): Settings {
       uptime_s: (h.uptime_s as number | null | undefined) ?? null,
       https: !!h.https,
       fake_devices: !!h.fake_devices,
+      airplay: asAirPlayInfo(h.airplay),
     },
     hardware: hw.map((d, i) => {
       warnUnknownKeys(d, ["id", "name", "vendor", "kind", "model", "ip", "online"], "HardwareItem");
@@ -440,4 +486,6 @@ export const library = {
   restart: async (opts: CallOptions = {}): Promise<void> => {
     await postJson("/api/hub/restart", undefined, opts);
   },
+  /** AirPlay bridge state and the Music app's outputs (Phase 7, read-only in the app). */
+  airplay: async (opts: CallOptions = {}): Promise<AirPlayStatus> => asAirPlayStatus(await getJson("/api/airplay", opts)),
 };

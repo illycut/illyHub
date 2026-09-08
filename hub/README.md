@@ -158,3 +158,27 @@ Module: `sync.py` (engine, config, drift log, reports). Adapter primitives: `pri
 `play_queue`, Sonos via `play_from_queue(index, start=False)` + `play`). Fakes simulate independent
 clocks (`ticker.set_rate`) and seek latency; dev scenarios `sync_drift`, `sync_lose_sonos`,
 `sync_track_change`. Design: `docs/sync-engine.md`. Everything here is mock-verified only.
+
+## Phase 7: AirPlay bridge / Pandora Sync (P2, experimental)
+
+Native Pandora sync is impossible (PRD §3.5), so the hub Mac can act as an AirPlay 2 sender: the
+hub selects Music's AirPlay outputs to match the rooms and opens pandora.com on the Mac; a person
+presses play there and both systems follow. Off unless `HUB_AIRPLAY_ENABLED=1`; needs a logged-in
+GUI session and Automation permission for Music (`ops/RUNBOOK.md` § AirPlay bridge).
+
+- `GET /api/airplay`, `POST /api/airplay/outputs`, `GET /api/pandora-sync`,
+  `POST /api/pandora-sync/{start,stop}`; `HubState.pandora_sync` streams over `/ws`;
+  `/api/settings → hub.airplay`.
+- Code: `src/illyhub_hub/airplay.py` (`MacOSAirPlayBridge` over `osascript -l JavaScript`,
+  `FakeAirPlayBridge`, `PandoraSyncController`). Spike and verdict: `docs/spikes/airplay-bridge.md`.
+- Verified locally only for "Music answers and the scripts work" (one `computer` output). Real
+  multi-output needs the hub Mac with AirPlay 2 targets.
+- The production hub runs as a root LaunchDaemon, which cannot script Music; the bridge reports
+  that as unavailable. Follow-up: a user-session helper (`docs/spikes/airplay-bridge.md`).
+
+## Hardware-driven fixes (September 7, 2026 LAN run)
+
+- HEOS volume/mute for the receiver-hosted player is routed to the Denon zone; state follows the
+  MV read-back (`Capabilities.volume_via`, `supports_volume`).
+- `play_state: "buffering"` for Sonos `TRANSITIONING` and HEOS `unknown` right after a hub play.
+- `HUB_DENON_MAX_VOLUME` is the only volume scale; `MVMAX` read-backs are recorded, never applied.

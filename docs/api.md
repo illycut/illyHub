@@ -142,6 +142,30 @@ immediately and its failure fails the ack. A later write in the same window is *
 yet written: its ack says `ok: true`, the device write happens when the window closes, and a
 failure there is logged (the next state delta will show the true value).
 
+### Volume routing (HEOS players hosted by a Denon receiver)
+
+Verified on the AVR-X3400H: `heos://player/set_volume` returns success and changes nothing, and
+`get_volume` reports 0 regardless of the real level. So for any player listed in a Denon zone's
+`player_ids` (the receiver's main zone wins when both zones list it):
+
+- `POST /api/volume` and `POST /api/mute` for that player go to the receiver's zone over the
+  Denon link (telnet), including the linked master volume. When the Denon link is down the command
+  falls back to the HEOS adapter with a warning in the hub log.
+- The player's `volume` and `muted` come from the receiver's MV/MU read-back; the vendor's own
+  reports for that player are dropped.
+- `Capabilities.volume_via` is `"denon"` for such players, `"vendor"` otherwise, and
+  `Capabilities.supports_volume` is `false` when the hosting zone is a fixed pre-out
+  (`HUB_DENON_FIXED_ZONES`). A volume or mute command for a fixed zone, or for a player hosted only
+  by one, is refused: `invalid_argument` "Zone 2's volume is set on its own amp."
+- `target` may also be a Denon zone id directly (`denon-{host}:main`).
+
+### Play state
+
+`play_state` is `play | pause | stop | buffering | unknown`. `buffering` covers Sonos
+`TRANSITIONING` (about a second while a stream buffers) and HEOS `unknown` within 3 s of a hub
+play command for that player. **The client keeps its optimistic state while `buffering`** and
+follows the next definite state; only a HEOS `unknown` outside that window is `unknown`.
+
 ### Ack
 
 ```json
@@ -521,7 +545,7 @@ app"; pausing from a **vendor app** is not visible as a hub ack and counts as `l
 (`stopped`, "playback changed"). When the master finishes the last track, the session ends
 `stopped` with "playback ended".
 
-### `SyncState` (`HubState.sync`, streamed as the `sync` delta path)
+### `SyncState` (`HubState.sync`, streamed as the `sync` delta path (`pandora_sync` is the other single-object path))
 
 ```json
 {
@@ -573,6 +597,89 @@ two sides' first position reports (follower minus master), the PRD's "start with
 Every session appends `HUB_DATA_DIR/sync/{session_id}.csv` with columns
 `t,master_pos,follower_pos,drift,action` (`action` is empty, `correct`, `reprime`, `lost`,
 `stop`). The report endpoint summarises it; the file is for tuning on the hub Mac.
+
+## AirPlay bridge and Pandora Sync (Phase 7, experimental)
+
+> **Experimental (P2).** Pandora cannot be synchronised across HEOS and Sonos natively, so PRD
+> §3.5 PAN-4 uses the hub Mac itself as an AirPlay 2 sender. The hub only *routes* Music's AirPlay
+> outputs and opens pandora.com on the Mac; a person presses play there. The feature is called
+> **Pandora Sync** in every user-facing string. Off unless `HUB_AIRPLAY_ENABLED=1` (fake mode
+> always has a fake bridge). **It does not work from the deployed root daemon**: `osascript` →
+> Music needs the console user's session, so the daemon reports "The hub runs as a system daemon;
+> Pandora Sync needs the logged-in user's session." The supported path is a hub process started in
+> the console session on another port; the follow-up is a user-session helper (illyHub #28).
+> Spike findings and the hardware checklist: `docs/spikes/airplay-bridge.md`.
+
+### Endpoints
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | `/api/airplay` | | `{enabled, available, reason, outputs[]}` — `outputs` is empty when unavailable |
+| POST | `/api/airplay/outputs` | `{ids: [..]}` (1–32) | `Ack` (`action: "airplay_outputs"`, `applied` = selected ids) |
+| GET | `/api/pandora-sync` | | `PandoraSyncState` |
+| POST | `/api/pandora-sync/start` | `{side_ids: [..]}` **or** `{output_ids: [..]}` (1–32; exactly one, else 422) | `Ack` (`action: "pandora_sync_start"`, `applied` = selected ids) |
+| POST | `/api/pandora-sync/stop` | | `Ack` (`action: "pandora_sync_stop"`, `applied` = restored ids) |
+
+The three POSTs act on the hub Mac itself (routing, opening a browser) and **require the
+`X-Illyhub: 1` header** like `/api/hub/restart`; without it → 403 `missing_header`.
+
+`AirPlayOutput`: `{id, name, kind, kind_label, selected, active, available}`. `kind` is Music's
+raw device kind (`computer`, `AirPlay device`, `HomePod`, …); `kind_label` is what the app renders:
+`"This Mac"` for the computer, `"AirPlay speaker"` for everything else. Ids are Music's numeric
+device ids as strings; they can change across Music launches, so re-read `/api/airplay` before
+offering a list. `available()` is cached for 30 s on the hub, so a `GET /api/airplay` costs one
+`osascript` spawn.
+
+**Room matching** (`side_ids`): only the named sides are matched. Each side name, and each
+`" + "`-separated part of a grouped side name, is matched to output names by exact
+case-insensitive match first, then by case-insensitive containment either way (min 3 chars); every
+match is kept; only `available` outputs count and the Mac's own `computer` output is never
+matched. Any side without a match refuses the whole call: `invalid_argument` "No AirPlay outputs
+match {rooms}. Rename them to match in the Music app on the hub Mac, or choose outputs there."
+Unknown side id → `unknown_target`; unknown explicit output id → `unknown_target` before anything
+is written.
+
+**Start** refuses with `sync_active` (409, "Stop Sync Play first.") while a Sync Play session is
+live, and `POST /api/sync/play` refuses with `bridge_active` (409, "Stop Pandora Sync first.")
+while Pandora Sync is on. Otherwise start snapshots the current selection into
+`previous_output_ids`, selects the chosen outputs (select first, then deselect the rest so Music
+never loses its last output), opens `https://www.pandora.com` in the console user's default
+browser (best effort; the note says which happened), and publishes `HubState.pandora_sync`.
+Starting again while active keeps the *original* restore point. **Stop** restores
+`previous_output_ids` and clears `active`; `ok` stays true even when the restore fails or there was
+nothing to restore — the `note` says so (`airplay_restore_failed` /
+`airplay_nothing_to_restore`). Stop while idle → `sync_idle` "Pandora Sync isn't running."
+
+### `PandoraSyncState` (`HubState.pandora_sync`, streamed as the `pandora_sync` delta path)
+
+```json
+{
+  "active": true,
+  "side_ids": ["heos:heos-1", "sonos:sonos-gRINCON_KITCHEN:1"],
+  "output_ids": ["ap-living", "ap-kitchen"],
+  "outputs": ["Living Room Amp", "Kitchen + Patio"],
+  "previous_output_ids": ["mac"],
+  "started_at": "2026-09-07T22:10:00Z",
+  "note": "Pandora opened on the hub Mac. Press play there; the rooms follow."
+}
+```
+
+`side_ids` lets the app scope its Pandora Sync controls to those rooms only. Like `sync`, the
+whole object diffs as one path (`LEAF_KEYS` in `state.py`).
+
+### Errors and copy
+
+`bridge_unavailable` (503): the bridge is off, this process has no GUI session, Music is not
+responding, or Automation permission is missing. `error.message` is the bridge's own sentence
+(permission → where to allow it; timeout → is a user logged in; daemon → needs the logged-in
+user's session); a fragment is wrapped as "Pandora Sync isn't available on the hub right now: …"
+so "right now" never appears twice. When the flag is off: "Pandora Sync is turned off on this
+hub." (the env var name stays in logs and docs). All strings live in `messages.py` under
+`templates.airplay.*` (`airplay_unavailable`, `airplay_off`, `airplay_daemon`, `airplay_no_match`,
+`airplay_needs_output`, `airplay_restore_failed`, `airplay_nothing_to_restore`,
+`pandora_sync_started`, `pandora_sync_outputs_only`, `pandora_sync_stopped`,
+`pandora_sync_idle`, `pandora_sync_blocked_by_sync`, `sync_blocked_by_pandora`) and in
+`GET /api/meta/messages` / the app's `messages.json`.
 
 ## History and home
 
@@ -716,6 +823,7 @@ revert the optimistic state, and send `resync`.
   "now_playing": {"<side id>": {"title", "artist", "album", "art": {"url", "cache_key", "accent", "accent_is_safe"}, "source", "seekable", "supports_next", "supports_prev", "duration_ms", "track_id", "content_ref": {"service", "kind", "id"} | null}},   // Tidal track id, or the Pandora station ref
   "positions":   {"<side id>": {"position_ms", "reported_at", "confidence"}},
   "sync":        {"status", "session_id", "master_side", "follower_side", "content_ref", "title", "drift_ms", "start_delta_ms", "last_correction_at", "corrections", "reason", "started_at"},
+  "pandora_sync": {"active": false, "output_ids": [], "outputs": [], "previous_output_ids": [], "started_at": null, "note": null},
   "connections": {"heos": {"state", "last_error", "since"}, "sonos": {...}, "denon": {...}}
 }
 ```

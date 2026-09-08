@@ -9,7 +9,9 @@ import { TransportRow } from "./TransportRow";
 import { VolumeSheet } from "./VolumeSheet";
 import { ZoneDots } from "./ZoneDots";
 import { SyncChip } from "./SyncChip";
+import { PandoraSyncChip } from "./PandoraSyncChip";
 import { Slider } from "./Slider";
+import { PANDORA_SYNC, PANDORA_SYNC_CONTROLLED, PANDORA_SYNC_STOP, bridgedSide, pandoraSyncLabel, pandoraSyncLabelShort } from "@/lib/airplay";
 import { TextSkeleton } from "./Skeleton";
 import { artUrl } from "@/lib/hub/config";
 import { useHub } from "@/lib/hub/store";
@@ -63,6 +65,14 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
   const transport = useHub((s) => s.transport);
   const syncStop = useHub((s) => s.syncStop);
   const syncRetry = useHub((s) => s.syncRetry);
+  // Pandora Sync (Phase 7, experimental): while THIS room is bridged the hub Mac drives its playback,
+  // so transport and seek are off here; other rooms stay live (B3).
+  const pandoraSync = useHub((s) => s.state?.pandora_sync);
+  const pandoraSyncStop = useHub((s) => s.pandoraSyncStop);
+  const bridgeLabels = useHub(useShallow((s) => ({ full: pandoraSyncLabel(s.state, s.state?.sides), short: pandoraSyncLabelShort(s.state) })));
+  const bridged = bridgedSide(sideId, pandoraSync);
+  // Held intent while the hub is still buffering, else the hub's state (S11).
+  const playState = useHub((s) => s.displayPlayState(sideId));
   const seek = useHub((s) => s.seek);
   const skip = useHub((s) => s.skip);
   const setSideVolume = useHub((s) => s.setSideVolume);
@@ -107,7 +117,7 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
   const hero = artUrl(np?.art, 1080);
 
   const caps = {
-    supports_seek: !!side && !syncing && (side.capabilities?.supports_seek ?? true) && (np?.seekable ?? true),
+    supports_seek: !!side && !syncing && !bridged && (side.capabilities?.supports_seek ?? true) && (np?.seekable ?? true),
     supports_next: !!side && (side.capabilities?.supports_next ?? true) && (np?.supports_next ?? true),
     supports_prev: !!side && (side.capabilities?.supports_prev ?? true) && (np?.supports_prev ?? true),
   };
@@ -122,19 +132,26 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
   }, []);
 
   const style = useMemo(() => ({ "--art-accent": accent, "--scrub-fill": fill }) as React.CSSProperties, [accent, fill]);
-  const roomLabel = syncing && syncingLabel
-    ? `${syncingLabel}. ${zoneDotsLabel(dots)}. Choose where to play`
-    : side
-      ? `Playing on ${side.name}. ${zoneDotsLabel(dots)}. Choose where to play`
-      : "Choose where to play";
-  const loading = !hasState || (!!side && !np);
+  // While bridged the dot count is not the hub's to claim (U7): name the rooms only.
+  const roomLabel = bridged && bridgeLabels.full
+    ? `${bridgeLabels.full}. Choose where to play`
+    : syncing && syncingLabel
+      ? `${syncingLabel}. ${zoneDotsLabel(dots)}. Choose where to play`
+      : side
+        ? `Playing on ${side.name}. ${zoneDotsLabel(dots)}. Choose where to play`
+        : "Choose where to play";
+  const indicatorText = bridged && bridgeLabels.short ? bridgeLabels.short : syncing && syncView.shortLabel ? syncView.shortLabel : (side?.name ?? "Choose room");
+  // A bridged room may have no hub now-playing at all (the Mac is the source): never show it as
+  // loading; the caption and Stop must render.
+  const loading = !hasState || (!!side && !np && !bridged);
 
   return (
     <section
       className="relative flex min-h-dvh flex-col bg-base pt-safe pb-safe"
       style={style}
       data-testid="now-playing"
-      data-np-sync={syncing || offer ? "true" : undefined}
+      data-np-sync={syncing || offer || bridged ? "true" : undefined}
+      data-np-bridged={bridged ? "true" : undefined}
       aria-label="Now playing"
     >
       {/* Backdrop (U8): tinted base at 100%, blurred art above, gradient last. */}
@@ -172,10 +189,12 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
             <span className="shrink-0" aria-hidden="true">
               <LayersIcon size={18} />
             </span>
-            <span className="truncate">{syncing && syncView.shortLabel ? syncView.shortLabel : (side?.name ?? "Choose room")}</span>
+            <span className="truncate">{indicatorText}</span>
             <ZoneDots model={dots} />
           </button>
           <SyncChip sync={sync} onRetry={() => void syncRetry()} onStop={() => void syncStop()} />
+          {/* Status pill only (U2); the single Stop sits in the meta row below. */}
+          {bridged ? <PandoraSyncChip state={pandoraSync} /> : null}
         </div>
         <span className="w-target" />
       </header>
@@ -202,13 +221,19 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
             ) : (
               <>
                 <h2 data-np-title className="clamp-2 text-display text-primary" data-testid="np-title">
-                  {np?.title ?? "Nothing playing"}
+                  {np?.title ?? (bridged ? PANDORA_SYNC : "Nothing playing")}
                 </h2>
                 <div data-np-meta>
                   <p className="mt-1 clamp-1 text-caption text-secondary">{[np?.artist, np?.album].filter(Boolean).join(" · ")}</p>
                   <div className="mt-2 flex min-h-target items-center gap-2">
-                    <ServiceBadge source={np?.source} size={22} withLabel />
-                    {syncing && !lost ? (
+                    {/* While bridged the hub's last track is stale: keep the title, drop the badge (U7). */}
+                    {bridged ? null : <ServiceBadge source={np?.source} size={22} withLabel />}
+                    {bridged ? (
+                      // The single Stop for Pandora Sync (U2/U5): text in the error tone, the rooms go silent.
+                      <button type="button" className="ml-auto min-h-target rounded-control px-3 text-caption text-error" onClick={() => void pandoraSyncStop()} data-testid="pandora-sync-stop">
+                        {PANDORA_SYNC_STOP}
+                      </button>
+                    ) : syncing && !lost ? (
                       <button type="button" className="ml-auto min-h-target rounded-control px-3 text-caption text-secondary" onClick={() => void syncStop()} data-testid="stop-sync">
                         {STOP_SYNC}
                       </button>
@@ -224,6 +249,12 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
                       </button>
                     ) : null}
                   </div>
+                  {bridged ? (
+                    // Full-width caption under the meta (U7): where playback lives while Pandora Sync is on.
+                    <p id="bridge-caption" className="mt-1 text-caption text-secondary" data-testid="bridge-caption">
+                      {PANDORA_SYNC_CONTROLLED}
+                    </p>
+                  ) : null}
                 </div>
               </>
             )}
@@ -232,7 +263,8 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
           <div className="screen-margin np-landscape:px-0 mx-auto w-full max-w-hero">
             <Scrubber
               position={pos}
-              playState={side?.play_state}
+              // Bridged: no 4 Hz tick and no interpolation; the hub is not driving this room.
+              playState={bridged ? undefined : playState}
               durationMs={np?.duration_ms}
               seekable={caps.supports_seek}
               onSeek={(ms) => side && void seek(side.id, ms)}
@@ -242,9 +274,11 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
 
           <div className="transport-margin">
             <TransportRow
-              playState={side?.play_state}
+              playState={playState}
               caps={caps}
-              disabled={!side}
+              disabled={!side || bridged}
+              outlined={bridged}
+              describedBy={bridged ? "bridge-caption" : undefined}
               onPrev={() => side && void transport("prev", side.id)}
               onBack15={() => side && void skip(side.id, -15_000)}
               onToggle={() => side && void transport("toggle", side.id)}
@@ -267,6 +301,7 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
               <Slider
                 label={side ? `${side.name} volume` : "Volume"}
                 value={side?.volume ?? 0}
+                // The room's own volume keeps working while bridged (S8): only transport and seek move to the Mac.
                 disabled={!side}
                 onChange={(v) => side && volCoalescer.current?.submit(side.id, v)}
                 onCommit={(v) => side && volCoalescer.current?.commit(side.id, v)}

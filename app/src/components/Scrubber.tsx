@@ -4,6 +4,7 @@ import { formatTime } from "@/lib/format";
 import { interpolatePosition, shouldAnimate } from "@/lib/position";
 import { msToPct, pxToMs } from "@/lib/scrub";
 import type { PlayState, Position } from "@/lib/hub/types";
+import { isPlayingState } from "@/lib/playState";
 
 /**
  * Touch-scrubbing timeline (design system §6.4). 4px track, 8px while touched, contrast-guarded
@@ -34,9 +35,10 @@ export function Scrubber({
   const [, setTick] = useState(0);
   const [announce, setAnnounce] = useState("");
 
-  // Re-render ~4 Hz while playing so the interpolated position advances between hub updates.
+  // Re-render ~4 Hz while playing (or buffering) so the interpolated position advances between hub
+  // updates. Callers pass `undefined` while a room is bridged so the tick stays off.
   useEffect(() => {
-    if (playState !== "play") return;
+    if (!isPlayingState(playState)) return;
     const id = setInterval(() => setTick((t) => t + 1), 250);
     return () => clearInterval(id);
   }, [playState]);

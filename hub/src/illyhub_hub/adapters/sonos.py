@@ -516,9 +516,14 @@ def group_id(uid: str) -> str:
 
 
 def _play_state(transport_state: str | None) -> str:
-    return {"PLAYING": "play", "PAUSED_PLAYBACK": "pause", "STOPPED": "stop"}.get(
-        transport_state or "", "unknown"
-    )
+    """UPnP TransportState → hub PlayState. ``TRANSITIONING`` (about a second while a stream
+    buffers, seen on hardware) is ``buffering`` so the client keeps its optimistic state."""
+    return {
+        "PLAYING": "play",
+        "PAUSED_PLAYBACK": "pause",
+        "STOPPED": "stop",
+        "TRANSITIONING": "buffering",
+    }.get(transport_state or "", "unknown")
 
 
 def absolutize(uri: str | None, ip: str | None) -> str | None:

@@ -11,6 +11,9 @@ import type { PlayRequest } from "@/lib/ui/chrome";
 import type { HubState, Side, Zone } from "@/lib/hub/types";
 import { SYNC_BUTTON, syncButtonLabel, syncEligibility, syncNote, type Eligibility } from "@/lib/sync";
 import { pandoraConcurrentNote, unavailableCopy } from "@/lib/pandora";
+import { PANDORA_SYNC_BUTTON, PANDORA_SYNC, pandoraSyncNote, pandoraSyncOffered } from "@/lib/airplay";
+import { isSyncActive } from "@/lib/sync";
+import { useLibrary } from "@/lib/library/store";
 
 /** Sentence-case status copy (design system §10). Offline is the only tertiary state. */
 export function sideStatus(side: Side, coordinatorOnline: boolean, zones: Zone[]): { text: string; tone: "secondary" | "tertiary" | "signal" } {
@@ -75,13 +78,21 @@ export function ZonePicker({
   onClose,
   play = null,
   onConfirm,
+  onPandoraSync,
 }: {
   open: boolean;
   onClose: () => void;
   play?: PlayRequest | null;
   /** Play mode: `mode` is "sync" when the button was Sync Play (one HEOS + one Sonos side, Tidal content). */
   onConfirm?: (targets: string[], mode: Eligibility) => void;
+  /** Phase 7 (experimental): a Pandora station handed to the hub Mac's AirPlay bridge for the selected rooms. */
+  onPandoraSync?: (targets: string[]) => void;
 }) {
+  // The bridge capability comes from Settings (hub.airplay); the button shows only when it is available,
+  // never while a Sync Play session is live; and Sync Play is hidden while Pandora Sync is on (S10).
+  const airplay = useLibrary((s) => s.settings.data?.hub.airplay);
+  const syncActive = useHub((s) => isSyncActive(s.state?.sync));
+  const pandoraActive = useHub((s) => !!s.state?.pandora_sync?.active);
   const rows = useHub((s) => zoneRowsForState(s.state));
   const sides = useHub((s) => s.state?.sides);
   const sideIds = useHub(useShallow((s) => Object.keys(s.state?.sides ?? {})));
@@ -212,7 +223,7 @@ export function ZonePicker({
           {pandoraNote}
         </p>
       ) : null}
-      {playMode && eligibility.mode === "sync" ? (
+      {playMode && eligibility.mode === "sync" && !pandoraActive ? (
         // Sync Play is the only amber-filled button in the app (design system §6.8): it creates a live audio state.
         <div className="flex flex-col items-center gap-2 pt-4">
           <button
@@ -249,23 +260,59 @@ export function ZonePicker({
         </div>
       ) : playMode ? (
         <div className="flex flex-col gap-2 pt-4">
+          {/* Footer order (UX U1): station note → confirm → Pandora Sync → its note. */}
+          {eligibility.mode === "play" && eligibility.syncReason && play!.content_ref.kind === "station" ? (
+            // Stations never Sync Play (Pandora picks per room): one caption, no dead button (design §13 1.3).
+            <p className="text-center text-micro text-secondary" data-testid="station-sync-note">
+              {eligibility.syncReason}
+            </p>
+          ) : null}
+          {pandoraActive && eligibility.mode === "sync" ? (
+            <p className="text-center text-micro text-secondary" data-testid="sync-hidden-note">
+              {PANDORA_SYNC} is on. Stop it to use Sync Play.
+            </p>
+          ) : null}
           <button
             type="button"
             className="flex h-target w-full items-center justify-center rounded-control bg-overlay text-body text-primary disabled:opacity-40"
             disabled={playSel.length === 0}
-            onClick={() => confirm()}
+            // A plain play even when the selection would qualify for Sync Play but Pandora Sync is on (S10).
+            onClick={() => confirm(eligibility.mode === "sync" ? { mode: "play", syncReason: null } : eligibility)}
             data-testid="confirm-play"
             data-mode="play"
             aria-describedby={pandoraNote ? "pandora-note" : undefined}
           >
             {playButtonLabel(names)}
           </button>
-          {eligibility.mode === "play" && eligibility.syncReason && play!.content_ref.kind === "station" ? (
-            // Stations never sync (Pandora picks per room): one caption, no dead button (design §13 1.3).
-            <p className="text-center text-micro text-secondary" data-testid="station-sync-note">
-              {eligibility.syncReason}
-            </p>
-          ) : eligibility.mode === "play" && eligibility.syncReason ? (
+          {pandoraSyncOffered(play!.content_ref, airplay, syncActive) ? (
+            // Phase 7 (experimental): plain text, never amber. Amber means a live audio state the hub
+            // controls; this hands the station off to the hub Mac, which streams to the chosen rooms
+            // over AirPlay 2. Needs at least one room; the hub maps rooms to outputs.
+            <>
+              <button
+                type="button"
+                className="flex min-h-target w-full items-center justify-center rounded-control text-body text-secondary disabled:opacity-40"
+                disabled={playSel.length === 0}
+                onClick={() => {
+                  // Pin the first bridged room as the Now Playing side (as confirm does) so the
+                  // mini-player and Now Playing show the Pandora Sync chip for it.
+                  rememberTargets(playSel, refKey(play!.content_ref));
+                  setTargets(playSel);
+                  selectSide(playSel[0]!);
+                  onPandoraSync?.(playSel);
+                  onClose();
+                }}
+                aria-describedby="pandora-sync-note"
+                data-testid="pandora-sync"
+              >
+                {PANDORA_SYNC_BUTTON}
+              </button>
+              <p id="pandora-sync-note" className="text-center text-micro text-secondary" data-testid="pandora-sync-note">
+                {pandoraSyncNote(names)}
+              </p>
+            </>
+          ) : null}
+          {eligibility.mode === "play" && eligibility.syncReason && play!.content_ref.kind !== "station" ? (
             // Both vendors selected but the content cannot sync: say why instead of silently falling back.
             <div className="flex flex-col items-center gap-1">
               <button type="button" className="flex h-target w-full items-center justify-center rounded-control border border-stroke text-body text-secondary" disabled aria-disabled="true" data-testid="sync-play-disabled">

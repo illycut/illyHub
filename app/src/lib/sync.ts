@@ -9,13 +9,14 @@
 import type { ContentRef, Detail, HistoryItem } from "./hub/library";
 import type { Side, SyncState, SyncStatus } from "./hub/types";
 import { SYNC_UNSUPPORTED_MSG } from "./services";
+import { isPlaying } from "./playState";
 
 export const SYNC_NOTE = "Close, not perfect.";
 export const SYNC_BUTTON = "Sync Play";
 /** One phrase for one fact (§10): the picker reason and the hub-refusal toast say the same thing (the hub's exported sentence). */
 export const SYNC_UNSUPPORTED_TOAST: string = SYNC_UNSUPPORTED_MSG;
 /** Picker caption for a station with both vendors selected (design §13 1.3): no button, just the fact. */
-export const STATIONS_CANT_SYNC = "Stations can't sync: Pandora picks different songs for each room.";
+export const STATIONS_CANT_SYNC = "Stations can't Sync Play: Pandora picks different songs for each room.";
 export const STOP_SYNC = "Stop sync";
 export const RETRY = "Retry";
 /** Picker note when Sync Play was launched from the Now Playing offer (UX S6). */
@@ -161,7 +162,7 @@ export function syncOffer(
   const candidates = Object.values(sides).filter((s) => s.vendor !== active.vendor && onlineOf(s));
   if (candidates.length === 0) return null;
   const partner =
-    candidates.find((s) => s.play_state === "play") ??
+    candidates.find(isPlaying) ??
     recentSideIds.map((id) => candidates.find((s) => s.id === id)).find((s): s is Side => !!s) ??
     candidates.sort((a, b) => a.name.localeCompare(b.name))[0]!;
   const partnerName = partner.name || "another room";

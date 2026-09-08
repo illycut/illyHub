@@ -31,7 +31,8 @@ async function ensureRowSelected(picker: import("@playwright/test").Locator, sid
 async function startSyncFromPicker(page: Page) {
   const { heos, sonos } = await sides(page);
   await page.goto("/");
-  const card = page.getByTestId("albums-grid").getByTestId("grid-card").first();
+  // Sync Play needs Tidal content: pick the first Tidal-badged album (the grid merges services).
+  const card = page.getByTestId("albums-grid").getByTestId("grid-card").filter({ has: page.getByRole("img", { name: "Tidal" }) }).first();
   await card.getByRole("button", { name: /^Play / }).click();
   const picker = page.getByTestId("zone-picker");
   await expect(picker).toBeVisible();

@@ -298,3 +298,13 @@ Refinements found while implementing Phase 2. Each is a clarification of intent,
 4. **Picker pre-selection.** After filtering rooms that cannot play the content, if exactly one usable room remains it is pre-selected, so the common case stays two taps.
 5. **Owner-only setup errors.** When the hub lacks OAuth client credentials for a service, the shared Settings row reads "Not connected · Hub setup needed"; the full instruction (which env vars to set) appears only inside the link sheet the owner opens, with a Close action instead of Try again.
 6. **Link sheet focus.** When the sheet changes phase (connected, expired, error), focus moves to the sheet's primary action so keyboard and switch users keep their place.
+
+### 1.5 — September 7, 2026 (Phase 7 Pandora Sync build)
+
+1. **One name.** The AirPlay bridge feature is "Pandora Sync" in every surface: picker button "Pandora Sync (experimental)", chip "Pandora Sync", indicator "Pandora Sync · N rooms", Settings row "Pandora Sync (AirPlay bridge)". Never "Sync via AirPlay" or "Pandora via AirPlay".
+2. **Explain the hand-off before the tap.** The picker note tied to the button reads: "The hub Mac plays this station to {rooms} over AirPlay. It opens Pandora there; press play on the Mac." "Experimental" appears once per surface and only next to that sentence.
+3. **Plain text, never amber.** Pandora Sync hands audio off to the Mac; the hub does not control that playback, so no amber anywhere in the feature, including the read-only Outputs sheet (neutral check glyphs, non-tappable rows).
+4. **Bridged Now Playing.** Transport, seek and the primary disc are disabled (disc outlined, not filled); one full-width caption under the meta: "Press play on the hub Mac; the rooms follow. Controls are there while Pandora Sync is on." Room volume stays live. Only the rooms in the session are bridged; other rooms keep full controls. One Stop, in the meta row, in `error` tone, because stopping silences the rooms.
+5. **Mini-player chip is status only.** It never acts; tapping falls through to expand. The stop note from the hub is toasted once.
+6. **Scope statement in Settings.** "Experimental. Pandora Sync points the Mac's AirPlay outputs at your rooms and opens Pandora there; someone presses play on the Mac." in caption/secondary. Reasons for unavailability wrap rather than clamp.
+7. **Deployment reality.** With the hub running as a root daemon the bridge reports unavailable with a reason; Pandora Sync works only from a console-session hub process until the user-session helper exists (illyHub #28).

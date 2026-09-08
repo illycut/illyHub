@@ -24,6 +24,28 @@ export function emptyState(): HubState {
       title: null,
     },
     connections: {},
+    pandora_sync: emptyPandoraSync(),
+  };
+}
+
+export function emptyPandoraSync(): NonNullable<HubState["pandora_sync"]> {
+  return { active: false, side_ids: [], output_ids: [], outputs: [], previous_output_ids: [], started_at: null, note: null };
+}
+
+const strings = (x: unknown): string[] => (Array.isArray(x) ? x.filter((v): v is string => typeof v === "string") : []);
+
+/** Coerce a `pandora_sync` payload (snapshot or delta); null/garbage reads as inactive. */
+export function asPandoraSync(x: unknown): NonNullable<HubState["pandora_sync"]> {
+  if (!x || typeof x !== "object") return emptyPandoraSync();
+  const r = x as Record<string, unknown>;
+  return {
+    active: r.active === true,
+    side_ids: strings(r.side_ids),
+    output_ids: strings(r.output_ids),
+    outputs: strings(r.outputs),
+    previous_output_ids: strings(r.previous_output_ids),
+    started_at: typeof r.started_at === "string" ? r.started_at : null,
+    note: typeof r.note === "string" ? r.note : null,
   };
 }
 
@@ -51,6 +73,11 @@ export function applyDelta(state: HubState, delta: DeltaMessage): HubState | nul
   for (const [path, value] of Object.entries(delta.changed)) {
     if (path === "sync") {
       if (value !== null && typeof value === "object") next.sync = value as HubState["sync"];
+      continue;
+    }
+    if (path === "pandora_sync") {
+      // Depth-one like `sync`; null means the bridge went away (inactive).
+      next.pandora_sync = asPandoraSync(value);
       continue;
     }
     if (path === "version") continue;

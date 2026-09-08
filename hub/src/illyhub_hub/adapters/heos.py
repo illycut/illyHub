@@ -116,6 +116,16 @@ def _play_state(raw: Any) -> str:
     return value if value in ("play", "pause", "stop") else "unknown"
 
 
+def play_state_for(store: StateStore, player_id_: str, raw: Any) -> str:
+    """HEOS reports ``state=unknown`` for a second or two after a play command while the stream
+    buffers (seen on the AVR-X3400H). Within 3 s of a hub play for that player that is
+    ``buffering``; any other ``unknown`` stays ``unknown``."""
+    value = _play_state(raw)
+    if value == "unknown" and store.play_sent_recently(player_id_):
+        return "buffering"
+    return value
+
+
 def _controls(media: Any) -> set[str]:
     """``supported_controls`` from pyheos ``HeosNowPlayingMedia`` as plain strings; empty when
     the attribute is missing (older pyheos), in which case callers assume everything works."""
@@ -504,7 +514,7 @@ class PyHeosAdapter(HeosAdapter):
             online=bool(getattr(raw, "available", True)),
             volume=int(getattr(raw, "volume", 0) or 0),
             muted=bool(getattr(raw, "is_muted", False)),
-            play_state=_play_state(getattr(raw, "state", "unknown")),  # type: ignore[arg-type]
+            play_state=play_state_for(self.store, player_id(pid), getattr(raw, "state", "unknown")),  # type: ignore[arg-type]
             group_id=existing.group_id if existing else None,
             # The HEOS CLI cannot seek; see module docstring.
             capabilities=Capabilities(supports_power=True, supports_seek=False),
@@ -636,7 +646,9 @@ class PyHeosAdapter(HeosAdapter):
     def _handle_player_event(self, pid: int, raw: Any, event: str) -> None:
         p_id = player_id(pid)
         if event == EVENT_PLAYER_STATE_CHANGED:
-            self.store.update_player(p_id, play_state=_play_state(getattr(raw, "state", "unknown")))
+            self.store.update_player(
+                p_id, play_state=play_state_for(self.store, p_id, getattr(raw, "state", "unknown"))
+            )
             self._emit("play_state", player_id=p_id)
         elif event == EVENT_PLAYER_VOLUME_CHANGED:
             self.store.update_player(

@@ -1514,6 +1514,151 @@
     }
    }
   },
+  "/api/airplay": {
+   "get": {
+    "tags": [
+     "airplay"
+    ],
+    "summary": "Airplay Status",
+    "operationId": "airplay_status_api_airplay_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AirPlayStatusResponse"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/airplay/outputs": {
+   "post": {
+    "tags": [
+     "airplay"
+    ],
+    "summary": "Airplay Outputs",
+    "operationId": "airplay_outputs_api_airplay_outputs_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/AirPlayOutputsBody"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Ack"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/pandora-sync": {
+   "get": {
+    "tags": [
+     "airplay"
+    ],
+    "summary": "Pandora Sync State",
+    "operationId": "pandora_sync_state_api_pandora_sync_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PandoraSyncState"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/pandora-sync/start": {
+   "post": {
+    "tags": [
+     "airplay"
+    ],
+    "summary": "Pandora Sync Start",
+    "operationId": "pandora_sync_start_api_pandora_sync_start_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PandoraSyncStartBody"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Ack"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/pandora-sync/stop": {
+   "post": {
+    "tags": [
+     "airplay"
+    ],
+    "summary": "Pandora Sync Stop",
+    "operationId": "pandora_sync_stop_api_pandora_sync_stop_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Ack"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/dev/fake/{scenario}": {
    "post": {
     "tags": [
@@ -1804,6 +1949,136 @@
     "title": "AckWarning",
     "description": "A non-fatal note about a command that still succeeded (e.g. a second Pandora stream)."
    },
+   "AirPlayInfo": {
+    "properties": {
+     "enabled": {
+      "type": "boolean",
+      "title": "Enabled"
+     },
+     "available": {
+      "type": "boolean",
+      "title": "Available"
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Reason"
+     }
+    },
+    "type": "object",
+    "required": [
+     "enabled",
+     "available"
+    ],
+    "title": "AirPlayInfo",
+    "description": "Experimental AirPlay bridge status (PRD \u00a73.5 PAN-4). ``enabled`` follows\n``HUB_AIRPLAY_ENABLED`` (always true in fake mode, which carries a fake bridge);\n``available`` is whether Music can be scripted from this process right now."
+   },
+   "AirPlayOutput": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "name": {
+      "type": "string",
+      "title": "Name"
+     },
+     "kind": {
+      "type": "string",
+      "title": "Kind",
+      "default": "unknown"
+     },
+     "selected": {
+      "type": "boolean",
+      "title": "Selected",
+      "default": false
+     },
+     "active": {
+      "type": "boolean",
+      "title": "Active",
+      "default": false
+     },
+     "available": {
+      "type": "boolean",
+      "title": "Available",
+      "default": true
+     },
+     "kind_label": {
+      "type": "string",
+      "title": "Kind Label",
+      "readOnly": true
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "name",
+     "kind_label"
+    ],
+    "title": "AirPlayOutput",
+    "description": "One Music AirPlay device as the app shows it. ``kind`` is Music's raw device kind;\n``kind_label`` is the two-way user label the app renders."
+   },
+   "AirPlayOutputsBody": {
+    "properties": {
+     "ids": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Ids",
+      "description": "AirPlay output ids to select (others off)"
+     }
+    },
+    "type": "object",
+    "required": [
+     "ids"
+    ],
+    "title": "AirPlayOutputsBody"
+   },
+   "AirPlayStatusResponse": {
+    "properties": {
+     "enabled": {
+      "type": "boolean",
+      "title": "Enabled"
+     },
+     "available": {
+      "type": "boolean",
+      "title": "Available"
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Reason"
+     },
+     "outputs": {
+      "items": {
+       "$ref": "#/components/schemas/AirPlayOutput"
+      },
+      "type": "array",
+      "title": "Outputs"
+     }
+    },
+    "type": "object",
+    "required": [
+     "enabled",
+     "available"
+    ],
+    "title": "AirPlayStatusResponse"
+   },
    "ArtRef": {
     "properties": {
      "url": {
@@ -2076,6 +2351,20 @@
       "type": "boolean",
       "title": "Supports Prev",
       "default": true
+     },
+     "volume_via": {
+      "type": "string",
+      "enum": [
+       "vendor",
+       "denon"
+      ],
+      "title": "Volume Via",
+      "default": "vendor"
+     },
+     "supports_volume": {
+      "type": "boolean",
+      "title": "Supports Volume",
+      "default": true
      }
     },
     "type": "object",
@@ -2255,7 +2544,10 @@
        "unsupported_content",
        "sync_mismatch",
        "sync_idle",
-       "sync_stopped"
+       "sync_stopped",
+       "bridge_unavailable",
+       "sync_active",
+       "bridge_active"
       ],
       "title": "Code"
      },
@@ -2679,6 +2971,9 @@
      "fake_devices": {
       "type": "boolean",
       "title": "Fake Devices"
+     },
+     "airplay": {
+      "$ref": "#/components/schemas/AirPlayInfo"
      }
     },
     "type": "object",
@@ -2688,7 +2983,8 @@
      "https",
      "version",
      "uptime_s",
-     "fake_devices"
+     "fake_devices",
+     "airplay"
     ],
     "title": "HubInfo"
    },
@@ -2744,6 +3040,110 @@
     ],
     "title": "MuteBody"
    },
+   "PandoraSyncStartBody": {
+    "properties": {
+     "side_ids": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array",
+        "maxItems": 32,
+        "minItems": 1
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Side Ids"
+     },
+     "output_ids": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array",
+        "maxItems": 32,
+        "minItems": 1
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Output Ids"
+     }
+    },
+    "type": "object",
+    "title": "PandoraSyncStartBody",
+    "description": "Exactly one of ``side_ids`` (rooms; the hub matches their names to outputs) or\n``output_ids`` (explicit AirPlay outputs)."
+   },
+   "PandoraSyncState": {
+    "properties": {
+     "active": {
+      "type": "boolean",
+      "title": "Active",
+      "default": false
+     },
+     "side_ids": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Side Ids",
+      "description": "rooms whose outputs are bridged"
+     },
+     "output_ids": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Output Ids"
+     },
+     "outputs": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Outputs",
+      "description": "output names, for display"
+     },
+     "previous_output_ids": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Previous Output Ids"
+     },
+     "started_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Started At"
+     },
+     "note": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Note"
+     }
+    },
+    "type": "object",
+    "title": "PandoraSyncState",
+    "description": "Experimental \"Pandora Sync\" via the hub Mac as an AirPlay 2 sender (PRD \u00a73.5 PAN-4).\n\nThe hub only routes AirPlay outputs and opens Pandora on the Mac; playback itself is driven\nthere (docs/spikes/airplay-bridge.md). ``previous_output_ids`` is what ``stop`` restores."
+   },
    "PartialFailure": {
     "properties": {
      "target": {
@@ -2765,7 +3165,10 @@
        "unsupported_content",
        "sync_mismatch",
        "sync_idle",
-       "sync_stopped"
+       "sync_stopped",
+       "bridge_unavailable",
+       "sync_active",
+       "bridge_active"
       ],
       "title": "Code"
      },
@@ -2869,6 +3272,7 @@
        "play",
        "pause",
        "stop",
+       "buffering",
        "unknown"
       ],
       "title": "Play State",
@@ -3017,6 +3421,7 @@
        "play",
        "pause",
        "stop",
+       "buffering",
        "unknown"
       ],
       "title": "Play State",
@@ -3691,9 +4096,31 @@
       "title": "Power",
       "default": false
      },
+     "volume": {
+      "type": "integer",
+      "maximum": 100.0,
+      "minimum": 0.0,
+      "title": "Volume",
+      "default": 0
+     },
+     "muted": {
+      "type": "boolean",
+      "title": "Muted",
+      "default": false
+     },
      "online": {
       "type": "boolean",
       "title": "Online",
+      "default": true
+     },
+     "supports_volume": {
+      "type": "boolean",
+      "title": "Supports Volume",
+      "default": true
+     },
+     "supports_mute": {
+      "type": "boolean",
+      "title": "Supports Mute",
       "default": true
      },
      "host": {

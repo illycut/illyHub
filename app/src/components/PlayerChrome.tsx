@@ -1,5 +1,5 @@
 "use client";
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { AnimatePresence, LayoutGroup, motion, type PanInfo } from "framer-motion";
 import { MiniPlayer } from "./MiniPlayer";
 import { NowPlaying } from "./NowPlaying";
@@ -36,6 +36,13 @@ export function PlayerChrome({ children }: { children: React.ReactNode }) {
   const clearPlayRequest = useChrome((s) => s.clearPlayRequest);
   const play = useHub((s) => s.play);
   const syncPlay = useHub((s) => s.syncPlay);
+  const pandoraSyncStart = useHub((s) => s.pandoraSyncStart);
+  const loadSettings = useLibrary((s) => s.loadSettings);
+  // The picker's Pandora Sync gate reads hub.airplay from Settings; load it once here so a deep link
+  // straight into a station has the capability data (S4).
+  useEffect(() => {
+    void loadSettings();
+  }, [loadSettings]);
   // The one sync announcer (S8/M4): a polite live region that is always mounted and fires once per
   // TEXT change (drifting/correcting share "Adjusting"), including "Starting" and "Sync lost".
   const syncText = useHub((s) => chipModel(s.state?.sync)?.text ?? "");
@@ -81,6 +88,19 @@ export function PlayerChrome({ children }: { children: React.ReactNode }) {
     [playRequest, play, syncPlay, invalidateHome],
   );
 
+  /**
+   * Pandora Sync (Phase 7, experimental): every chosen side id goes to the hub as-is; the hub maps
+   * rooms to the Mac's AirPlay outputs and refuses (naming the rooms) when one has no output. The
+   * station itself is not sent: the hub Mac opens Pandora and the user presses play there.
+   */
+  const confirmPandoraSync = useCallback(
+    (targets: string[]) => {
+      if (targets.length === 0) return;
+      void pandoraSyncStart(targets);
+    },
+    [pandoraSyncStart],
+  );
+
   return (
     <LayoutGroup>
       {children}
@@ -88,7 +108,7 @@ export function PlayerChrome({ children }: { children: React.ReactNode }) {
         {syncText}
       </span>
       <MiniPlayer onExpand={expand} hideArt={expanded} />
-      <ZonePicker open={zonesOpen} onClose={closePicker} play={playRequest} onConfirm={confirmPlay} />
+      <ZonePicker open={zonesOpen} onClose={closePicker} play={playRequest} onConfirm={confirmPlay} onPandoraSync={confirmPandoraSync} />
       <AnimatePresence>
         {expanded ? (
           <motion.div

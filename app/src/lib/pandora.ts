@@ -10,6 +10,7 @@
 import type { Availability, LibraryItem, Section, VendorLinked } from "./hub/library";
 import type { HubState, Side } from "./hub/types";
 import { joinRooms } from "./sync";
+import { isPlaying } from "./playState";
 import { PANDORA_CONCURRENT_MSG, VENDOR_APP, VENDOR_LABEL, isService, reasonFor, roomsOnlyLabel, serviceUnavailableCopy, type AvailabilityReason, type Vendor } from "./services";
 
 export { VENDOR_APP, VENDOR_LABEL, type Vendor };
@@ -99,7 +100,7 @@ export function stationsSectionModel(section: Section<LibraryItem> | null | unde
 export function pandoraPlayingSides(state: HubState | null | undefined): string[] {
   if (!state) return [];
   return Object.values(state.sides)
-    .filter((s: Side) => s.play_state === "play" && state.now_playing[s.id]?.source === "pandora")
+    .filter((s: Side) => isPlaying(s) && state.now_playing[s.id]?.source === "pandora")
     .map((s) => s.id);
 }
 

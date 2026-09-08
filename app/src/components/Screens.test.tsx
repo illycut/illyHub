@@ -201,7 +201,7 @@ describe("ZonePicker", () => {
   beforeEach(() => boot());
   it("sentence-case status copy", () => {
     const heos = side("h", "H", "heos", ["p"]);
-    const zoneOn = { id: "z", key: "main", name: "Main zone", power: true, online: true, host: null, device_id: null, player_ids: ["p"] };
+    const zoneOn = { id: "z", key: "main", name: "Main zone", power: true, online: true, host: null, device_id: null, player_ids: ["p"], volume: 40, muted: false, supports_volume: true, supports_mute: true };
     expect(sideStatus({ ...heos, play_state: "play" }, true, [])).toEqual({ text: "Playing", tone: "signal" });
     expect(sideStatus({ ...heos, play_state: "pause" }, true, [])).toEqual({ text: "Paused", tone: "secondary" });
     expect(sideStatus(heos, true, [zoneOn])).toEqual({ text: "On", tone: "secondary" });

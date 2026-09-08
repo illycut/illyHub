@@ -36,12 +36,44 @@ STATION_NOT_IN_ACCOUNT = (
 STATION_AUTH_FAULT = "{side} can't reach {service} right now; sign in again in the {vendor_app}."
 PANDORA_CONCURRENT_MSG = "Pandora usually allows one stream per account; the other room may pause."
 SYNC_UNSUPPORTED_CONTENT = "Sync Play works with Tidal content."
+# Experimental AirPlay bridge (PRD §3.5 PAN-4). {reason} is a plain sentence from the bridge.
+# Used only when the bridge gives a fragment; a full-sentence reason is shown on its own
+# (see airplay_unavailable()).
+AIRPLAY_UNAVAILABLE = "Pandora Sync isn't available on the hub right now: {reason}"
+AIRPLAY_OFF = "Pandora Sync is turned off on this hub."  # the env var stays in logs/docs
+AIRPLAY_DAEMON = "The hub runs as a system daemon; Pandora Sync needs the logged-in user's session."
+AIRPLAY_NO_MATCH = (
+    "No AirPlay outputs match {rooms}. Rename them to match in the Music app on the hub Mac, "
+    "or choose outputs there."
+)
+AIRPLAY_NEEDS_OUTPUT = "Pandora Sync needs at least one AirPlay output."
+AIRPLAY_RESTORE_FAILED = "Pandora Sync ended, but the Mac's outputs could not be restored."
+AIRPLAY_NOTHING_TO_RESTORE = "Pandora Sync ended; the Mac's outputs were left as they are."
+PANDORA_SYNC_STARTED = "Pandora opened on the hub Mac. Press play there; the rooms follow."
+PANDORA_SYNC_OUTPUTS_ONLY = (
+    "Pandora Sync set the AirPlay outputs. Open pandora.com on the hub Mac and press play there."
+)
+PANDORA_SYNC_STOPPED = "Pandora Sync ended; the Mac's outputs are back to how they were."
+PANDORA_SYNC_IDLE = "Pandora Sync isn't running."
+PANDORA_SYNC_BLOCKED_BY_SYNC = "Stop Sync Play first."
+SYNC_BLOCKED_BY_PANDORA = "Stop Pandora Sync first."
 # Reason → template the app should show for a disabled side before the user taps.
 REASON_TEMPLATES: dict[str, str] = {
     "unsupported": NOT_AVAILABLE_UNSUPPORTED,
     "not_linked": NOT_AVAILABLE_NOT_LINKED,
     "not_in_account": STATION_NOT_IN_ACCOUNT,
 }
+
+
+def airplay_unavailable(reason: str | None) -> str:
+    """One sentence for a bridge failure. A full-sentence reason stands alone; a fragment is
+    wrapped in :data:`AIRPLAY_UNAVAILABLE` so "right now" never appears twice."""
+    text = (reason or "").strip()
+    if not text:
+        return AIRPLAY_UNAVAILABLE.format(reason="Music didn't answer.")
+    if text.endswith((".", "?", "!")):
+        return text
+    return AIRPLAY_UNAVAILABLE.format(reason=text)
 
 
 def vendor_app(vendor: str) -> str:
@@ -75,6 +107,21 @@ def export() -> dict[str, Any]:
             },
             "pandora_concurrent": PANDORA_CONCURRENT_MSG,
             "sync_unsupported_content": SYNC_UNSUPPORTED_CONTENT,
+            "airplay": {
+                "airplay_unavailable": AIRPLAY_UNAVAILABLE,
+                "airplay_off": AIRPLAY_OFF,
+                "airplay_daemon": AIRPLAY_DAEMON,
+                "airplay_no_match": AIRPLAY_NO_MATCH,
+                "airplay_needs_output": AIRPLAY_NEEDS_OUTPUT,
+                "airplay_restore_failed": AIRPLAY_RESTORE_FAILED,
+                "airplay_nothing_to_restore": AIRPLAY_NOTHING_TO_RESTORE,
+                "pandora_sync_started": PANDORA_SYNC_STARTED,
+                "pandora_sync_outputs_only": PANDORA_SYNC_OUTPUTS_ONLY,
+                "pandora_sync_stopped": PANDORA_SYNC_STOPPED,
+                "pandora_sync_idle": PANDORA_SYNC_IDLE,
+                "pandora_sync_blocked_by_sync": PANDORA_SYNC_BLOCKED_BY_SYNC,
+                "sync_blocked_by_pandora": SYNC_BLOCKED_BY_PANDORA,
+            },
         },
     }
 

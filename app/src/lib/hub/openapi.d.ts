@@ -741,6 +741,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/airplay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Airplay Status */
+        get: operations["airplay_status_api_airplay_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/airplay/outputs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Airplay Outputs */
+        post: operations["airplay_outputs_api_airplay_outputs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pandora-sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Pandora Sync State */
+        get: operations["pandora_sync_state_api_pandora_sync_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pandora-sync/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pandora Sync Start */
+        post: operations["pandora_sync_start_api_pandora_sync_start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pandora-sync/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pandora Sync Stop */
+        post: operations["pandora_sync_stop_api_pandora_sync_stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dev/fake/{scenario}": {
         parameters: {
             query?: never;
@@ -843,6 +928,72 @@ export interface components {
             message: string;
             /** Target */
             target?: string | null;
+        };
+        /**
+         * AirPlayInfo
+         * @description Experimental AirPlay bridge status (PRD §3.5 PAN-4). ``enabled`` follows
+         *     ``HUB_AIRPLAY_ENABLED`` (always true in fake mode, which carries a fake bridge);
+         *     ``available`` is whether Music can be scripted from this process right now.
+         */
+        AirPlayInfo: {
+            /** Enabled */
+            enabled: boolean;
+            /** Available */
+            available: boolean;
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
+         * AirPlayOutput
+         * @description One Music AirPlay device as the app shows it. ``kind`` is Music's raw device kind;
+         *     ``kind_label`` is the two-way user label the app renders.
+         */
+        AirPlayOutput: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Kind
+             * @default unknown
+             */
+            kind: string;
+            /**
+             * Selected
+             * @default false
+             */
+            selected: boolean;
+            /**
+             * Active
+             * @default false
+             */
+            active: boolean;
+            /**
+             * Available
+             * @default true
+             */
+            available: boolean;
+            /** Kind Label */
+            readonly kind_label: string;
+        };
+        /** AirPlayOutputsBody */
+        AirPlayOutputsBody: {
+            /**
+             * Ids
+             * @description AirPlay output ids to select (others off)
+             */
+            ids: string[];
+        };
+        /** AirPlayStatusResponse */
+        AirPlayStatusResponse: {
+            /** Enabled */
+            enabled: boolean;
+            /** Available */
+            available: boolean;
+            /** Reason */
+            reason?: string | null;
+            /** Outputs */
+            outputs?: components["schemas"]["AirPlayOutput"][];
         };
         /**
          * ArtRef
@@ -972,6 +1123,17 @@ export interface components {
              * @default true
              */
             supports_prev: boolean;
+            /**
+             * Volume Via
+             * @default vendor
+             * @enum {string}
+             */
+            volume_via: "vendor" | "denon";
+            /**
+             * Supports Volume
+             * @default true
+             */
+            supports_volume: boolean;
         };
         /** ConnectionStatus */
         ConnectionStatus: {
@@ -1051,7 +1213,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "unknown_target" | "unsupported_action" | "not_seekable" | "adapter_disconnected" | "device_offline" | "invalid_argument" | "vendor_error" | "needs_link" | "not_available_on_side" | "unsupported_content" | "sync_mismatch" | "sync_idle" | "sync_stopped";
+            code: "unknown_target" | "unsupported_action" | "not_seekable" | "adapter_disconnected" | "device_offline" | "invalid_argument" | "vendor_error" | "needs_link" | "not_available_on_side" | "unsupported_content" | "sync_mismatch" | "sync_idle" | "sync_stopped" | "bridge_unavailable" | "sync_active" | "bridge_active";
             /** Message */
             message: string;
             /** Target */
@@ -1232,6 +1394,7 @@ export interface components {
             uptime_s: number;
             /** Fake Devices */
             fake_devices: boolean;
+            airplay: components["schemas"]["AirPlayInfo"];
         };
         /** LinkStartResponse */
         LinkStartResponse: {
@@ -1256,6 +1419,49 @@ export interface components {
             /** Muted */
             muted: boolean;
         };
+        /**
+         * PandoraSyncStartBody
+         * @description Exactly one of ``side_ids`` (rooms; the hub matches their names to outputs) or
+         *     ``output_ids`` (explicit AirPlay outputs).
+         */
+        PandoraSyncStartBody: {
+            /** Side Ids */
+            side_ids?: string[] | null;
+            /** Output Ids */
+            output_ids?: string[] | null;
+        };
+        /**
+         * PandoraSyncState
+         * @description Experimental "Pandora Sync" via the hub Mac as an AirPlay 2 sender (PRD §3.5 PAN-4).
+         *
+         *     The hub only routes AirPlay outputs and opens Pandora on the Mac; playback itself is driven
+         *     there (docs/spikes/airplay-bridge.md). ``previous_output_ids`` is what ``stop`` restores.
+         */
+        PandoraSyncState: {
+            /**
+             * Active
+             * @default false
+             */
+            active: boolean;
+            /**
+             * Side Ids
+             * @description rooms whose outputs are bridged
+             */
+            side_ids?: string[];
+            /** Output Ids */
+            output_ids?: string[];
+            /**
+             * Outputs
+             * @description output names, for display
+             */
+            outputs?: string[];
+            /** Previous Output Ids */
+            previous_output_ids?: string[];
+            /** Started At */
+            started_at?: string | null;
+            /** Note */
+            note?: string | null;
+        };
         /** PartialFailure */
         PartialFailure: {
             /** Target */
@@ -1264,7 +1470,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "unknown_target" | "unsupported_action" | "not_seekable" | "adapter_disconnected" | "device_offline" | "invalid_argument" | "vendor_error" | "needs_link" | "not_available_on_side" | "unsupported_content" | "sync_mismatch" | "sync_idle" | "sync_stopped";
+            code: "unknown_target" | "unsupported_action" | "not_seekable" | "adapter_disconnected" | "device_offline" | "invalid_argument" | "vendor_error" | "needs_link" | "not_available_on_side" | "unsupported_content" | "sync_mismatch" | "sync_idle" | "sync_stopped" | "bridge_unavailable" | "sync_active" | "bridge_active";
             /** Message */
             message: string;
         };
@@ -1317,7 +1523,7 @@ export interface components {
              * @default stop
              * @enum {string}
              */
-            play_state: "play" | "pause" | "stop" | "unknown";
+            play_state: "play" | "pause" | "stop" | "buffering" | "unknown";
             /** Group Id */
             group_id?: string | null;
             capabilities?: components["schemas"]["Capabilities"];
@@ -1376,7 +1582,7 @@ export interface components {
              * @default stop
              * @enum {string}
              */
-            play_state: "play" | "pause" | "stop" | "unknown";
+            play_state: "play" | "pause" | "stop" | "buffering" | "unknown";
             /**
              * Volume
              * @default 0
@@ -1626,10 +1832,30 @@ export interface components {
              */
             power: boolean;
             /**
+             * Volume
+             * @default 0
+             */
+            volume: number;
+            /**
+             * Muted
+             * @default false
+             */
+            muted: boolean;
+            /**
              * Online
              * @default true
              */
             online: boolean;
+            /**
+             * Supports Volume
+             * @default true
+             */
+            supports_volume: boolean;
+            /**
+             * Supports Mute
+             * @default true
+             */
+            supports_mute: boolean;
             /** Host */
             host?: string | null;
             /** Device Id */
@@ -2825,6 +3051,132 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    airplay_status_api_airplay_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AirPlayStatusResponse"];
+                };
+            };
+        };
+    };
+    airplay_outputs_api_airplay_outputs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AirPlayOutputsBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Ack"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pandora_sync_state_api_pandora_sync_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PandoraSyncState"];
+                };
+            };
+        };
+    };
+    pandora_sync_start_api_pandora_sync_start_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PandoraSyncStartBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Ack"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pandora_sync_stop_api_pandora_sync_stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Ack"];
                 };
             };
         };

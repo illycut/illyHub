@@ -24,7 +24,18 @@ from pydantic import BaseModel, Field
 from .config import Vendor
 from .tasks import cancel_all, spawn
 
-PlayState = Literal["play", "pause", "stop", "unknown"]
+
+def _loop_running() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+# "buffering": Sonos TRANSITIONING, or HEOS `unknown` within 3 s of a hub play command. The client
+# keeps its optimistic state while buffering (docs/api.md → Play state).
+PlayState = Literal["play", "pause", "stop", "buffering", "unknown"]
 ConnState = Literal["connected", "reconnecting", "disconnected", "disabled"]
 SyncStatus = Literal[
     "idle",
@@ -108,6 +119,11 @@ class Capabilities(BaseModel):
     can_group: bool = True
     supports_next: bool = True
     supports_prev: bool = True
+    # Volume routing. A HEOS player hosted by a Denon receiver cannot set its own volume (the
+    # HEOS CLI accepts and ignores it, verified on the AVR-X3400H); the router sends volume and
+    # mute to the receiver's main zone instead and mirrors the MV read-back onto the player.
+    volume_via: Literal["vendor", "denon"] = "vendor"
+    supports_volume: bool = True  # False when the hosting zone is a fixed pre-out
 
 
 class Player(BaseModel):
@@ -213,6 +229,22 @@ class SyncState(BaseModel):
     started_at: datetime | None = None
 
 
+class PandoraSyncState(BaseModel):
+    """Experimental "Pandora Sync" via the hub Mac as an AirPlay 2 sender (PRD §3.5 PAN-4).
+
+    The hub only routes AirPlay outputs and opens Pandora on the Mac; playback itself is driven
+    there (docs/spikes/airplay-bridge.md). ``previous_output_ids`` is what ``stop`` restores.
+    """
+
+    active: bool = False
+    side_ids: list[str] = Field(default_factory=list, description="rooms whose outputs are bridged")
+    output_ids: list[str] = Field(default_factory=list)
+    outputs: list[str] = Field(default_factory=list, description="output names, for display")
+    previous_output_ids: list[str] = Field(default_factory=list)
+    started_at: datetime | None = None
+    note: str | None = None
+
+
 class ConnectionStatus(BaseModel):
     state: ConnState = "disconnected"
     last_error: str | None = None
@@ -228,7 +260,18 @@ class HubState(BaseModel):
     now_playing: dict[str, NowPlaying] = Field(default_factory=dict)
     positions: dict[str, Position] = Field(default_factory=dict)
     sync: SyncState = Field(default_factory=SyncState)
+    pandora_sync: PandoraSyncState = Field(default_factory=PandoraSyncState)
     connections: dict[str, ConnectionStatus] = Field(default_factory=dict)
+
+
+def hosting_zone(state: HubState, player_id: str) -> Zone | None:
+    """The Denon zone whose amplifier hosts this player, main zone first. ``None`` for players
+    the receiver does not host (every Sonos player, standalone HEOS speakers)."""
+    zones = [z for z in state.zones.values() if player_id in z.player_ids]
+    if not zones:
+        return None
+    zones.sort(key=lambda z: (z.key != "main", z.id))
+    return zones[0]
 
 
 def side_id_for_group(vendor: str, group_id: str) -> str:
@@ -294,8 +337,13 @@ def compute_sides(
     return sides
 
 
+# Top-level fields that are one object, not a collection: they diff as a single path.
+LEAF_KEYS: frozenset[str] = frozenset({"sync", "pandora_sync"})
+
+
 def diff(old: HubState | dict[str, Any], new: HubState | dict[str, Any]) -> list[str]:
-    """Changed paths at depth two, e.g. ``players.heos-1`` or ``sync``. JSON-patch-lite.
+    """Changed paths at depth two, e.g. ``players.heos-1``, or one path for the single-object
+    fields in :data:`LEAF_KEYS` (``sync``, ``pandora_sync``). JSON-patch-lite.
 
     Accepts models or their ``model_dump(mode="json")`` output so callers can reuse a cached dump.
     """
@@ -308,7 +356,7 @@ def diff(old: HubState | dict[str, Any], new: HubState | dict[str, Any]) -> list
         a, b = old_d.get(key), new_d.get(key)
         if a == b:
             continue
-        if isinstance(a, dict) and isinstance(b, dict) and key != "sync":
+        if isinstance(a, dict) and isinstance(b, dict) and key not in LEAF_KEYS:
             changed.extend(
                 f"{key}.{sub}" for sub in sorted(set(a) | set(b)) if a.get(sub) != b.get(sub)
             )
@@ -407,11 +455,39 @@ class StateStore:
         return self._mutate(lambda s: s.players.__setitem__(player.id, player))
 
     def update_player(self, player_id: str, **fields: Any) -> list[str]:
+        """Update a player. For a player hosted by a Denon zone the vendor's ``volume`` and
+        ``muted`` reports are dropped: HEOS reports 0 for the AVR regardless of the real level,
+        so the receiver's read-back (``set_zone``) is the only source (``volume_via``)."""
+
         def apply(s: HubState) -> None:
-            if player_id in s.players:
-                s.players[player_id] = s.players[player_id].model_copy(update=fields)
+            if player_id not in s.players:
+                return
+            update = dict(fields)
+            zone = hosting_zone(s, player_id)
+            if zone is not None and not update.pop("_from_denon", False):
+                update.pop("volume", None)
+                update.pop("muted", None)
+            else:
+                update.pop("_from_denon", None)
+            s.players[player_id] = s.players[player_id].model_copy(update=update)
 
         return self._mutate(apply)
+
+    # -- play-in-flight bookkeeping (buffering) -------------------------------------
+
+    def note_play_sent(self, player_ids: list[str]) -> None:
+        """Remember that the hub just asked these players to play (HEOS ``unknown`` → buffering)."""
+        if not hasattr(self, "_play_sent"):
+            self._play_sent: dict[str, float] = {}
+        now_m = asyncio.get_running_loop().time() if _loop_running() else 0.0
+        for pid in player_ids:
+            self._play_sent[pid] = now_m
+
+    def play_sent_recently(self, player_id: str, window_s: float = 3.0) -> bool:
+        at = getattr(self, "_play_sent", {}).get(player_id)
+        if at is None or not _loop_running():
+            return False
+        return asyncio.get_running_loop().time() - at <= window_s
 
     def remove_player(self, player_id: str) -> list[str]:
         def apply(s: HubState) -> None:
@@ -428,7 +504,29 @@ class StateStore:
         return self._mutate(apply)
 
     def set_zone(self, zone: Zone) -> list[str]:
-        return self._mutate(lambda s: s.zones.__setitem__(zone.id, zone))
+        """Store a zone and mirror its volume/mute onto the players it hosts (main zone wins),
+        stamping ``volume_via="denon"`` and ``supports_volume`` on them."""
+
+        def apply(s: HubState) -> None:
+            s.zones[zone.id] = zone
+            for pid in zone.player_ids:
+                player = s.players.get(pid)
+                if (
+                    player is None
+                    or hosting_zone(s, pid) is not zone
+                    and hosting_zone(s, pid).id != zone.id
+                ):  # type: ignore[union-attr]
+                    continue
+                caps = player.capabilities.model_copy(
+                    update={"volume_via": "denon", "supports_volume": zone.supports_volume}
+                )
+                fields: dict[str, Any] = {"capabilities": caps}
+                if zone.supports_volume:
+                    fields["volume"] = zone.volume
+                    fields["muted"] = zone.muted
+                s.players[pid] = player.model_copy(update=fields)
+
+        return self._mutate(apply)
 
     def remove_zone(self, zone_id: str) -> list[str]:
         return self._mutate(lambda s: s.zones.pop(zone_id, None))
@@ -470,6 +568,9 @@ class StateStore:
 
     def set_sync(self, sync: SyncState) -> list[str]:
         return self._mutate(lambda s: setattr(s, "sync", sync))
+
+    def set_pandora_sync(self, state: PandoraSyncState) -> list[str]:
+        return self._mutate(lambda s: setattr(s, "pandora_sync", state))
 
     def set_connection(self, adapter: str, state: ConnState, error: str | None = None) -> list[str]:
         def apply(s: HubState) -> None:

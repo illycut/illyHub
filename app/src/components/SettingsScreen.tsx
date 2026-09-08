@@ -6,8 +6,11 @@ import { ServiceBadge } from "./ServiceBadge";
 import { Sheet } from "./Sheet";
 import { TextSkeleton } from "./Skeleton";
 import { LinkSheet, NEEDS_CLIENT_CONFIG, type LinkPhase } from "./LinkSheet";
-import { library, LibraryError, type AccountStatus, type Service } from "@/lib/hub/library";
+import { library, LibraryError, type AccountStatus, type AirPlayStatus, type Service } from "@/lib/hub/library";
 import { SERVICE_LABEL, isHubLinked } from "@/lib/services";
+import { AIRPLAY_DISCLOSURE, AIRPLAY_OUTPUTS_NOTE, AIRPLAY_OUTPUTS_TITLE, AIRPLAY_ROW_TITLE, airplayRowStatus } from "@/lib/airplay";
+import { AirPlayGlyph } from "./PandoraSyncChip";
+import { CheckIcon } from "./icons";
 import { useLibrary, errorMessage } from "@/lib/library/store";
 import { useHub } from "@/lib/hub/store";
 import { toast } from "@/lib/ui/toasts";
@@ -69,6 +72,7 @@ function Row({
   trailingLabel,
   testId,
   skeleton,
+  wrapLine = false,
 }: {
   icon: React.ReactNode;
   title: string;
@@ -83,6 +87,8 @@ function Row({
   trailingLabel?: string | null;
   testId?: string;
   skeleton?: boolean;
+  /** Let a load-bearing line wrap instead of clamping (e.g. an AirPlay unavailability reason, UX U9). */
+  wrapLine?: boolean;
 }) {
   const titleTone = destructive ? "text-error" : disabled || muted ? "text-secondary" : "text-primary";
   const lineTone = disabled || muted ? "text-tertiary" : "text-secondary";
@@ -98,7 +104,7 @@ function Row({
           ) : (
             <>
               <span className={`clamp-1 block text-body ${titleTone}`}>{title}</span>
-              {line ? <span className={`clamp-1 block text-caption ${lineTone}`}>{line}</span> : null}
+              {line ? <span className={`${wrapLine ? "" : "clamp-1 "}block text-caption ${lineTone}`}>{line}</span> : null}
             </>
           )}
         </span>
@@ -153,6 +159,22 @@ export function SettingsScreen({ initialLink = null }: { initialLink?: Service |
   const [confirmUnlink, setConfirmUnlink] = useState<Service | null>(null);
   const [confirmRestart, setConfirmRestart] = useState(false);
   const [restart, setRestart] = useState<RestartState>({ kind: "idle" });
+  // AirPlay outputs sheet (Phase 7, read-only): fetched when opened, never cached.
+  const [outputsOpen, setOutputsOpen] = useState(false);
+  const [outputs, setOutputs] = useState<{ loading: boolean; data: AirPlayStatus | null; error: string | null }>({ loading: false, data: null, error: null });
+  const outputsRun = useRef(0);
+  const openOutputs = async () => {
+    // A re-open while a fetch is in flight must not let the stale answer land (runId guard).
+    const me = ++outputsRun.current;
+    setOutputsOpen(true);
+    setOutputs({ loading: true, data: null, error: null });
+    try {
+      const data = await library.airplay(callOptions());
+      if (outputsRun.current === me) setOutputs({ loading: false, data, error: null });
+    } catch (e) {
+      if (outputsRun.current === me) setOutputs({ loading: false, data: null, error: errorMessage(e) });
+    }
+  };
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runId = useRef(0);
 
@@ -368,6 +390,21 @@ export function SettingsScreen({ initialLink = null }: { initialLink?: Service |
             testId="hub-status"
           />
           <Row icon={<RefreshIcon size={22} className="text-secondary" />} title="Check for updates" line={COMING_LATER} disabled testId="check-updates" />
+          {/* Pandora Sync / AirPlay bridge (Phase 7, experimental): status only; nothing here starts playback. */}
+          <Row
+            icon={<AirPlayGlyph className="h-5 w-5 text-secondary" />}
+            title={AIRPLAY_ROW_TITLE}
+            line={data ? airplayRowStatus(data.hub.airplay) : null}
+            skeleton={!data && settings.loading}
+            wrapLine
+            testId="airplay-row"
+          />
+          <li className="px-4 pb-3 pt-1" data-testid="airplay-disclosure">
+            <p className="text-caption text-secondary">{AIRPLAY_DISCLOSURE}</p>
+          </li>
+          {data?.hub.airplay.available ? (
+            <Row icon={<span className="block h-5 w-5" />} title="Outputs" line="What the hub Mac streams to" onPress={() => void openOutputs()} testId="airplay-outputs" />
+          ) : null}
           <Row icon={<span className="block h-5 w-5" />} title="Restart hub" destructive onPress={() => setConfirmRestart(true)} disabled={restart.kind === "waiting"} testId="restart-hub" />
         </Group>
         <Group title="Zones">
@@ -406,6 +443,39 @@ export function SettingsScreen({ initialLink = null }: { initialLink?: Service |
             Keep it
           </button>
         </div>
+      </Sheet>
+
+      {/* Read-only in v1: outputs are chosen on the hub Mac (Music app). Checks mirror `selected`. */}
+      <Sheet open={outputsOpen} onClose={() => setOutputsOpen(false)} title={AIRPLAY_OUTPUTS_TITLE} testId="airplay-outputs-sheet">
+        <p className="pb-3 text-caption text-secondary">{AIRPLAY_OUTPUTS_NOTE}</p>
+        {outputs.loading ? (
+          <div className="py-3">
+            <TextSkeleton lines={3} />
+          </div>
+        ) : outputs.error ? (
+          <p className="py-3 text-caption text-error" role="alert">
+            {outputs.error}
+          </p>
+        ) : outputs.data && outputs.data.outputs.length ? (
+          // Read-only rows (U3): neutral check glyph in text-secondary, no fill or ring, no controls.
+          <div className="flex flex-col" role="list" aria-label={AIRPLAY_OUTPUTS_TITLE}>
+            {outputs.data.outputs.map((o) => (
+              <div key={o.id} role="listitem" className="flex min-h-row items-center gap-3 border-b border-stroke last:border-0" data-testid="airplay-output" data-selected={o.selected ? "true" : "false"}>
+                <span className={`flex h-6 w-6 items-center justify-center ${o.selected ? "text-secondary" : "text-transparent"}`} aria-hidden="true">
+                  <CheckIcon size={16} />
+                </span>
+                <span className="flex-1">
+                  <span className="block text-body text-primary">{o.name}</span>
+                  <span className="block text-micro text-secondary">
+                    {[o.kind_label ?? o.kind, o.selected ? "Selected" : null, o.active ? "Playing" : null].filter(Boolean).join(" · ") || "Not selected"}
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="py-3 text-body text-secondary">No AirPlay outputs yet. Open the Music app on the hub Mac.</p>
+        )}
       </Sheet>
 
       <Sheet open={confirmRestart} onClose={() => setConfirmRestart(false)} title="Restart the hub?" testId="restart-sheet">

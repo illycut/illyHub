@@ -38,7 +38,8 @@ test("home renders the playlists, albums and Pandora stations grids from the can
 
 test("tapping an album opens the target picker in play mode; confirming plays, updates the mini-player, and lands in Recently played", async ({ page, request }) => {
   await page.goto("/");
-  const card = page.getByTestId("albums-grid").getByTestId("grid-card").first();
+  // The grid merges services; this flow plays on a HEOS room, so it needs a Tidal album.
+  const card = page.getByTestId("albums-grid").getByTestId("grid-card").filter({ has: page.getByRole("img", { name: "Tidal" }) }).first();
   const title = (await card.locator(".text-body").first().textContent())!.trim();
   const artist = (await card.locator(".text-caption").first().textContent())!.trim();
   await card.getByRole("button", { name: /^Play / }).click();
@@ -99,7 +100,8 @@ test("recents: two fast taps (card, then the pre-highlighted confirm) reach the 
 
 test("browse detail: chevron opens the album, a track row plays from that index", async ({ page, request }) => {
   await page.goto("/");
-  const card = page.getByTestId("albums-grid").getByTestId("grid-card").first();
+  // The grid merges services; this test follows a Tidal album (the URL and HEOS availability assume it).
+  const card = page.getByTestId("albums-grid").getByTestId("grid-card").filter({ has: page.getByRole("img", { name: "Tidal" }) }).first();
   await card.getByTestId("card-detail").click();
   await expect(page).toHaveURL(/\/browse\?ref=tidal%3Aalbum%3A/);
   await expect(page.getByTestId("detail-title")).not.toBeEmpty();

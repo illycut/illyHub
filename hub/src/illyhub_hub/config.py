@@ -114,6 +114,13 @@ class Settings(BaseSettings):
     sync_track_grace_s: float = 3.0
     sync_max_sessions: int = 50  # drift logs kept on disk
 
+    # Phase 7 (P2, experimental): the hub Mac as an AirPlay 2 sender for "Pandora Sync"
+    # (PRD §3.5 PAN-4, docs/spikes/airplay-bridge.md). Off by default: it drives the Music app
+    # over AppleScript and needs a logged-in GUI session plus Automation permission.
+    airplay_enabled: bool = False
+    airplay_timeout_s: float = 20.0  # osascript budget; Music's cold launch can take ~30 s
+    airplay_launch_timeout_s: float = 60.0  # first call after Music was closed
+
     @property
     def data_path(self) -> Path:
         return resolve_path(self.data_dir)

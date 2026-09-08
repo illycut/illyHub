@@ -26,6 +26,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from . import __version__
 from .adapters.base import BaseAdapter
 from .adapters.fake import FakeBundle
+from .airplay import AirPlayOutput, PandoraSyncController, build_bridge
 from .art import (
     KEY_RE,
     SIZES,
@@ -59,7 +60,16 @@ from .services.pandora import PAGE_MAX as STATIONS_PAGE_MAX
 from .services.pandora import PandoraService
 from .services.tidal import FakeTidalCatalog, TidalCatalog, TidalService
 from .services.ytmusic import FakeYTMusicCatalog, YTMusicCatalog
-from .state import ConnectionStatus, Player, Side, StateStore, SyncState, Zone, service_label
+from .state import (
+    ConnectionStatus,
+    PandoraSyncState,
+    Player,
+    Side,
+    StateStore,
+    SyncState,
+    Zone,
+    service_label,
+)
 from .static import StaticMounts, mount_static
 from .sync import SyncConfig, SyncEngine, SyncReport, SyncSessionSummary
 from .tasks import spawn
@@ -217,6 +227,16 @@ class HomeResponse(BaseModel):
     stations: HomeSection
 
 
+class AirPlayInfo(BaseModel):
+    """Experimental AirPlay bridge status (PRD §3.5 PAN-4). ``enabled`` follows
+    ``HUB_AIRPLAY_ENABLED`` (always true in fake mode, which carries a fake bridge);
+    ``available`` is whether Music can be scripted from this process right now."""
+
+    enabled: bool
+    available: bool
+    reason: str | None = None
+
+
 class HubInfo(BaseModel):
     address: str
     port: int
@@ -224,6 +244,34 @@ class HubInfo(BaseModel):
     version: str
     uptime_s: float
     fake_devices: bool
+    airplay: AirPlayInfo
+
+
+class AirPlayStatusResponse(BaseModel):
+    enabled: bool
+    available: bool
+    reason: str | None = None
+    outputs: list[AirPlayOutput] = Field(default_factory=list)
+
+
+class AirPlayOutputsBody(BaseModel):
+    ids: list[str] = Field(
+        min_length=1, max_length=32, description="AirPlay output ids to select (others off)"
+    )
+
+
+class PandoraSyncStartBody(BaseModel):
+    """Exactly one of ``side_ids`` (rooms; the hub matches their names to outputs) or
+    ``output_ids`` (explicit AirPlay outputs)."""
+
+    side_ids: list[str] | None = Field(default=None, min_length=1, max_length=32)
+    output_ids: list[str] | None = Field(default=None, min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def _one_of(self) -> PandoraSyncStartBody:
+        if (self.side_ids is None) == (self.output_ids is None):
+            raise ValueError("give exactly one of side_ids or output_ids")
+        return self
 
 
 class HardwareItem(BaseModel):
@@ -295,6 +343,7 @@ class HubRuntime:
     pandora: PandoraService | None = None
     history: PlayHistory | None = None
     sync: SyncEngine | None = None
+    airplay: PandoraSyncController | None = None
     vault_error: str | None = None
     # os._exit is wired only by main.py; anything else (tests, embedding) gets a logged no-op.
     exit_fn: Callable[[int], Any] = lambda code: log.warning(  # noqa: E731
@@ -460,6 +509,7 @@ def build_runtime(
             pandora=pandora,
             history=history,
             sync=_sync_engine(settings, store, router, tidal, history),
+            airplay=PandoraSyncController(store, router, build_bridge(settings), enabled=True),
             vault_error=vault_error,
         )
 
@@ -504,6 +554,9 @@ def build_runtime(
         pandora=_pandora_service(settings, router, art),
         history=history,
         sync=_sync_engine(settings, store, router, tidal, history),
+        airplay=PandoraSyncController(
+            store, router, build_bridge(settings), enabled=settings.airplay_enabled
+        ),
         vault_error=vault_error,
     )
     if not heos_host:
@@ -611,6 +664,16 @@ def lan_address() -> str:
 DEFAULT_HOSTS = ("localhost", "127.0.0.1", "*.local")
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 RESTART_HEADER = "x-illyhub"
+# POSTs that act on the hub Mac itself (restart, AirPlay routing, opening a browser) must always
+# preflight in a browser, so they require the custom header even from an allowed origin.
+HEADER_REQUIRED_PATHS = frozenset(
+    {
+        "/api/hub/restart",
+        "/api/airplay/outputs",
+        "/api/pandora-sync/start",
+        "/api/pandora-sync/stop",
+    }
+)
 
 
 def allowed_hosts(settings: Settings, lan_ip: str | None = None) -> list[str]:
@@ -768,11 +831,13 @@ def create_app(
                     403, "forbidden_origin", "Requests must come from the hub's own origin."
                 )
             if (
-                request.url.path == "/api/hub/restart"
+                request.url.path in HEADER_REQUIRED_PATHS
                 and request.headers.get(RESTART_HEADER) != "1"
             ):
                 return _envelope(
-                    403, "missing_header", "Restart requires the X-Illyhub: 1 request header."
+                    403,
+                    "missing_header",
+                    "This request requires the X-Illyhub: 1 request header.",
                 )
         return await call_next(request)
 
@@ -1438,6 +1503,9 @@ def create_app(
             )
             for z in _sorted(state.zones.values())
         ]
+        ap_enabled, ap_available, ap_reason = (
+            await runtime.airplay.info() if runtime.airplay else (False, False, None)
+        )
         return SettingsResponse(
             accounts=accounts,
             hub=HubInfo(
@@ -1447,6 +1515,7 @@ def create_app(
                 version=__version__,
                 uptime_s=runtime.uptime_s,
                 fake_devices=settings.fake_devices,
+                airplay=AirPlayInfo(enabled=ap_enabled, available=ap_available, reason=ap_reason),
             ),
             hardware=hardware,
         )
@@ -1472,6 +1541,42 @@ def create_app(
         await websocket.accept()
         session = ClientSession(websocket, runtime.store, dumps=dumps)
         await session.run(router)
+
+    # -- AirPlay bridge / Pandora Sync (Phase 7, experimental) ----------------------
+
+    def _airplay() -> PandoraSyncController:
+        if runtime.airplay is None:  # pragma: no cover - build_runtime always wires it
+            raise RuntimeError("airplay controller not wired")
+        return runtime.airplay
+
+    @app.get("/api/airplay", response_model=AirPlayStatusResponse, tags=["airplay"])
+    async def airplay_status() -> AirPlayStatusResponse:
+        enabled, available, reason = await _airplay().info()
+        outputs: list[AirPlayOutput] = []
+        if available:
+            try:
+                outputs = await _airplay().outputs()
+            except CommandError as exc:
+                available, reason = False, exc.message
+        return AirPlayStatusResponse(
+            enabled=enabled, available=available, reason=reason, outputs=outputs
+        )
+
+    @app.post("/api/airplay/outputs", response_model=Ack, tags=["airplay"])
+    async def airplay_outputs(body: AirPlayOutputsBody) -> JSONResponse:
+        return _respond(await _airplay().set_outputs(body.ids))
+
+    @app.get("/api/pandora-sync", response_model=PandoraSyncState, tags=["airplay"])
+    async def pandora_sync_state() -> PandoraSyncState:
+        return runtime.store.state.pandora_sync
+
+    @app.post("/api/pandora-sync/start", response_model=Ack, tags=["airplay"])
+    async def pandora_sync_start(body: PandoraSyncStartBody) -> JSONResponse:
+        return _respond(await _airplay().start(side_ids=body.side_ids, output_ids=body.output_ids))
+
+    @app.post("/api/pandora-sync/stop", response_model=Ack, tags=["airplay"])
+    async def pandora_sync_stop() -> JSONResponse:
+        return _respond(await _airplay().stop())
 
     # -- fake scenarios -------------------------------------------------------------
 

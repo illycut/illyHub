@@ -1,5 +1,6 @@
 import type { HubState, Player, Side, Zone } from "./hub/types";
 import { mirroredSideIds } from "./sync";
+import { isPlaying } from "./playState";
 
 /**
  * Pure selectors over HubState. The list selectors are memoized on the input collection object
@@ -21,14 +22,12 @@ function memo1<A extends object, R>(fn: (a: A) => R): (a: A | null | undefined) 
 
 const sortByName = <T extends { name: string }>(xs: T[]) => xs.sort((a, b) => a.name.localeCompare(b.name));
 
+export { isPlaying, isPlayingState } from "./playState";
+
 const sidesOf = memo1((sides: Record<string, Side>) => sortByName(Object.values(sides)));
 const playersOf = memo1((players: Record<string, Player>) => sortByName(Object.values(players)));
 const zonesOf = memo1((zones: Record<string, Zone>) => sortByName(Object.values(zones)));
-const liveOf = memo1((sides: Record<string, Side>) =>
-  sidesOf(sides)
-    .filter((s) => s.play_state === "play")
-    .map((s) => s.id),
-);
+const liveOf = memo1((sides: Record<string, Side>) => sidesOf(sides).filter(isPlaying).map((s) => s.id));
 
 export function sidesList(state: HubState | null): Side[] {
   return sidesOf(state?.sides);
@@ -39,7 +38,7 @@ export function playersList(state: HubState | null): Player[] {
 export function zonesList(state: HubState | null): Zone[] {
   return zonesOf(state?.zones);
 }
-/** Sides with live audio: play_state === "play". Drives the zone dot cluster. */
+/** Sides with live audio (`isPlaying`). Drives the zone dot cluster. */
 export function liveSideIds(state: HubState | null): string[] {
   return liveOf(state?.sides);
 }
@@ -54,13 +53,7 @@ export function resolveActiveSide(state: HubState | null, chosen: string | null)
   if (chosen && state.sides[chosen]) return state.sides[chosen] ?? null;
   const sides = sidesList(state);
   const hasNp = (s: Side) => !!state.now_playing[s.id]?.title;
-  return (
-    sides.find((s) => s.play_state === "play" && hasNp(s)) ??
-    sides.find(hasNp) ??
-    sides.find((s) => s.play_state === "play") ??
-    sides[0] ??
-    null
-  );
+  return sides.find((s) => isPlaying(s) && hasNp(s)) ?? sides.find(hasNp) ?? sides.find(isPlaying) ?? sides[0] ?? null;
 }
 
 export function sideForPlayer(state: HubState | null, playerId: string): Side | null {

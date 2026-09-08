@@ -111,7 +111,8 @@ describe("normalisers (documented shapes only)", () => {
 
   it("settings: address joins host and port; hardware keeps kind/ip/online", () => {
     const s = asSettings(settingsBody);
-    expect(s.hub).toEqual({ address: "192.168.1.10:8080", version: "0.1.0", uptime_s: 4021.3, https: false, fake_devices: false });
+    // `airplay` (Phase 7) defaults to off when the hub omits it.
+    expect(s.hub).toEqual({ address: "192.168.1.10:8080", version: "0.1.0", uptime_s: 4021.3, https: false, fake_devices: false, airplay: { enabled: false, available: false, reason: null } });
     expect(s.hardware[1]).toEqual({ id: "denon-10.0.0.5:main", name: "Main zone", vendor: "denon", kind: "zone", model: null, ip: "10.0.0.5", online: false });
     expect(s.accounts[1]?.state).toBe("unlinked");
   });

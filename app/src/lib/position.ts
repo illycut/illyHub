@@ -1,8 +1,9 @@
 import type { PlayState, Position } from "./hub/types";
+import { isPlayingState } from "./playState";
 
 /**
- * Hub positions are estimates stamped with `reported_at`. While playing, extrapolate forward
- * from that stamp; clamp to the track duration when known (docs/api.md, PRD NP-3).
+ * Hub positions are estimates stamped with `reported_at`. While playing (or buffering), extrapolate
+ * forward from that stamp; clamp to the track duration when known (docs/api.md, PRD NP-3).
  */
 export function interpolatePosition(
   pos: Position | null | undefined,
@@ -12,7 +13,7 @@ export function interpolatePosition(
 ): number {
   if (!pos) return 0;
   let ms = pos.position_ms;
-  if (playState === "play") {
+  if (isPlayingState(playState)) {
     const reported = Date.parse(pos.reported_at);
     if (Number.isFinite(reported)) ms += Math.max(0, nowMs - reported);
   }

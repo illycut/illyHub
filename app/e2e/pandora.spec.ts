@@ -88,7 +88,7 @@ test("station -> picker -> play on Sonos: the mini-player follows and the recent
   await expect(picker.getByTestId("pandora-note")).toHaveText("Pandora usually allows one stream per account; the other room may pause.");
   await expect(picker.getByTestId("confirm-play")).toHaveAttribute("data-mode", "play");
   await expect(picker.getByTestId("sync-play-disabled")).toHaveCount(0);
-  await expect(picker.getByTestId("station-sync-note")).toHaveText("Stations can't sync: Pandora picks different songs for each room.");
+  await expect(picker.getByTestId("station-sync-note")).toHaveText("Stations can't Sync Play: Pandora picks different songs for each room.");
   // play on Sonos only
   await ensureRowDeselected(picker, heos.id);
   await expect(picker.getByTestId("pandora-note")).toHaveCount(0);

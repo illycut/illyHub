@@ -43,7 +43,7 @@ from .commands import Ack, CommandError, CommandRouter, ErrorEnvelope, resolve_s
 from .content import BrowseItem, ContentRef, NeedsLinkError
 from .history import PlayHistory
 from .logsetup import correlation_id, get_logger
-from .messages import SYNC_UNSUPPORTED_CONTENT
+from .messages import SYNC_BLOCKED_BY_PANDORA, SYNC_UNSUPPORTED_CONTENT
 from .state import NowPlaying, Side, StateStore, SyncState, SyncStatus, vendor_label
 from .tasks import spawn, stop_task
 
@@ -376,6 +376,11 @@ class SyncEngine:
     async def play(
         self, ref: ContentRef, heos_target: Target, sonos_target: Target, start_index: int = 0
     ) -> Ack:
+        if self.store.state.pandora_sync.active:
+            return self._ack(
+                "sync_play",
+                error=CommandError("bridge_active", SYNC_BLOCKED_BY_PANDORA, "sync"),
+            )
         async with self._lock:
             await self._end_current("superseded by a new Sync Play")
             self._generation += 1

@@ -6,6 +6,8 @@ const caps = (over: Partial<Player["capabilities"]> = {}) => ({
   can_group: true,
   supports_next: true,
   supports_prev: true,
+  volume_via: "vendor" as const,
+  supports_volume: true,
   ...over,
 });
 
@@ -107,8 +109,8 @@ export function sampleState(nowMs = Date.now()): HubState {
       "sonos-P": player("sonos-P", "Patio", "sonos", { group_id: "sonos-gK", volume: 60, online: false }),
     },
     zones: {
-      "denon-10.0.0.9:main": { id: "denon-10.0.0.9:main", key: "main", name: "Main zone", power: true, online: true, host: "10.0.0.9", device_id: "d1", player_ids: ["heos-1"] },
-      "denon-10.0.0.9:zone2": { id: "denon-10.0.0.9:zone2", key: "zone2", name: "Zone 2", power: false, online: true, host: "10.0.0.9", device_id: "d1", player_ids: [] },
+      "denon-10.0.0.9:main": { id: "denon-10.0.0.9:main", key: "main", name: "Main zone", power: true, online: true, host: "10.0.0.9", device_id: "d1", player_ids: ["heos-1"], volume: 40, muted: false, supports_volume: true, supports_mute: true },
+      "denon-10.0.0.9:zone2": { id: "denon-10.0.0.9:zone2", key: "zone2", name: "Zone 2", power: false, online: true, host: "10.0.0.9", device_id: "d1", player_ids: [], volume: 0, muted: false, supports_volume: true, supports_mute: true },
     },
     groups: {
       "sonos-gK": { id: "sonos-gK", vendor: "sonos", coordinator_player_id: "sonos-K", member_ids: ["sonos-K", "sonos-P"], name: "Kitchen + 1" },

@@ -312,3 +312,27 @@ Sync Play has only ever run against the fakes. First real run, in this order:
       `POST /api/sync/config` (no restart). If the follower starts late every time, raise the
       lookahead. If `verifying` fails (`sync_mismatch`), the HEOS or Sonos queue did not load the
       expected track: check `docs/spikes/tidal-refs.md` (ai-dev #10).
+
+### AirPlay bridge / Pandora Sync (Phase 7, experimental) on the LAN
+
+Nothing here has touched hardware; the dev Mac only proved the JXA scripts run against Music
+(`docs/spikes/airplay-bridge.md`). **The production hub is a root LaunchDaemon (§3) and cannot
+script Music from there**: `GET /api/airplay` reports "The hub runs as a system daemon; AirPlay
+needs the logged-in user's session." by design. The follow-up is a user-session helper
+(`illyhub-airplay-helper`, illyHub #28, spike doc → "Daemon vs. GUI session"); until it exists, exercise the
+bridge from a Terminal in the logged-in session on a second port. Auto-login and FileVault-off are
+**not** required for the hub; a logged-in user is needed only while Pandora Sync is used.
+
+1. In the logged-in GUI session, approve Automation once from Terminal:
+   `osascript -l JavaScript -e 'JSON.stringify(Application("Music").airplayDevices().map(d=>[d.name(),d.kind(),d.available()]))'`
+   Allow "Terminal wants to control Music". Record the device names and kinds.
+2. From that Terminal: `cd ~/illyHub/hub && HUB_AIRPLAY_ENABLED=1 HUB_PORT=8081 uv run hub`
+   (the daemon keeps :8080). `curl -s http://127.0.0.1:8081/api/airplay | python3 -m json.tool`
+   → `available: true` and the receiver / Sonos players listed as AirPlay outputs. A permission
+   reason means step 1 was skipped; a timeout means Music could not open.
+3. `curl -X POST -H 'X-Illyhub: 1' -H 'content-type: application/json' -d '{"side_ids":["<heos side id>","<sonos side id>"]}' http://127.0.0.1:8081/api/pandora-sync/start` → Music's
+   AirPlay menu shows both rooms selected and pandora.com opens. Press play on the Mac. Do both
+   systems play together? Note any offset.
+4. `curl -X POST -H 'X-Illyhub: 1' http://127.0.0.1:8081/api/pandora-sync/stop` → the previous
+   output selection is back.
+5. Record the device kinds, the sync offset, and whether the helper design is worth building.

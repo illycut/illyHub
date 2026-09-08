@@ -14,12 +14,14 @@ import { commands as C, sendCommand, type CommandRequest, type Fetcher } from ".
 import { newCorrelationId } from "./correlation";
 import type { ContentRef } from "./library";
 import type { ConnectionPhase } from "./socket";
-import { applyDelta, emptyState, type DeltaMessage } from "./state";
-import type { Ack, ArtRef, HubState, Position, ServerMessage, TransportAction, Vendor } from "./types";
+import { applyDelta, asPandoraSync, emptyPandoraSync, emptyState, type DeltaMessage } from "./state";
+import type { Ack, ArtRef, HubState, PlayState, Position, ServerMessage, TransportAction, Vendor } from "./types";
 import { interpolatePosition } from "../position";
 import { linkedVolumeLevels, sideForPlayer } from "../selectors";
+import { isPlayingState, isSettledState } from "../playState";
 import { toast, type ToastAction } from "../ui/toasts";
 import { warningToast } from "../pandora";
+import { PANDORA_SYNC_FAILED, PANDORA_SYNC_STARTED, PANDORA_SYNC_STOPPED } from "../airplay";
 import { SERVICE_LABEL, isHubLinked } from "../services";
 import { SYNC_UNSUPPORTED_TOAST, transportTargetFor } from "../sync";
 
@@ -68,8 +70,16 @@ export interface HubStore {
   activeSideId: string | null;
   selectedTargets: string[];
   pending: Record<string, Pending>;
+  /**
+   * Per-side transport intent from the last optimistic command, held until the hub reports a settled
+   * state (play/pause/stop). While the hub says `buffering` the icon keeps showing what the user
+   * asked for instead of flipping on every transitional delta.
+   */
+  intents: Record<string, PlayState>;
   /** Hook the socket installs so the store can request a resync. */
   requestResync: () => void;
+  /** What the play/pause icon shows for a side: the held intent while the hub is transitional, else the hub's state. */
+  displayPlayState(sideId: string | null | undefined): PlayState | undefined;
 
   // protocol
   onMessage(msg: ServerMessage): void;
@@ -110,6 +120,13 @@ export interface HubStore {
   syncPlay(heosTargets: string[], sonosTargets: string[], item: PlayItem): Promise<Ack>;
   syncStop(): Promise<Ack>;
   syncRetry(): Promise<Ack>;
+  /**
+   * Pandora Sync (Phase 7, experimental): the hub Mac plays Pandora and streams to AirPlay outputs
+   * for the chosen sides. No optimistic state: the hub's `pandora_sync` delta drives the chip (as
+   * `syncPlay` does). The hub's start/stop notes are toasted once; refusals are toasted verbatim.
+   */
+  pandoraSyncStart(sideIds: string[]): Promise<Ack>;
+  pandoraSyncStop(): Promise<Ack>;
 
   /** Test seams. */
   _deps: {
@@ -137,6 +154,7 @@ export const useHub = create<HubStore>((set, get) => ({
   activeSideId: null,
   selectedTargets: [],
   pending: {},
+  intents: {},
   requestResync: () => {},
   _deps: defaultDeps,
 
@@ -144,7 +162,8 @@ export const useHub = create<HubStore>((set, get) => ({
     if (msg.type === "snapshot") {
       // A snapshot is authoritative: every optimistic command is superseded.
       for (const p of Object.values(get().pending)) if (p.timer) get()._deps.clearTimer(p.timer);
-      set({ state: msg.state, pending: {} });
+      const state: HubState = { ...msg.state, pandora_sync: asPandoraSync(msg.state.pandora_sync) };
+      set({ state, pending: {}, intents: settleIntents(get().intents, state) });
       return;
     }
     if (msg.type === "delta") {
@@ -158,7 +177,7 @@ export const useHub = create<HubStore>((set, get) => ({
         get().requestResync();
         return;
       }
-      set({ state: next });
+      set({ state: next, intents: settleIntents(get().intents, next) });
       return;
     }
     if (msg.type === "ack") {
@@ -186,6 +205,15 @@ export const useHub = create<HubStore>((set, get) => ({
 
   selectSide(id) {
     set({ activeSideId: id });
+  },
+  displayPlayState(sideId) {
+    if (!sideId) return undefined;
+    const hub = get().state?.sides[sideId]?.play_state;
+    if (hub === undefined) return undefined;
+    const intent = get().intents[sideId];
+    // The hub's settled word wins (settleIntents has already dropped the intent); while it is still
+    // transitional (buffering/unknown) the user's last command is what the icon shows.
+    return intent !== undefined && !isSettledState(hub) ? intent : hub;
   },
   toggleTarget(id) {
     set((s) => ({
@@ -242,13 +270,18 @@ export const useHub = create<HubStore>((set, get) => ({
         ? (s) => {
             const side = s.sides[target] ?? sideForPlayer(s, target);
             if (!side) return s;
-            const cur = side.play_state;
-            const nextState =
-              action === "play" ? "play" : action === "pause" ? "pause" : action === "stop" ? "stop" : cur === "play" ? "pause" : "play";
+            // Toggle from a playing OR buffering side pauses (the device already accepted a play).
+            const nextState: PlayState =
+              action === "play" ? "play" : action === "pause" ? "pause" : action === "stop" ? "stop" : isPlayingState(side.play_state) ? "pause" : "play";
+            // Hold the intent until the hub reports a settled state, so a `buffering` delta cannot flip the icon.
+            set((st) => ({ intents: { ...st.intents, [side.id]: nextState } }));
             return { ...s, sides: { ...s.sides, [side.id]: { ...side, play_state: nextState } } };
           }
         : undefined;
-    return get().dispatch(C.transport(action, target), patch, actionLabel(action));
+    // A toggle while the device is still buffering must pause, not re-play: say so explicitly.
+    const sideNow = get().state?.sides[target] ?? sideForPlayer(get().state, target);
+    const sent: TransportAction = action === "toggle" && sideNow?.play_state === "buffering" ? "pause" : action;
+    return get().dispatch(C.transport(sent, target), patch, actionLabel(action));
   },
 
   seek(sideId, positionMs) {
@@ -483,6 +516,38 @@ export const useHub = create<HubStore>((set, get) => ({
     return get().dispatch(C.syncRetry(), patch, "Sync retry");
   },
 
+  async pandoraSyncStart(sideIds) {
+    // No optimistic patch: the hub's `pandora_sync` delta drives the chip (S6).
+    const ack = await get().dispatch(C.pandoraSyncStart(sideIds), undefined, "Pandora Sync", { onFail: "keep" });
+    if (ack.ok) {
+      toastNotes(ack, get().state?.sides);
+      // Always say the hub's started note once (toast dedupe handles repeats): from the state the
+      // delta landed on, else the hub's exported template (S7).
+      const ps = get().state?.pandora_sync;
+      toast((ps?.active ? ps.note : null) ?? PANDORA_SYNC_STARTED);
+      return ack;
+    }
+    // Refusals verbatim: bridge_unavailable (503), invalid_argument (no matching outputs, names the
+    // rooms), sync_active while Sync Play is live.
+    toast(ack.error?.message ?? PANDORA_SYNC_FAILED);
+    get().requestResync();
+    return ack;
+  },
+
+  async pandoraSyncStop() {
+    const patch: Patch = (s) => ({ ...s, pandora_sync: { ...(s.pandora_sync ?? emptyPandoraSync()), active: false } });
+    const ack = await get().dispatch(C.pandoraSyncStop(), patch, "Stop Pandora Sync", { onFail: "keep" });
+    if (ack.ok) {
+      toastNotes(ack, get().state?.sides);
+      toast(PANDORA_SYNC_STOPPED);
+      return ack;
+    }
+    // Stop while idle is not an error for the user: nothing was running. Anything else is said verbatim.
+    if (ack.error?.code !== "sync_idle") toast(ack.error?.message ?? "Pandora Sync didn't stop.");
+    get().requestResync();
+    return ack;
+  },
+
   _reset() {
     for (const p of Object.values(get().pending)) if (p.timer) get()._deps.clearTimer(p.timer);
     set({
@@ -494,11 +559,24 @@ export const useHub = create<HubStore>((set, get) => ({
       activeSideId: null,
       selectedTargets: [],
       pending: {},
+      intents: {},
       requestResync: () => {},
       _deps: defaultDeps,
     });
   },
 }));
+
+/** Drop every held intent whose side the hub now reports in a settled state (play/pause/stop). */
+function settleIntents(intents: Record<string, PlayState>, state: HubState): Record<string, PlayState> {
+  let changed = false;
+  const out: Record<string, PlayState> = {};
+  for (const [id, intent] of Object.entries(intents)) {
+    const hub = state.sides[id]?.play_state;
+    if (hub === undefined || isSettledState(hub)) changed = true;
+    else out[id] = intent;
+  }
+  return changed ? out : intents;
+}
 
 type Get = () => HubStore;
 type Set = (partial: Partial<HubStore> | ((s: HubStore) => Partial<HubStore>)) => void;

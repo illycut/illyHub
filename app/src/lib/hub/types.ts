@@ -18,7 +18,8 @@ export type HealthResponse = components["schemas"]["HealthResponse"];
 export type DevicesResponse = components["schemas"]["DevicesResponse"];
 
 export type Vendor = "heos" | "sonos";
-export type PlayState = "play" | "pause" | "stop" | "unknown";
+/** From the contract, never hand-maintained: includes "buffering" (a play that has not produced audio yet). */
+export type PlayState = Side["play_state"];
 export type ConnState = "connected" | "reconnecting" | "disconnected" | "disabled";
 export type SyncStatus =
   | "idle"
@@ -93,6 +94,40 @@ export interface SyncState {
   title: string | null;
 }
 
+/**
+ * One AirPlay output as the hub Mac's Music app sees it (docs/api.md "AirPlay bridge"). `kind` is
+ * Music's device kind ("computer", "AirPlay device", "HomePod", …); ids are Music's numeric device
+ * ids as strings and can change across Music launches, so re-read `/api/airplay` before acting.
+ */
+export interface AirPlayOutput {
+  id: string;
+  name: string;
+  kind: string | null;
+  /** The hub's plain-words form of `kind` ("This Mac", "AirPlay speaker", …); null when unknown. */
+  kind_label: string | null;
+  selected: boolean;
+  active: boolean;
+  available: boolean;
+  volume: number | null;
+}
+
+/**
+ * Pandora Sync (Phase 7, PRD PAN-4, experimental): the hub Mac plays Pandora and streams to the
+ * selected AirPlay outputs. The hub does not control that playback, only the routing.
+ * `outputs` are the selected outputs' names; `output_ids` their Music ids.
+ */
+export interface PandoraSyncState {
+  active: boolean;
+  /** Hub sides the bridge is playing to; other rooms stay under the hub's control. */
+  side_ids: string[];
+  output_ids: string[];
+  outputs: string[];
+  previous_output_ids: string[];
+  started_at: string | null;
+  /** The hub's one-line instruction for the user, e.g. where to press play. */
+  note: string | null;
+}
+
 export interface HubState {
   version: number;
   players: Record<string, Player>;
@@ -103,10 +138,12 @@ export interface HubState {
   positions: Record<string, Position>;
   sync: SyncState;
   connections: Record<string, ConnectionStatus>;
+  /** Absent on hubs without the AirPlay bridge; treated as inactive. */
+  pandora_sync?: PandoraSyncState;
 }
 
-/** Top-level collections a delta path may address (depth two), plus the depth-one `sync`. */
-export type DeltaCollection = Exclude<keyof HubState, "version" | "sync">;
+/** Top-level collections a delta path may address (depth two), plus the depth-one `sync` and `pandora_sync`. */
+export type DeltaCollection = Exclude<keyof HubState, "version" | "sync" | "pandora_sync">;
 
 export type ServerMessage =
   | { type: "snapshot"; version: number; state: HubState }

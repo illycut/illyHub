@@ -56,6 +56,9 @@ E2E specs (WebKit iPhone 13 + Chromium Pixel 7, run serially because the fake hu
   `performance.mark("play:confirm")` / `"play:ack"` and the test reads the measure; the sub-second
   bound is asserted locally, not on CI); browse detail play-from-track (hub `index`); Settings
   unlink → connect cards → device-code relink approved via the `approve_tidal` dev scenario.
+- `e2e/airplay.spec.ts` (Phase 7, `HUB_AIRPLAY_ENABLED=1`): Settings AirPlay row and read-only outputs
+  sheet; station → picker → "Sync via AirPlay" → chip on the mini-player and Now Playing with the
+  disabled-transport caption → Stop → chip gone; the affordance never appears for non-station content.
 
 `src/styles/classes.test.ts` builds the real Tailwind output and fails if any class used in a
 `className` produced no CSS (catches theme/token drift). `e2e/viewports.spec.ts` asserts the
@@ -107,7 +110,7 @@ src/lib/            services (labels, hub-linked services, unavailability senten
                     messages), pandora, sync, position interpolation, scrub math, coalescer, prefs,
                     selectors, format
 src/styles/         tokens.css (single source of truth), globals.css
-e2e/                Playwright: smoke, viewports, home, sync, pandora, ytmusic
+e2e/                Playwright: smoke, viewports, home, sync, pandora, ytmusic, airplay
 ```
 
 ## Sync Play (Phase 4)
@@ -158,6 +161,46 @@ per-station availability (`docs/api.md`, Phase 5); the app only renders that.
   badge and the last-played glyph.
 - E2E: `e2e/pandora.spec.ts` against the fake hub's canned stations (`HUB_FAKE_PANDORA=1`) and
   the `link_pandora` / `unlink_pandora?vendor=` scenarios.
+
+## Pandora Sync (Phase 7, experimental)
+
+PRD PAN-4. The hub Mac plays Pandora itself and streams to AirPlay 2 outputs; the hub only
+manages the routing (`docs/api.md` "AirPlay bridge and Pandora Sync"). The app never controls
+that playback. One name everywhere: "Pandora Sync".
+
+- **Capability-gated.** `GET /api/settings` → `hub.airplay {enabled, available, reason}`
+  (PlayerChrome loads settings on mount so a deep link straight into a station has it). Settings →
+  Hub always shows a "Pandora Sync (AirPlay bridge)" row reading Available / Unavailable · reason
+  (wrapping, never clamped) / Off, plus the experimental disclosure; when available, a read-only
+  "Outputs" sheet lists `GET /api/airplay` outputs with neutral checks mirroring `selected` and the
+  hub's `kind_label` ("This Mac", "AirPlay speaker"). Outputs are chosen on the hub Mac in v1.
+- **Affordance.** In the picker, for a Pandora station only and never while a Sync Play session
+  is live, a plain text button "Pandora Sync (experimental)" sits under the confirm button with a
+  note tied by `aria-describedby` ("The hub Mac plays this station to {rooms} over AirPlay. It opens
+  Pandora there; press play on the Mac."). It is never amber: amber means a live audio state the
+  hub drives (Sync Play). Tapping it posts `/api/pandora-sync/start {side_ids}` with every chosen
+  room; the hub matches rooms to outputs and refuses, naming the rooms, when one has no output.
+  Refusals (`bridge_unavailable`, `invalid_argument`, `sync_active`) are toasted verbatim. No
+  optimistic state: the hub's `pandora_sync` delta drives the chip; the hub's started note is
+  toasted once. Sync Play is hidden while Pandora Sync is on.
+- **While a room is bridged** (`pandora_sync.side_ids`; other rooms stay fully live): a neutral
+  status chip "Pandora Sync" on Now Playing and inside the mini-player's expand button; the target
+  indicator reads "Pandora Sync · N rooms" and names them in its label; the badge is dropped (the
+  hub's last track is stale); transport and ±15 are disabled with the primary disc outlined, the
+  scrubber is read-only and its tick is off, all described by one full-width caption: "Press play
+  on the hub Mac; the rooms follow. Controls are there while Pandora Sync is on." The room's own
+  volume slider and the volume sheet keep working. The single Stop (text, error tone) sits in the
+  meta row and posts `/api/pandora-sync/stop`; the hub's stopped note is toasted once; a stop while
+  idle (`sync_idle`) is not an error.
+- **Buffering.** `play_state` includes `buffering`; one predicate (`src/lib/playState.ts`,
+  `isPlaying`) treats it as playing everywhere (dots, active side, icon, scrubber tick,
+  interpolation). The store holds the user's last transport intent per side until the hub reports
+  a settled state, so a `buffering` delta never flips the icon; a toggle while buffering sends
+  `pause`.
+- Code: `src/lib/airplay.ts` (rules and copy from `messages.json` `templates.airplay.*`),
+  `src/components/PandoraSyncChip.tsx`, the picker, Now Playing, mini-player and Settings wiring;
+  store actions `pandoraSyncStart(sideIds)` / `pandoraSyncStop`. Tests: `src/lib/airplay.test.ts`,
+  `src/components/AirPlay.test.tsx`, `e2e/airplay.spec.ts` (fake hub with `HUB_AIRPLAY_ENABLED=1`).
 
 ## YouTube Music (Phase 6)
 
