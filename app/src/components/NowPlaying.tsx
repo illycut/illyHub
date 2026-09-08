@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { motion } from "framer-motion";
 import { ChevronDownIcon, LayersIcon, VolumeIcon } from "./icons";
 import { Scrubber } from "./Scrubber";
@@ -17,6 +18,11 @@ import { resolveActiveSide, zoneDotsForState, zoneDotsLabel } from "@/lib/select
 import { useReducedMotion } from "@/lib/reducedMotion";
 import { Coalescer } from "@/lib/coalesce";
 import { scrubFill } from "@/lib/color";
+import { STOP_SYNC, SYNC_BUTTON, SYNC_OFFER_NOTE, isSyncActive, offerContent, syncLabel, syncLabelShort, syncOffer, syncSideIds, type SyncOffer } from "@/lib/sync";
+import type { PlayRequest } from "@/lib/ui/chrome";
+import { readLastTarget } from "@/lib/prefs";
+import { useLibrary } from "@/lib/library/store";
+import { refKey } from "@/lib/hub/library";
 
 /** Shared-element spring for the hero art (design system §7: 320ms). */
 export const HERO_LAYOUT_TRANSITION = { layout: { type: "spring", duration: 0.32, bounce: 0.15 } } as const;
@@ -33,9 +39,30 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
   const np = useHub((s) => (sideId ? s.state?.now_playing[sideId] : undefined));
   const pos = useHub((s) => (sideId ? s.state?.positions[sideId] : undefined));
   const sync = useHub((s) => s.state?.sync);
+  // One memoized view over sides/players/sync for the two sync-derived values (S11): recomputed
+  // only when those collections change, never on 1 Hz position ticks.
+  // useShallow needs flat primitives, so the offer is spread here and rebuilt below.
+  const syncView = useHub(
+    useShallow((s) => {
+      const sides = s.state?.sides ?? {};
+      const players = s.state?.players;
+      const active = resolveActiveSide(s.state, s.activeSideId);
+      const ref = active ? s.state?.now_playing[active.id]?.content_ref : null;
+      const offer = syncOffer(active, ref, sides, (side) => players?.[side.coordinator_player_id]?.online ?? true, s.state?.sync, readLastTarget() ?? []);
+      return {
+        label: syncLabel(s.state?.sync, sides),
+        shortLabel: syncLabelShort(s.state?.sync),
+        offerHeos: offer?.heos ?? null,
+        offerSonos: offer?.sonos ?? null,
+        offerPartner: offer?.partnerName ?? null,
+      };
+    }),
+  );
   const hasState = useHub((s) => s.state !== null);
   const dots = useHub((s) => zoneDotsForState(s.state));
   const transport = useHub((s) => s.transport);
+  const syncStop = useHub((s) => s.syncStop);
+  const syncRetry = useHub((s) => s.syncRetry);
   const seek = useHub((s) => s.seek);
   const skip = useHub((s) => s.skip);
   const setSideVolume = useHub((s) => s.setSideVolume);
@@ -43,6 +70,35 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
   const reduced = useReducedMotion();
   const [volumeOpen, setVolumeOpen] = useState(false);
   const setZonesOpen = useChrome((s) => s.setZonesOpen);
+  const requestPlay = useChrome((s) => s.requestPlay);
+
+  // Sync Play (Phase 4): while a session is live the scrubber is read-only (the HEOS master
+  // cannot seek), the indicator names both rooms, and Stop sync returns to independent control.
+  const syncing = isSyncActive(sync) && !!sideId && syncSideIds(sync).includes(sideId);
+  const syncingLabel = syncView.label;
+  const offer: SyncOffer | null = useMemo(
+    () => (syncView.offerHeos && syncView.offerSonos && syncView.offerPartner ? { heos: syncView.offerHeos, sonos: syncView.offerSonos, partnerName: syncView.offerPartner } : null),
+    [syncView.offerHeos, syncView.offerSonos, syncView.offerPartner],
+  );
+  const lost = syncing && sync?.status === "lost";
+  const offerSync = () => {
+    if (!offer || !np?.title || !np.content_ref || !side) return;
+    // Prefer the recent album/playlist this room was playing when its cached detail holds the
+    // current track (start there); else the bare track ref (UX S6).
+    const lib = useLibrary.getState();
+    const details = Object.fromEntries(Object.entries(lib.details).map(([k, v]) => [k, v.data]));
+    const chosen = offerContent(np.content_ref, side.id, lib.home.data?.recents.items, details, refKey);
+    const req: PlayRequest = {
+      content_ref: chosen.content_ref,
+      title: chosen.title ?? np.title,
+      subtitle: chosen.subtitle ?? np.artist,
+      art: np.art,
+      start_index: chosen.start_index,
+      preferred: [offer.heos, offer.sonos],
+      note: SYNC_OFFER_NOTE,
+    };
+    requestPlay(req);
+  };
 
   const accentSafe = !!np?.art?.accent && np.art.accent_is_safe;
   const accent = accentSafe ? np!.art.accent! : "var(--bg-raised)";
@@ -51,7 +107,7 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
   const hero = artUrl(np?.art, 1080);
 
   const caps = {
-    supports_seek: !!side && (side.capabilities?.supports_seek ?? true) && (np?.seekable ?? true),
+    supports_seek: !!side && !syncing && (side.capabilities?.supports_seek ?? true) && (np?.seekable ?? true),
     supports_next: !!side && (side.capabilities?.supports_next ?? true) && (np?.supports_next ?? true),
     supports_prev: !!side && (side.capabilities?.supports_prev ?? true) && (np?.supports_prev ?? true),
   };
@@ -66,7 +122,11 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
   }, []);
 
   const style = useMemo(() => ({ "--art-accent": accent, "--scrub-fill": fill }) as React.CSSProperties, [accent, fill]);
-  const roomLabel = side ? `Playing on ${side.name}. ${zoneDotsLabel(dots)}. Choose where to play` : "Choose where to play";
+  const roomLabel = syncing && syncingLabel
+    ? `${syncingLabel}. ${zoneDotsLabel(dots)}. Choose where to play`
+    : side
+      ? `Playing on ${side.name}. ${zoneDotsLabel(dots)}. Choose where to play`
+      : "Choose where to play";
   const loading = !hasState || (!!side && !np);
 
   return (
@@ -74,6 +134,7 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
       className="relative flex min-h-dvh flex-col bg-base pt-safe pb-safe"
       style={style}
       data-testid="now-playing"
+      data-np-sync={syncing || offer ? "true" : undefined}
       aria-label="Now playing"
     >
       {/* Backdrop (U8): tinted base at 100%, blurred art above, gradient last. */}
@@ -100,19 +161,21 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
         ) : (
           <span className="w-target" />
         )}
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-1 items-center justify-center gap-2 px-1">
           <button
             type="button"
-            className="flex h-target items-center gap-2 rounded-control px-3 text-caption text-secondary"
+            className="flex h-target min-w-0 items-center gap-2 rounded-control px-3 text-caption text-secondary"
             onClick={() => setZonesOpen(true)}
             aria-label={roomLabel}
             data-testid="target-indicator"
           >
-            <LayersIcon size={18} />
-            <span>{side?.name ?? "Choose room"}</span>
+            <span className="shrink-0" aria-hidden="true">
+              <LayersIcon size={18} />
+            </span>
+            <span className="truncate">{syncing && syncView.shortLabel ? syncView.shortLabel : (side?.name ?? "Choose room")}</span>
             <ZoneDots model={dots} />
           </button>
-          <SyncChip sync={sync} />
+          <SyncChip sync={sync} onRetry={() => void syncRetry()} onStop={() => void syncStop()} />
         </div>
         <span className="w-target" />
       </header>
@@ -143,8 +206,23 @@ export function NowPlaying({ onCollapse }: { onCollapse?: () => void }) {
                 </h2>
                 <div data-np-meta>
                   <p className="mt-1 clamp-1 text-caption text-secondary">{[np?.artist, np?.album].filter(Boolean).join(" · ")}</p>
-                  <div className="mt-2 flex items-center gap-2">
+                  <div className="mt-2 flex min-h-target items-center gap-2">
                     <ServiceBadge source={np?.source} size={22} withLabel />
+                    {syncing && !lost ? (
+                      <button type="button" className="ml-auto min-h-target rounded-control px-3 text-caption text-secondary" onClick={() => void syncStop()} data-testid="stop-sync">
+                        {STOP_SYNC}
+                      </button>
+                    ) : offer ? (
+                      <button
+                        type="button"
+                        className="flex min-h-target items-center rounded-control bg-signal px-3 text-caption font-semibold text-base"
+                        onClick={offerSync}
+                        aria-label={`${SYNC_BUTTON} with ${offer.partnerName}`}
+                        data-testid="offer-sync"
+                      >
+                        {SYNC_BUTTON}
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               </>

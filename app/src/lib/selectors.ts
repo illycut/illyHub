@@ -1,4 +1,5 @@
 import type { HubState, Player, Side, Zone } from "./hub/types";
+import { mirroredSideIds } from "./sync";
 
 /**
  * Pure selectors over HubState. The list selectors are memoized on the input collection object
@@ -128,13 +129,15 @@ export function linkedVolumeLevels(players: Record<string, Player>, arg: { level
 // identities they read (sides, players, zones), so 1 Hz position deltas leave them untouched.
 
 const EMPTY_DOTS: ZoneDotModel = { kind: "dots", dots: [], live: 0, offline: 0 };
-let dotsCache: { sides: object; players: object | undefined; model: ZoneDotModel } | null = null;
+let dotsCache: { sides: object; players: object | undefined; sync: object; model: ZoneDotModel } | null = null;
 
+/** Zone dots; while the hub is driving a Sync Play session both sides read as live (not once lost). */
 export function zoneDotsForState(state: HubState | null): ZoneDotModel {
   if (!state) return EMPTY_DOTS;
-  if (dotsCache && dotsCache.sides === state.sides && dotsCache.players === state.players) return dotsCache.model;
-  const model = zoneDotModel(sidesList(state), liveSideIds(state), state.players);
-  dotsCache = { sides: state.sides, players: state.players, model };
+  if (dotsCache && dotsCache.sides === state.sides && dotsCache.players === state.players && dotsCache.sync === state.sync) return dotsCache.model;
+  const live = Array.from(new Set([...liveSideIds(state), ...mirroredSideIds(state.sync)]));
+  const model = zoneDotModel(sidesList(state), live, state.players);
+  dotsCache = { sides: state.sides, players: state.players, sync: state.sync, model };
   return model;
 }
 

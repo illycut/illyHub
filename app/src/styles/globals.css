@@ -131,7 +131,8 @@
   .hero-size {
     width: auto;
     max-width: 100%;
-    max-height: min(var(--size-hero-max), calc(100dvh - 500px));
+    /* 526: the badge row is always 48px tall (UX S7) so the Sync Play / Stop sync button never shifts layout. */
+    max-height: min(var(--size-hero-max), calc(100dvh - 526px));
     aspect-ratio: 1 / 1;
     margin-inline: auto;
   }
@@ -160,8 +161,9 @@
     min-width: 0;
   }
   /* Measured at 375x667: header 48 + title 34 + meta 30 + scrubber 62 + transport 64 + volume 48 + gaps/padding 72 = 358. */
+  /* Compact: the 48px badge/sync row adds 18px over the plain meta line. */
   .hero-size {
-    max-height: min(var(--size-hero-max), calc(100dvh - 366px));
+    max-height: min(var(--size-hero-max), calc(100dvh - 384px));
   }
 }
 /* Landscape two-column: the hero is bounded by the column height, not the control stack. */

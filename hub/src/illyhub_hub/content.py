@@ -8,24 +8,21 @@ is what the client renders; :class:`Availability` says which sides can play it.
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel, Field
 
-from .state import ArtRef
+from .state import ArtRef, ContentKind, ContentRef, Service
 
-Service = Literal["tidal", "ytmusic", "pandora"]
-ContentKind = Literal["album", "playlist", "track", "station"]
-
-
-class ContentRef(BaseModel):
-    service: Service
-    kind: ContentKind
-    id: str = Field(pattern=r"^[A-Za-z0-9_.:-]+$", max_length=200)
-
-    @property
-    def key(self) -> str:
-        return f"{self.service}:{self.kind}:{self.id}"
+__all__ = [
+    "Availability",
+    "BrowseItem",
+    "BrowsePage",
+    "Container",
+    "ContentKind",
+    "ContentNotFoundError",
+    "ContentRef",
+    "NeedsLinkError",
+    "Service",
+]
 
 
 class Availability(BaseModel):

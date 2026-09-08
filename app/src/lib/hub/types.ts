@@ -19,7 +19,17 @@ export type DevicesResponse = components["schemas"]["DevicesResponse"];
 export type Vendor = "heos" | "sonos";
 export type PlayState = "play" | "pause" | "stop" | "unknown";
 export type ConnState = "connected" | "reconnecting" | "disconnected" | "disabled";
-export type SyncStatus = "idle" | "priming" | "locked" | "drifting" | "lost";
+export type SyncStatus =
+  | "idle"
+  | "resolving"
+  | "priming"
+  | "verifying"
+  | "starting"
+  | "locked"
+  | "drifting"
+  | "correcting"
+  | "lost"
+  | "stopped";
 export type Source = "tidal" | "ytmusic" | "pandora" | (string & {});
 export type TransportAction = "play" | "pause" | "toggle" | "stop" | "next" | "prev";
 
@@ -49,6 +59,8 @@ export interface NowPlaying {
   supports_prev: boolean;
   duration_ms: number | null;
   track_id: string | null;
+  /** Canonical id for the current track (Tidal on either vendor), null when unknown. */
+  content_ref: { service: string; kind: "track"; id: string } | null;
 }
 
 export interface Position {
@@ -58,11 +70,23 @@ export interface Position {
   confidence: number;
 }
 
+/**
+ * Sync Play session (docs/api.md "Sync Play"). HEOS is the clock master and cannot be seeked;
+ * Sonos is the follower and the only side that is corrected (docs/prd-review.md §6a).
+ */
 export interface SyncState {
   status: SyncStatus;
-  side_ids: string[];
+  master_side: string | null;
+  follower_side: string | null;
+  content_ref: { service: string; kind: string; id: string } | null;
   drift_ms: number | null;
+  start_delta_ms: number | null;
   last_correction_at: string | null;
+  corrections: number;
+  reason: string | null;
+  started_at: string | null;
+  session_id: string | null;
+  title: string | null;
 }
 
 export interface HubState {

@@ -809,6 +809,255 @@
     }
    }
   },
+  "/api/sync/play": {
+   "post": {
+    "tags": [
+     "sync"
+    ],
+    "summary": "Sync Play",
+    "operationId": "sync_play_api_sync_play_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SyncPlayBody"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Ack"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sync/stop": {
+   "post": {
+    "tags": [
+     "sync"
+    ],
+    "summary": "Sync Stop",
+    "operationId": "sync_stop_api_sync_stop_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Ack"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sync/retry": {
+   "post": {
+    "tags": [
+     "sync"
+    ],
+    "summary": "Sync Retry",
+    "operationId": "sync_retry_api_sync_retry_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Ack"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sync": {
+   "get": {
+    "tags": [
+     "sync"
+    ],
+    "summary": "Sync State",
+    "operationId": "sync_state_api_sync_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SyncState"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sync/sessions": {
+   "get": {
+    "tags": [
+     "sync"
+    ],
+    "summary": "Sync Sessions",
+    "operationId": "sync_sessions_api_sync_sessions_get",
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 50,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SyncSessionsResponse"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sync/sessions/{session_id}/report": {
+   "get": {
+    "tags": [
+     "sync"
+    ],
+    "summary": "Sync Report",
+    "operationId": "sync_report_api_sync_sessions__session_id__report_get",
+    "parameters": [
+     {
+      "name": "session_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Session Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SyncReport"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/sync/config": {
+   "get": {
+    "tags": [
+     "sync"
+    ],
+    "summary": "Sync Config",
+    "operationId": "sync_config_api_sync_config_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SyncConfig"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "sync"
+    ],
+    "summary": "Sync Config Update",
+    "operationId": "sync_config_update_api_sync_config_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SyncConfigBody"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SyncConfig"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/history": {
    "get": {
     "tags": [
@@ -1085,6 +1334,26 @@
       "type": "array",
       "title": "Applied",
       "description": "targets (side or player ids) the command reached"
+     },
+     "session_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Session Id",
+      "description": "Sync Play session id (sync_* acks)"
+     },
+     "resolved": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "type": "object",
+      "title": "Resolved",
+      "description": "transport acks: side id -> the action actually sent (toggle resolved)"
      }
     },
     "type": "object",
@@ -1426,7 +1695,8 @@
      "kind",
      "id"
     ],
-    "title": "ContentRef"
+    "title": "ContentRef",
+    "description": "Canonical service id: what the hub browses by and plays from (\"browse once, play\nanywhere\", PRD review \u00a72.1). Also the cross-vendor identity of the current track."
    },
    "DevicesResponse": {
     "properties": {
@@ -1482,7 +1752,11 @@
        "invalid_argument",
        "vendor_error",
        "needs_link",
-       "not_available_on_side"
+       "not_available_on_side",
+       "unsupported_content",
+       "sync_mismatch",
+       "sync_idle",
+       "sync_stopped"
       ],
       "title": "Code"
      },
@@ -1960,7 +2234,11 @@
        "invalid_argument",
        "vendor_error",
        "needs_link",
-       "not_available_on_side"
+       "not_available_on_side",
+       "unsupported_content",
+       "sync_mismatch",
+       "sync_idle",
+       "sync_stopped"
       ],
       "title": "Code"
      },
@@ -2261,6 +2539,512 @@
     ],
     "title": "SkipBody"
    },
+   "SyncConfig": {
+    "properties": {
+     "drift_ms": {
+      "type": "integer",
+      "maximum": 5000.0,
+      "minimum": 50.0,
+      "title": "Drift Ms",
+      "default": 300
+     },
+     "samples": {
+      "type": "integer",
+      "maximum": 20.0,
+      "minimum": 1.0,
+      "title": "Samples",
+      "default": 2
+     },
+     "correction_gap_s": {
+      "type": "number",
+      "maximum": 120.0,
+      "minimum": 0.1,
+      "title": "Correction Gap S",
+      "default": 10.0
+     },
+     "lookahead_ms": {
+      "type": "integer",
+      "maximum": 5000.0,
+      "minimum": 0.0,
+      "title": "Lookahead Ms",
+      "default": 400
+     },
+     "monitor_s": {
+      "type": "number",
+      "maximum": 5.0,
+      "minimum": 0.01,
+      "title": "Monitor S",
+      "default": 0.5
+     },
+     "track_grace_s": {
+      "type": "number",
+      "maximum": 30.0,
+      "minimum": 0.1,
+      "title": "Track Grace S",
+      "default": 3.0
+     }
+    },
+    "type": "object",
+    "title": "SyncConfig",
+    "description": "Hot-reloadable tuning (``POST /api/sync/config``). Defaults come from settings."
+   },
+   "SyncConfigBody": {
+    "properties": {
+     "drift_ms": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "maximum": 5000.0,
+        "minimum": 50.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Drift Ms"
+     },
+     "samples": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "maximum": 20.0,
+        "minimum": 1.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Samples"
+     },
+     "correction_gap_s": {
+      "anyOf": [
+       {
+        "type": "number",
+        "maximum": 120.0,
+        "minimum": 0.1
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Correction Gap S"
+     },
+     "lookahead_ms": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "maximum": 5000.0,
+        "minimum": 0.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Lookahead Ms"
+     },
+     "monitor_s": {
+      "anyOf": [
+       {
+        "type": "number",
+        "maximum": 5.0,
+        "minimum": 0.01
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Monitor S"
+     },
+     "track_grace_s": {
+      "anyOf": [
+       {
+        "type": "number",
+        "maximum": 30.0,
+        "minimum": 0.1
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Track Grace S"
+     }
+    },
+    "type": "object",
+    "title": "SyncConfigBody"
+   },
+   "SyncPlayBody": {
+    "properties": {
+     "content_ref": {
+      "$ref": "#/components/schemas/ContentRef"
+     },
+     "heos_target": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       }
+      ],
+      "title": "Heos Target",
+      "description": "HEOS player id, side id, or a list of player ids (grouped first)"
+     },
+     "sonos_target": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       }
+      ],
+      "title": "Sonos Target",
+      "description": "Sonos player id, side id, or a list of player ids (grouped first)"
+     },
+     "start_index": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Start Index",
+      "default": 0
+     }
+    },
+    "type": "object",
+    "required": [
+     "content_ref",
+     "heos_target",
+     "sonos_target"
+    ],
+    "title": "SyncPlayBody"
+   },
+   "SyncReport": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Started At"
+     },
+     "ended_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ended At"
+     },
+     "duration_s": {
+      "type": "number",
+      "title": "Duration S"
+     },
+     "samples": {
+      "type": "integer",
+      "title": "Samples"
+     },
+     "start_delta_ms": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Start Delta Ms"
+     },
+     "drift_mean_ms": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Drift Mean Ms"
+     },
+     "drift_p95_ms": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Drift P95 Ms"
+     },
+     "drift_max_ms": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Drift Max Ms"
+     },
+     "corrections": {
+      "type": "integer",
+      "title": "Corrections",
+      "default": 0
+     },
+     "reprimes": {
+      "type": "integer",
+      "title": "Reprimes",
+      "default": 0
+     },
+     "lost_reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Lost Reason"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "started_at",
+     "duration_s",
+     "samples"
+    ],
+    "title": "SyncReport"
+   },
+   "SyncSessionSummary": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Started At"
+     },
+     "ended_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ended At"
+     },
+     "content_ref": {
+      "$ref": "#/components/schemas/ContentRef"
+     },
+     "title": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Title"
+     },
+     "master_side": {
+      "type": "string",
+      "title": "Master Side"
+     },
+     "follower_side": {
+      "type": "string",
+      "title": "Follower Side"
+     },
+     "status": {
+      "type": "string",
+      "title": "Status"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "started_at",
+     "content_ref",
+     "master_side",
+     "follower_side",
+     "status"
+    ],
+    "title": "SyncSessionSummary"
+   },
+   "SyncSessionsResponse": {
+    "properties": {
+     "sessions": {
+      "items": {
+       "$ref": "#/components/schemas/SyncSessionSummary"
+      },
+      "type": "array",
+      "title": "Sessions"
+     }
+    },
+    "type": "object",
+    "required": [
+     "sessions"
+    ],
+    "title": "SyncSessionsResponse"
+   },
+   "SyncState": {
+    "properties": {
+     "status": {
+      "type": "string",
+      "enum": [
+       "idle",
+       "resolving",
+       "priming",
+       "verifying",
+       "starting",
+       "locked",
+       "drifting",
+       "correcting",
+       "lost",
+       "stopped"
+      ],
+      "title": "Status",
+      "default": "idle"
+     },
+     "session_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Session Id"
+     },
+     "master_side": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Master Side"
+     },
+     "follower_side": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Follower Side"
+     },
+     "content_ref": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/ContentRef"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "title": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Title"
+     },
+     "drift_ms": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Drift Ms"
+     },
+     "start_delta_ms": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Start Delta Ms"
+     },
+     "last_correction_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Correction At"
+     },
+     "corrections": {
+      "type": "integer",
+      "title": "Corrections",
+      "default": 0
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Reason"
+     },
+     "started_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Started At"
+     }
+    },
+    "type": "object",
+    "title": "SyncState",
+    "description": "Sync Play session as streamed to clients (docs/api.md \u2192 Sync Play, docs/sync-engine.md).\n\n``master_side`` is always the HEOS side (it cannot be seeked, so it is the clock);\n``follower_side`` the Sonos side. ``drift_ms`` is follower minus master."
+   },
    "TargetBody": {
     "properties": {
      "target": {
@@ -2477,6 +3261,10 @@
   {
    "name": "home",
    "description": "Home screen aggregate and play history"
+  },
+  {
+   "name": "sync",
+   "description": "Sync Play: HEOS master + Sonos follower (Phase 4)"
   },
   {
    "name": "settings",

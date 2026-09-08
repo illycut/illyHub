@@ -87,6 +87,15 @@ class Settings(BaseSettings):
     allowed_hosts: list[str] = Field(default_factory=list)  # extra hosts beyond the defaults
     allowed_origins: list[str] = Field(default_factory=list)  # extra full origins
 
+    # Phase 4: Sync Play (docs/sync-engine.md). Hot-reloadable via POST /api/sync/config.
+    sync_drift_ms: int = 300
+    sync_samples: int = 2
+    sync_correction_gap_s: float = 10.0
+    sync_lookahead_ms: int = 400
+    sync_monitor_s: float = 0.5
+    sync_track_grace_s: float = 3.0
+    sync_max_sessions: int = 50  # drift logs kept on disk
+
     @property
     def data_path(self) -> Path:
         return resolve_path(self.data_dir)
@@ -106,6 +115,10 @@ class Settings(BaseSettings):
     @property
     def history_path(self) -> Path:
         return self.data_path / "history.sqlite"
+
+    @property
+    def sync_log_path(self) -> Path:
+        return self.data_path / "sync"
 
     @property
     def app_path(self) -> Path:

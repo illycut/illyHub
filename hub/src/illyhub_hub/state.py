@@ -26,7 +26,18 @@ from .tasks import cancel_all, spawn
 
 PlayState = Literal["play", "pause", "stop", "unknown"]
 ConnState = Literal["connected", "reconnecting", "disconnected", "disabled"]
-SyncStatus = Literal["idle", "priming", "locked", "drifting", "lost"]
+SyncStatus = Literal[
+    "idle",
+    "resolving",
+    "priming",
+    "verifying",
+    "starting",
+    "locked",
+    "drifting",
+    "correcting",
+    "lost",
+    "stopped",
+]
 
 
 def now() -> datetime:
@@ -48,6 +59,23 @@ class ArtRef(BaseModel):
 
 
 Art = ArtRef  # backwards-compatible alias (Phase 0/1 name)
+
+
+Service = Literal["tidal", "ytmusic", "pandora"]
+ContentKind = Literal["album", "playlist", "track", "station"]
+
+
+class ContentRef(BaseModel):
+    """Canonical service id: what the hub browses by and plays from ("browse once, play
+    anywhere", PRD review §2.1). Also the cross-vendor identity of the current track."""
+
+    service: Service
+    kind: ContentKind
+    id: str = Field(pattern=r"^[A-Za-z0-9_.:-]+$", max_length=200)
+
+    @property
+    def key(self) -> str:
+        return f"{self.service}:{self.kind}:{self.id}"
 
 
 class Capabilities(BaseModel):
@@ -123,7 +151,9 @@ class NowPlaying(BaseModel):
     supports_next: bool = True
     supports_prev: bool = True
     duration_ms: int | None = None
-    track_id: str | None = None
+    track_id: str | None = None  # vendor-native id: HEOS media id, Sonos track URI. Never
+    # compare across vendors; use ``content_ref``.
+    content_ref: ContentRef | None = None  # canonical service track id when known (Tidal)
 
 
 class Position(BaseModel):
@@ -139,10 +169,24 @@ def optimistic_position(position_ms: int) -> Position:
 
 
 class SyncState(BaseModel):
+    """Sync Play session as streamed to clients (docs/api.md → Sync Play, docs/sync-engine.md).
+
+    ``master_side`` is always the HEOS side (it cannot be seeked, so it is the clock);
+    ``follower_side`` the Sonos side. ``drift_ms`` is follower minus master.
+    """
+
     status: SyncStatus = "idle"
-    side_ids: list[str] = Field(default_factory=list)
+    session_id: str | None = None
+    master_side: str | None = None
+    follower_side: str | None = None
+    content_ref: ContentRef | None = None
+    title: str | None = None
     drift_ms: int | None = None
+    start_delta_ms: int | None = None
     last_correction_at: datetime | None = None
+    corrections: int = 0
+    reason: str | None = None
+    started_at: datetime | None = None
 
 
 class ConnectionStatus(BaseModel):

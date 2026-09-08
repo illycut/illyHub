@@ -18,6 +18,8 @@ export interface PlayRequest {
   preferred: string[];
   /** Sides that can play this content; others render disabled with a reason. */
   availability?: { heos: boolean; sonos: boolean };
+  /** Extra line under the Sync Play note (e.g. launched from the Now Playing offer). */
+  note?: string;
 }
 
 interface ChromeStore {

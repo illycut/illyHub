@@ -169,3 +169,25 @@ First LAN run checklist:
 - [ ] Change track in the HEOS app; hub now-playing follows.
 - [ ] `ZMON`/`ZMOFF` via the hub turns the Denon on and off.
 - [ ] Ai-dev #9 concurrent-stream test and #10 Tidal ref spike.
+
+### Sync Play (Phase 4) on the LAN
+
+Sync Play has only ever run against the fakes. First real run, in this order:
+
+- [ ] ai-dev #9 first: play the same Tidal album on HEOS (HEOS app) and Sonos (Sonos app) at once.
+      If one pauses the other, Tidal is enforcing one stream per account and Sync Play needs a
+      second account (family plan), one per ecosystem. Record the result on the issue.
+- [ ] `curl -X POST http://127.0.0.1:8080/api/sync/play -H 'content-type: application/json' \
+        -d '{"content_ref":{"service":"tidal","kind":"album","id":"<id from /api/home>"},"heos_target":"<heos player id>","sonos_target":"<sonos player id>"}'`
+      Expect an ack with `applied` listing both sides and `GET /api/sync` moving through
+      `priming → verifying → starting → locked` within ~10 s. Listen in one room at a time first.
+- [ ] Note `start_delta_ms` from `GET /api/sync` (target: under 200 ms) and watch `drift_ms` for a
+      full track (target: held under 300 ms; corrections show as `corrections` climbing slowly).
+- [ ] Let a track boundary pass. Both sides should move to the next track; if Sonos lags more than
+      3 s the hub re-primes it (log line "sync track boundary" then "sync ended"/"locked").
+- [ ] `GET /api/sync/sessions/<id>/report` after `POST /api/sync/stop`. Paste the report and the
+      CSV from `~/illyHub/hub/data/sync/` into an illyHub issue for tuning.
+- [ ] If drift oscillates: raise `HUB_SYNC_CORRECTION_GAP_S` or lower `HUB_SYNC_LOOKAHEAD_MS` via
+      `POST /api/sync/config` (no restart). If the follower starts late every time, raise the
+      lookahead. If `verifying` fails (`sync_mismatch`), the HEOS or Sonos queue did not load the
+      expected track: check `docs/spikes/tidal-refs.md` (ai-dev #10).

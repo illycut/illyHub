@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -46,6 +47,10 @@ ErrorCode = Literal[
     "vendor_error",
     "needs_link",
     "not_available_on_side",
+    "unsupported_content",
+    "sync_mismatch",
+    "sync_idle",
+    "sync_stopped",
 ]
 
 ERROR_CATALOGUE: dict[str, tuple[int, str]] = {
@@ -67,6 +72,10 @@ ERROR_CATALOGUE: dict[str, tuple[int, str]] = {
         "The streaming service is not linked inside that ecosystem (vendor app), so that side "
         "cannot play the content.",
     ),
+    "unsupported_content": (409, "Only Tidal albums, playlists and tracks can Sync Play."),
+    "sync_mismatch": (409, "The two sides did not load the same first track; nothing started."),
+    "sync_idle": (409, "There is no Sync Play session to stop or retry."),
+    "sync_stopped": (409, "Sync Play was stopped before it finished starting."),
 }
 
 TransportAction = Literal["play", "pause", "toggle", "stop", "next", "prev"]
@@ -105,6 +114,48 @@ class Ack(BaseModel):
     applied: list[str] = Field(
         default_factory=list, description="targets (side or player ids) the command reached"
     )
+    session_id: str | None = Field(default=None, description="Sync Play session id (sync_* acks)")
+    resolved: dict[str, str] = Field(
+        default_factory=dict,
+        description="transport acks: side id -> the action actually sent (toggle resolved)",
+    )
+
+
+TRANSPORT_KINDS = ("transport",)
+
+
+class LatencyTracker:
+    """Rolling average of adapter command round-trips per vendor and kind (last ``window`` calls
+    each). Kinds: ``transport`` (play/pause/next/prev/stop), ``seek``, ``volume``, ``prime``.
+
+    The sync engine's start ordering (PRD §7 step 3) reads the **transport** window only: a
+    500 ms queue prime says nothing about how fast ``play`` lands.
+    """
+
+    def __init__(self, window: int = 10) -> None:
+        self.window = window
+        self._samples: dict[tuple[str, str], deque[float]] = {}
+
+    def record(self, vendor: str, ms: float, kind: str = "transport") -> None:
+        self._samples.setdefault((vendor, kind), deque(maxlen=self.window)).append(ms)
+
+    def average(
+        self, vendor: str, default: float = 0.0, kinds: tuple[str, ...] = TRANSPORT_KINDS
+    ) -> float:
+        samples = [
+            v
+            for (ven, kind), dq in self._samples.items()
+            if ven == vendor and kind in kinds
+            for v in dq
+        ]
+        if not samples:
+            return default
+        return sum(samples) / len(samples)
+
+    def count(self, vendor: str, kinds: tuple[str, ...] = TRANSPORT_KINDS) -> int:
+        return sum(
+            len(dq) for (ven, kind), dq in self._samples.items() if ven == vendor and kind in kinds
+        )
 
 
 AckCallback = Callable[[Ack], Awaitable[None] | None]
@@ -192,6 +243,7 @@ class _Outcomes:
         self.attempted = 0
         self.failures: list[CommandError] = []
         self.applied: list[str] = []
+        self.resolved: dict[str, str] = {}  # transport: side id -> action actually sent
 
     async def attempt(self, target: str, coro: Awaitable[None]) -> bool:
         self.attempted += 1
@@ -234,6 +286,7 @@ class CommandRouter:
         self._pending_seek: dict[str, int] = {}  # side id -> absolute target not yet written
         self._linked_ratios: dict[str, float] = {}
         self._linked_written: dict[str, int] = {}  # last level the linked master wrote
+        self.latency = LatencyTracker()
 
     # -- wiring ---------------------------------------------------------------------
 
@@ -260,7 +313,11 @@ class CommandRouter:
     async def transport(self, target: str, action: TransportAction) -> Ack:
         async def run(out: _Outcomes) -> None:
             for side in resolve_sides(self.state, target):
-                await out.attempt(side.id, self._transport_side(side, action, target))
+                resolved = action
+                if action == "toggle":
+                    resolved = "pause" if side.play_state == "play" else "play"
+                if await out.attempt(side.id, self._transport_side(side, resolved, target)):
+                    out.resolved[side.id] = resolved
 
         return await self._execute(action, target, run)
 
@@ -272,7 +329,11 @@ class CommandRouter:
         if action == "prev" and not side.capabilities.supports_prev:
             raise CommandError("unsupported_action", f"{side.name} has no previous track.", target)
         await self._call(
-            lambda: self._transport_on(adapter, side, action), action, target, side.name
+            lambda: self._transport_on(adapter, side, action),
+            action,
+            target,
+            side.name,
+            vendor=side.vendor,
         )
 
     async def seek(self, target: str, position_ms: int) -> Ack:
@@ -311,11 +372,13 @@ class CommandRouter:
         if np and np.duration_ms:
             pos = min(pos, np.duration_ms)
         self._pending_seek[side.id] = pos
-        coord, sid, name = side.coordinator_player_id, side.id, side.name
+        coord, sid, name, vendor = side.coordinator_player_id, side.id, side.name, side.vendor
 
         async def write() -> None:
             try:
-                await self._call(lambda: adapter.seek(coord, pos), action, target, name)
+                await self._call(
+                    lambda: adapter.seek(coord, pos), action, target, name, vendor=vendor
+                )
             finally:
                 if self._pending_seek.get(sid) == pos:
                     self._pending_seek.pop(sid, None)
@@ -367,7 +430,13 @@ class CommandRouter:
     async def _mute_player(self, player: Player, muted: bool, target: str) -> None:
         adapter = self._adapter_for(player.vendor, target)
         self._require_online(player.id, target)
-        await self._call(lambda: adapter.set_mute(player.id, muted), "mute", target, player.name)
+        await self._call(
+            lambda: adapter.set_mute(player.id, muted),
+            "mute",
+            target,
+            player.name,
+            vendor=player.vendor,
+        )
 
     async def zone_power(self, zone_id: str, on: bool) -> Ack:
         async def run(out: _Outcomes) -> None:
@@ -567,10 +636,12 @@ class CommandRouter:
     async def _set_player_volume(self, player: Player, level: int, target: str) -> None:
         adapter = self._adapter_for(player.vendor, target)
         self._require_online(player.id, target)
-        pid, name = player.id, player.name
+        pid, name, vendor = player.id, player.name, player.vendor
         await self.coalescer.submit(
             f"volume:{pid}",
-            lambda: self._call(lambda: adapter.set_volume(pid, level), "volume", target, name),
+            lambda: self._call(
+                lambda: adapter.set_volume(pid, level), "volume", target, name, vendor=vendor
+            ),
         )
 
     async def _transport_on(self, adapter: PlaybackAdapter, side: Side, action: str) -> None:
@@ -591,11 +662,20 @@ class CommandRouter:
             raise CommandError("invalid_argument", f"Unknown transport action {action!r}.")
 
     async def _call(
-        self, fn: Callable[[], Awaitable[Any]], action: str, target: str, name: str
+        self,
+        fn: Callable[[], Awaitable[Any]],
+        action: str,
+        target: str,
+        name: str,
+        vendor: str | None = None,
     ) -> None:
-        """Run one adapter call, mapping protocol failures onto the error catalogue."""
+        """Run one adapter call, mapping protocol failures onto the error catalogue. Successful
+        round-trips feed :attr:`latency` per vendor."""
+        started = time.perf_counter()
         try:
             await fn()
+            if vendor:
+                self.latency.record(vendor, (time.perf_counter() - started) * 1000, _kind(action))
         except CommandError:
             raise
         except UnsupportedCommandError as exc:
@@ -654,6 +734,7 @@ class CommandRouter:
             ),
             partial=partial,
             applied=list(out.applied),
+            resolved=dict(out.resolved),
         )
         log.info(
             "command",
@@ -684,6 +765,16 @@ class CommandRouter:
                 spawn(result, self._tasks)
 
 
+def _kind(action: str) -> str:
+    if action in ("play", "pause", "toggle", "stop", "next", "prev"):
+        return "transport"
+    if action in ("seek", "skip"):
+        return "seek"
+    if action in ("volume", "linked_volume", "mute"):
+        return "volume"
+    return action
+
+
 def _verb(action: str) -> str:
     return {
         "play": "Play",
@@ -701,6 +792,9 @@ def _verb(action: str) -> str:
         "group": "Grouping",
         "ungroup": "Ungrouping",
         "play_content": "Play",
+        "sync_play": "Sync Play",
+        "sync_stop": "Sync Play stop",
+        "sync_retry": "Sync Play retry",
     }.get(action, action.capitalize())
 
 

@@ -367,6 +367,126 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sync/play": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync Play */
+        post: operations["sync_play_api_sync_play_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sync/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync Stop */
+        post: operations["sync_stop_api_sync_stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sync/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync Retry */
+        post: operations["sync_retry_api_sync_retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sync State */
+        get: operations["sync_state_api_sync_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sync/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sync Sessions */
+        get: operations["sync_sessions_api_sync_sessions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sync/sessions/{session_id}/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sync Report */
+        get: operations["sync_report_api_sync_sessions__session_id__report_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sync/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sync Config */
+        get: operations["sync_config_api_sync_config_get"];
+        put?: never;
+        /** Sync Config Update */
+        post: operations["sync_config_update_api_sync_config_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/history": {
         parameters: {
             query?: never;
@@ -499,6 +619,18 @@ export interface components {
              * @description targets (side or player ids) the command reached
              */
             applied?: string[];
+            /**
+             * Session Id
+             * @description Sync Play session id (sync_* acks)
+             */
+            session_id?: string | null;
+            /**
+             * Resolved
+             * @description transport acks: side id -> the action actually sent (toggle resolved)
+             */
+            resolved?: {
+                [key: string]: string;
+            };
         };
         /**
          * ArtRef
@@ -637,7 +769,11 @@ export interface components {
             /** Tracks */
             tracks: components["schemas"]["BrowseItem"][];
         };
-        /** ContentRef */
+        /**
+         * ContentRef
+         * @description Canonical service id: what the hub browses by and plays from ("browse once, play
+         *     anywhere", PRD review §2.1). Also the cross-vendor identity of the current track.
+         */
         ContentRef: {
             /**
              * Service
@@ -671,7 +807,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "unknown_target" | "unsupported_action" | "not_seekable" | "adapter_disconnected" | "device_offline" | "invalid_argument" | "vendor_error" | "needs_link" | "not_available_on_side";
+            code: "unknown_target" | "unsupported_action" | "not_seekable" | "adapter_disconnected" | "device_offline" | "invalid_argument" | "vendor_error" | "needs_link" | "not_available_on_side" | "unsupported_content" | "sync_mismatch" | "sync_idle" | "sync_stopped";
             /** Message */
             message: string;
             /** Target */
@@ -876,7 +1012,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "unknown_target" | "unsupported_action" | "not_seekable" | "adapter_disconnected" | "device_offline" | "invalid_argument" | "vendor_error" | "needs_link" | "not_available_on_side";
+            code: "unknown_target" | "unsupported_action" | "not_seekable" | "adapter_disconnected" | "device_offline" | "invalid_argument" | "vendor_error" | "needs_link" | "not_available_on_side" | "unsupported_content" | "sync_mismatch" | "sync_idle" | "sync_stopped";
             /** Message */
             message: string;
         };
@@ -1014,6 +1150,177 @@ export interface components {
              * @default 15000
              */
             delta_ms: number;
+        };
+        /**
+         * SyncConfig
+         * @description Hot-reloadable tuning (``POST /api/sync/config``). Defaults come from settings.
+         */
+        SyncConfig: {
+            /**
+             * Drift Ms
+             * @default 300
+             */
+            drift_ms: number;
+            /**
+             * Samples
+             * @default 2
+             */
+            samples: number;
+            /**
+             * Correction Gap S
+             * @default 10
+             */
+            correction_gap_s: number;
+            /**
+             * Lookahead Ms
+             * @default 400
+             */
+            lookahead_ms: number;
+            /**
+             * Monitor S
+             * @default 0.5
+             */
+            monitor_s: number;
+            /**
+             * Track Grace S
+             * @default 3
+             */
+            track_grace_s: number;
+        };
+        /** SyncConfigBody */
+        SyncConfigBody: {
+            /** Drift Ms */
+            drift_ms?: number | null;
+            /** Samples */
+            samples?: number | null;
+            /** Correction Gap S */
+            correction_gap_s?: number | null;
+            /** Lookahead Ms */
+            lookahead_ms?: number | null;
+            /** Monitor S */
+            monitor_s?: number | null;
+            /** Track Grace S */
+            track_grace_s?: number | null;
+        };
+        /** SyncPlayBody */
+        SyncPlayBody: {
+            content_ref: components["schemas"]["ContentRef"];
+            /**
+             * Heos Target
+             * @description HEOS player id, side id, or a list of player ids (grouped first)
+             */
+            heos_target: string | string[];
+            /**
+             * Sonos Target
+             * @description Sonos player id, side id, or a list of player ids (grouped first)
+             */
+            sonos_target: string | string[];
+            /**
+             * Start Index
+             * @default 0
+             */
+            start_index: number;
+        };
+        /** SyncReport */
+        SyncReport: {
+            /** Id */
+            id: string;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Ended At */
+            ended_at?: string | null;
+            /** Duration S */
+            duration_s: number;
+            /** Samples */
+            samples: number;
+            /** Start Delta Ms */
+            start_delta_ms?: number | null;
+            /** Drift Mean Ms */
+            drift_mean_ms?: number | null;
+            /** Drift P95 Ms */
+            drift_p95_ms?: number | null;
+            /** Drift Max Ms */
+            drift_max_ms?: number | null;
+            /**
+             * Corrections
+             * @default 0
+             */
+            corrections: number;
+            /**
+             * Reprimes
+             * @default 0
+             */
+            reprimes: number;
+            /** Lost Reason */
+            lost_reason?: string | null;
+        };
+        /** SyncSessionSummary */
+        SyncSessionSummary: {
+            /** Id */
+            id: string;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Ended At */
+            ended_at?: string | null;
+            content_ref: components["schemas"]["ContentRef"];
+            /** Title */
+            title?: string | null;
+            /** Master Side */
+            master_side: string;
+            /** Follower Side */
+            follower_side: string;
+            /** Status */
+            status: string;
+        };
+        /** SyncSessionsResponse */
+        SyncSessionsResponse: {
+            /** Sessions */
+            sessions: components["schemas"]["SyncSessionSummary"][];
+        };
+        /**
+         * SyncState
+         * @description Sync Play session as streamed to clients (docs/api.md → Sync Play, docs/sync-engine.md).
+         *
+         *     ``master_side`` is always the HEOS side (it cannot be seeked, so it is the clock);
+         *     ``follower_side`` the Sonos side. ``drift_ms`` is follower minus master.
+         */
+        SyncState: {
+            /**
+             * Status
+             * @default idle
+             * @enum {string}
+             */
+            status: "idle" | "resolving" | "priming" | "verifying" | "starting" | "locked" | "drifting" | "correcting" | "lost" | "stopped";
+            /** Session Id */
+            session_id?: string | null;
+            /** Master Side */
+            master_side?: string | null;
+            /** Follower Side */
+            follower_side?: string | null;
+            content_ref?: components["schemas"]["ContentRef"] | null;
+            /** Title */
+            title?: string | null;
+            /** Drift Ms */
+            drift_ms?: number | null;
+            /** Start Delta Ms */
+            start_delta_ms?: number | null;
+            /** Last Correction At */
+            last_correction_at?: string | null;
+            /**
+             * Corrections
+             * @default 0
+             */
+            corrections: number;
+            /** Reason */
+            reason?: string | null;
+            /** Started At */
+            started_at?: string | null;
         };
         /** TargetBody */
         TargetBody: {
@@ -1690,6 +1997,214 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Ack"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_play_api_sync_play_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncPlayBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Ack"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_stop_api_sync_stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Ack"];
+                };
+            };
+        };
+    };
+    sync_retry_api_sync_retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Ack"];
+                };
+            };
+        };
+    };
+    sync_state_api_sync_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncState"];
+                };
+            };
+        };
+    };
+    sync_sessions_api_sync_sessions_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncSessionsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_report_api_sync_sessions__session_id__report_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_config_api_sync_config_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncConfig"];
+                };
+            };
+        };
+    };
+    sync_config_update_api_sync_config_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncConfigBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncConfig"];
                 };
             };
             /** @description Validation Error */

@@ -52,8 +52,9 @@ from .discovery import DiscoveredDevice, DiscoveryService, Registry, SearchFn
 from .history import HistoryItem, PlayHistory
 from .logsetup import correlation_id, get_logger
 from .services.tidal import FakeTidalCatalog, TidalCatalog, TidalService
-from .state import ConnectionStatus, Player, Side, StateStore, Zone
+from .state import ConnectionStatus, Player, Side, StateStore, SyncState, Zone
 from .static import StaticMounts, mount_static
+from .sync import SyncConfig, SyncEngine, SyncReport, SyncSessionSummary
 from .tasks import spawn
 from .ws import ClientSession, DumpCache
 
@@ -211,6 +212,33 @@ class RefreshResponse(BaseModel):
     cleared: int
 
 
+SyncTarget = str | list[str]
+
+
+class SyncPlayBody(BaseModel):
+    content_ref: ContentRef
+    heos_target: SyncTarget = Field(
+        description="HEOS player id, side id, or a list of player ids (grouped first)"
+    )
+    sonos_target: SyncTarget = Field(
+        description="Sonos player id, side id, or a list of player ids (grouped first)"
+    )
+    start_index: int = Field(default=0, ge=0)
+
+
+class SyncConfigBody(BaseModel):
+    drift_ms: int | None = Field(default=None, ge=50, le=5000)
+    samples: int | None = Field(default=None, ge=1, le=20)
+    correction_gap_s: float | None = Field(default=None, ge=0.1, le=120.0)
+    lookahead_ms: int | None = Field(default=None, ge=0, le=5000)
+    monitor_s: float | None = Field(default=None, ge=0.01, le=5.0)
+    track_grace_s: float | None = Field(default=None, ge=0.1, le=30.0)
+
+
+class SyncSessionsResponse(BaseModel):
+    sessions: list[SyncSessionSummary]
+
+
 @dataclass
 class HubRuntime:
     """Everything the app owns for its lifetime. Built by :func:`build_runtime`."""
@@ -228,6 +256,7 @@ class HubRuntime:
     tidal: TidalService | None = None
     fake_tidal: FakeTidalCatalog | None = None
     history: PlayHistory | None = None
+    sync: SyncEngine | None = None
     vault_error: str | None = None
     # os._exit is wired only by main.py; anything else (tests, embedding) gets a logged no-op.
     exit_fn: Callable[[int], Any] = lambda code: log.warning(  # noqa: E731
@@ -257,6 +286,8 @@ class HubRuntime:
 
     async def stop(self) -> None:
         await self.discovery.stop()
+        if self.sync is not None:
+            await self.sync.aclose()
         await self.router.aclose()
         if self.fakes:
             await self.fakes.stop()
@@ -356,6 +387,7 @@ def build_runtime(
             tidal=tidal,
             fake_tidal=fake_catalog,
             history=history,
+            sync=_sync_engine(settings, store, router, tidal, history),
             vault_error=vault_error,
         )
 
@@ -383,6 +415,7 @@ def build_runtime(
         router.register(denon)
     else:
         store.set_connection("denon", "disabled", DENON_DISABLED_MSG)
+    tidal = _real_tidal_service(settings, router, tidal_auth, art)
     runtime = HubRuntime(
         settings,
         store,
@@ -393,13 +426,39 @@ def build_runtime(
         art=art_cache,
         vault=vault,
         tidal_auth=tidal_auth,
-        tidal=_real_tidal_service(settings, router, tidal_auth, art),
+        tidal=tidal,
         history=history,
+        sync=_sync_engine(settings, store, router, tidal, history),
         vault_error=vault_error,
     )
     if not heos_host:
         discovery.on_new_devices(runtime.adopt_discovered)
     return runtime
+
+
+def _sync_engine(
+    settings: Settings,
+    store: StateStore,
+    router: CommandRouter,
+    tidal: TidalService,
+    history: PlayHistory,
+) -> SyncEngine:
+    return SyncEngine(
+        store,
+        router,
+        tracks_for=tidal.tracks_for,
+        history=history,
+        config=SyncConfig(
+            drift_ms=settings.sync_drift_ms,
+            samples=settings.sync_samples,
+            correction_gap_s=settings.sync_correction_gap_s,
+            lookahead_ms=settings.sync_lookahead_ms,
+            monitor_s=settings.sync_monitor_s,
+            track_grace_s=settings.sync_track_grace_s,
+        ),
+        log_dir=settings.sync_log_path,
+        max_sessions=settings.sync_max_sessions,
+    )
 
 
 def _open_vault_or_memory(settings: Settings) -> tuple[Vault, str | None]:
@@ -571,6 +630,7 @@ def create_app(
             {"name": "browse", "description": "Library browsing through the services' own APIs"},
             {"name": "play", "description": "Play content by canonical id on any target"},
             {"name": "home", "description": "Home screen aggregate and play history"},
+            {"name": "sync", "description": "Sync Play: HEOS master + Sonos follower (Phase 4)"},
             {"name": "settings", "description": "Accounts, hub info, hardware, restart"},
             {"name": "dev", "description": "Fake-device scenario triggers (HUB_FAKE_DEVICES=1)"},
         ],
@@ -888,6 +948,51 @@ def create_app(
                 side_ids=ack.applied,
             )
         return _respond(ack)
+
+    # -- Sync Play (Phase 4) -----------------------------------------------------------
+
+    def _sync() -> SyncEngine:
+        assert runtime.sync is not None
+        return runtime.sync
+
+    @app.post("/api/sync/play", response_model=Ack, tags=["sync"])
+    async def sync_play(body: SyncPlayBody) -> JSONResponse:
+        ack = await _sync().play(
+            body.content_ref, body.heos_target, body.sonos_target, body.start_index
+        )
+        return _respond(ack)
+
+    @app.post("/api/sync/stop", response_model=Ack, tags=["sync"])
+    async def sync_stop() -> JSONResponse:
+        return _respond(await _sync().stop())
+
+    @app.post("/api/sync/retry", response_model=Ack, tags=["sync"])
+    async def sync_retry() -> JSONResponse:
+        return _respond(await _sync().retry())
+
+    @app.get("/api/sync", response_model=SyncState, tags=["sync"])
+    async def sync_state() -> SyncState:
+        return _sync().current()
+
+    @app.get("/api/sync/sessions", response_model=SyncSessionsResponse, tags=["sync"])
+    async def sync_sessions(limit: int = 50) -> SyncSessionsResponse:
+        return SyncSessionsResponse(sessions=await _sync().sessions(max(1, min(limit, 500))))
+
+    @app.get("/api/sync/sessions/{session_id}/report", response_model=SyncReport, tags=["sync"])
+    async def sync_report(session_id: str) -> Any:
+        report = await _sync().report(session_id)
+        if report is None:
+            return _envelope(404, "not_found", f"No Sync Play session {session_id!r}.")
+        return report
+
+    @app.get("/api/sync/config", response_model=SyncConfig, tags=["sync"])
+    async def sync_config() -> SyncConfig:
+        return _sync().config
+
+    @app.post("/api/sync/config", response_model=SyncConfig, tags=["sync"])
+    async def sync_config_update(body: SyncConfigBody) -> SyncConfig:
+        changes = {k: v for k, v in body.model_dump().items() if v is not None}
+        return await _sync().update_config(**changes)
 
     # -- history + home (Phase 3) ----------------------------------------------------
 

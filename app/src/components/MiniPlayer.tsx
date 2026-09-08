@@ -32,6 +32,7 @@ export const MiniPlayer = memo(function MiniPlayer({ onExpand, hideArt = false }
   const hasState = useHub((s) => s.state !== null);
   const dots = useHub((s) => zoneDotsForState(s.state));
   const transport = useHub((s) => s.transport);
+  const syncRetry = useHub((s) => s.syncRetry);
   const reduced = useReducedMotion();
   const thumb = artUrl(np?.art, 96);
   const playing = side?.play_state === "play";
@@ -68,7 +69,7 @@ export const MiniPlayer = memo(function MiniPlayer({ onExpand, hideArt = false }
             )}
           </div>
         </button>
-        <SyncChip sync={sync} />
+        <SyncChip sync={sync} compact hidden={hideArt} onRetry={() => void syncRetry()} />
         <button
           type="button"
           className="hit-target flex items-center justify-center rounded-control text-primary disabled:opacity-40"

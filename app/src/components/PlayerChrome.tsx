@@ -10,6 +10,7 @@ import { useLibrary } from "@/lib/library/store";
 import { useChrome } from "@/lib/ui/chrome";
 import { useReducedMotion } from "@/lib/reducedMotion";
 import { useScrollLock } from "@/lib/scrollLock";
+import { chipModel, type Eligibility } from "@/lib/sync";
 
 export const COLLAPSE_OFFSET_PX = 80;
 export const COLLAPSE_VELOCITY = 600;
@@ -34,6 +35,10 @@ export function PlayerChrome({ children }: { children: React.ReactNode }) {
   const playRequest = useChrome((s) => s.playRequest);
   const clearPlayRequest = useChrome((s) => s.clearPlayRequest);
   const play = useHub((s) => s.play);
+  const syncPlay = useHub((s) => s.syncPlay);
+  // The one sync announcer (S8/M4): a polite live region that is always mounted and fires once per
+  // TEXT change (drifting/correcting share "Adjusting"), including "Starting" and "Sync lost".
+  const syncText = useHub((s) => chipModel(s.state?.sync)?.text ?? "");
   const selectSide = useHub((s) => s.selectSide);
   const invalidateHome = useLibrary((s) => s.invalidateHome);
   const reduced = useReducedMotion();
@@ -55,22 +60,33 @@ export function PlayerChrome({ children }: { children: React.ReactNode }) {
   }, [selectSide, setExpanded]);
 
   const confirmPlay = useCallback(
-    (targets: string[]) => {
+    (targets: string[], mode: Eligibility) => {
       if (!playRequest) return;
       const req = playRequest;
+      const item = { content_ref: req.content_ref, title: req.title, subtitle: req.subtitle, art: req.art, start_index: req.start_index };
       // Timing marks for the two-tap requirement (PRD Decision 4): confirm tap -> hub ack.
       performance.mark?.("play:confirm");
-      void play(targets, { content_ref: req.content_ref, title: req.title, subtitle: req.subtitle, art: req.art, start_index: req.start_index }).then((acks) => {
+      if (mode.mode === "sync") {
+        void syncPlay(mode.heos, mode.sonos, item).then((ack) => {
+          performance.mark?.("play:ack");
+          if (ack.ok) invalidateHome();
+        });
+        return;
+      }
+      void play(targets, item).then((acks) => {
         performance.mark?.("play:ack");
         if (acks.some((a) => a.ok)) invalidateHome();
       });
     },
-    [playRequest, play, invalidateHome],
+    [playRequest, play, syncPlay, invalidateHome],
   );
 
   return (
     <LayoutGroup>
       {children}
+      <span className="sr-only" role="status" aria-live="polite" data-testid="sync-announcer">
+        {syncText}
+      </span>
       <MiniPlayer onExpand={expand} hideArt={expanded} />
       <ZonePicker open={zonesOpen} onClose={closePicker} play={playRequest} onConfirm={confirmPlay} />
       <AnimatePresence>

@@ -122,6 +122,20 @@ export const commands = {
     method: "DELETE",
     correlationId,
   }),
+  /** Sync Play (Phase 4, docs/api.md "Sync Play"): one HEOS side (master) + one Sonos side (follower). */
+  syncPlay: (
+    content_ref: { service: string; kind: string; id: string },
+    heos_target: string | string[],
+    sonos_target: string | string[],
+    start_index?: number,
+    correlationId?: string,
+  ): CommandRequest => ({
+    path: "/api/sync/play",
+    body: { content_ref, heos_target, sonos_target, ...(start_index !== undefined ? { start_index } : {}) },
+    correlationId,
+  }),
+  syncStop: (correlationId?: string): CommandRequest => ({ path: "/api/sync/stop", body: {}, correlationId }),
+  syncRetry: (correlationId?: string): CommandRequest => ({ path: "/api/sync/retry", body: {}, correlationId }),
   /** Play library content on one target (Phase 3, docs/api.md "Play"). */
   play: (target: string, content_ref: { service: string; kind: string; id: string }, start_index?: number, correlationId?: string): CommandRequest => ({
     path: "/api/play",

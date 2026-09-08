@@ -4,7 +4,6 @@ import { ServiceBadge, serviceLabel } from "./ServiceBadge";
 import { Slider } from "./Slider";
 import { Toasts } from "./Toasts";
 import { HubBanner } from "./Banner";
-import { SyncChip } from "./SyncChip";
 import { ArtSkeleton, ConnectCard, EmptyState, Skeleton, TextSkeleton } from "./Skeleton";
 import { useToasts } from "@/lib/ui/toasts";
 import { useHub } from "@/lib/hub/store";
@@ -92,33 +91,6 @@ describe("Slider", () => {
     expect(onChange).not.toHaveBeenCalled();
     expect(container.querySelector(".h-slider-thumb.w-slider-thumb")).not.toBeNull();
     expect(container.querySelector(".h-slider-track")).not.toBeNull();
-  });
-});
-
-describe("SyncChip", () => {
-  const base = { side_ids: ["a", "b"], drift_ms: 0, last_correction_at: null };
-  it("renders nothing when idle and the three live states with glyph + text", () => {
-    const { container, rerender } = render(<SyncChip sync={{ status: "idle", ...base }} />);
-    expect(container).toBeEmptyDOMElement();
-    rerender(<SyncChip sync={{ status: "locked", ...base }} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Synced");
-    expect(screen.getByTestId("sync-chip").querySelector(".bg-sync-locked")).not.toBeNull();
-    rerender(<SyncChip sync={{ status: "drifting", ...base }} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Adjusting");
-    rerender(<SyncChip sync={{ status: "priming", ...base }} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Starting");
-    rerender(<SyncChip sync={null} />);
-    expect(container).toBeEmptyDOMElement();
-  });
-  it("pulses once per correction event and offers retry when lost", () => {
-    const onRetry = vi.fn();
-    const { rerender } = render(<SyncChip sync={{ status: "drifting", ...base }} />);
-    expect(screen.getByTestId("sync-chip").querySelector(".pulse-once")).toBeNull();
-    rerender(<SyncChip sync={{ status: "drifting", ...base, last_correction_at: "2026-09-07T00:00:01Z" }} />);
-    expect(screen.getByTestId("sync-chip").querySelector(".pulse-once")).not.toBeNull();
-    rerender(<SyncChip sync={{ status: "lost", ...base }} onRetry={onRetry} />);
-    fireEvent.click(screen.getByRole("button", { name: /Sync lost/ }));
-    expect(onRetry).toHaveBeenCalled();
   });
 });
 

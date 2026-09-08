@@ -41,6 +41,7 @@ from .base import (
     DenonAdapter,
     HeosAdapter,
     PlayableTrack,
+    PrimedQueue,
     SonosAdapter,
     UnsupportedCommandError,
 )
@@ -78,14 +79,27 @@ NEXT_TRACKS = (
 
 
 class _Ticker:
-    """Shared 1 Hz position ticker for fake sides in ``play`` state."""
+    """Shared position ticker for fake sides in ``play`` state.
+
+    Each side has its own clock: ``rate`` (1.0 = real time; 1.003 = 0.3 % fast) lets tests and the
+    Playwright fake mode exercise the sync engine's drift correction, and ``seek_latency_s``
+    delays a seek the way a real Sonos re-buffer does. ``on_end`` fires when a side's position
+    passes the current track's duration so the fake queue advances like a real player.
+    """
 
     def __init__(self, store: StateStore, interval_s: float) -> None:
         self.store = store
         self.interval_s = interval_s
         self._task: asyncio.Task[None] | None = None
-        self._playing: dict[str, int] = {}
-        self._paused: dict[str, int] = {}  # position kept while a side is not playing
+        self._playing: dict[str, float] = {}
+        self._paused: dict[str, float] = {}  # position kept while a side is not playing
+        self.rates: dict[str, float] = {}
+        self.seek_latency_s: dict[str, float] = {}
+        self._pending_seeks: set[asyncio.Task[None]] = set()
+        self.on_end: Callable[[str], None] | None = None
+        # Like the real PositionTracker: the first report after a seek or track change is only
+        # an optimistic estimate (confidence 0.5); the following ones are confirmed.
+        self._fresh: dict[str, int] = {}
 
     def start(self) -> None:
         if self._task is None:
@@ -94,6 +108,9 @@ class _Ticker:
     async def stop(self) -> None:
         await stop_task(self._task)
         self._task = None
+        for t in list(self._pending_seeks):
+            await stop_task(t)
+        self._pending_seeks.clear()
 
     def set_playing(self, side_id: str, playing: bool) -> None:
         if playing:
@@ -101,26 +118,67 @@ class _Ticker:
         elif side_id in self._playing:
             self._paused[side_id] = self._playing.pop(side_id)
 
+    def set_rate(self, side_id: str, rate: float) -> None:
+        self.rates[side_id] = rate
+
+    def set_seek_latency(self, side_id: str, seconds: float) -> None:
+        self.seek_latency_s[side_id] = seconds
+
+    def nudge(self, side_id: str, delta_ms: int) -> None:
+        """Move a side's clock without a position report (a hidden drift, for scenarios)."""
+        if side_id in self._playing:
+            self._playing[side_id] += delta_ms
+        else:
+            self._paused[side_id] = self._paused.get(side_id, 0) + delta_ms
+
     def seek(self, side_id: str, position_ms: int) -> None:
-        """Move the counter whether or not the side is playing; play resumes from here."""
+        """Move the counter whether or not the side is playing; play resumes from here. Honours
+        the side's configured seek latency (the counter keeps running until the seek lands)."""
+        latency = self.seek_latency_s.get(side_id, 0.0)
+        if latency <= 0:
+            self._apply_seek(side_id, position_ms)
+            return
+
+        async def later() -> None:
+            await asyncio.sleep(latency)
+            self._apply_seek(side_id, position_ms)
+
+        task = asyncio.get_running_loop().create_task(later())
+        self._pending_seeks.add(task)
+        task.add_done_callback(self._pending_seeks.discard)
+
+    def _apply_seek(self, side_id: str, position_ms: int) -> None:
         if side_id in self._playing:
             self._playing[side_id] = position_ms
         else:
             self._paused[side_id] = position_ms
+        self._fresh[side_id] = 1
         self.store.set_position(
-            side_id, Position(position_ms=position_ms, reported_at=now(), confidence=1.0)
+            side_id, Position(position_ms=position_ms, reported_at=now(), confidence=0.5)
         )
 
     def position(self, side_id: str) -> int:
-        return self._playing.get(side_id, self._paused.get(side_id, 0))
+        return int(self._playing.get(side_id, self._paused.get(side_id, 0)))
 
     def tick(self) -> None:
+        ended: list[str] = []
         for side_id in list(self._playing):
-            self._playing[side_id] += int(self.interval_s * 1000)
+            rate = self.rates.get(side_id, 1.0)
+            self._playing[side_id] += self.interval_s * 1000 * rate
+            pos = int(self._playing[side_id])
+            fresh = self._fresh.get(side_id, 0)
+            if fresh:
+                self._fresh[side_id] = fresh - 1
             self.store.set_position(
                 side_id,
-                Position(position_ms=self._playing[side_id], reported_at=now(), confidence=1.0),
+                Position(position_ms=pos, reported_at=now(), confidence=0.5 if fresh else 1.0),
             )
+            np = self.store.state.now_playing.get(side_id)
+            if np is not None and np.duration_ms and pos >= np.duration_ms:
+                ended.append(side_id)
+        for side_id in ended:
+            if self.on_end is not None:
+                self.on_end(side_id)
 
     async def _run(self) -> None:
         while True:
@@ -170,8 +228,43 @@ class FakeVendorMixin:
             raise IndexError(f"start_index {start_index} out of range for {len(tracks)} tracks")
         side = self._side_for(player_id)
         self._queues[side] = (list(tracks), start_index)
-        self.change_track(player_id, self._track_from_playable(tracks[start_index]))
+        self.change_track(
+            player_id,
+            self._track_from_playable(tracks[start_index]),
+            track_id=tracks[start_index].track_id,
+        )
         self.sim_play_state(player_id, "play")
+
+    async def prime_content(
+        self, player_id: str, ref: ContentRef, tracks: list[PlayableTrack], start_index: int = 0
+    ) -> PrimedQueue:
+        """Load the queue positioned at ``start_index`` and leave the side paused at 0."""
+        self._check(player_id)
+        if not self.service_linked(ref.service):
+            raise ContentUnavailableError(f"{ref.service} is not linked in the {self.vendor} app")
+        if not 0 <= start_index < len(tracks):
+            raise IndexError(f"start_index {start_index} out of range for {len(tracks)} tracks")
+        side = self._side_for(player_id)
+        self._queues[side] = (list(tracks), start_index)
+        self.sim_play_state(player_id, "pause")
+        track = tracks[start_index]
+        self.change_track(player_id, self._track_from_playable(track), track_id=track.track_id)
+        return PrimedQueue(track_id=track.track_id, title=track.title)
+
+    async def start_primed(self, player_id: str, start_index: int = 0) -> None:
+        self._check(player_id)
+        self.sim_play_state(player_id, "play")
+
+    def queue_index(self, player_id: str) -> int | None:
+        queued = self._queues.get(self._side_for(player_id))
+        return queued[1] if queued else None
+
+    def end_of_track(self, side_id: str) -> None:
+        """Ticker callback: the current track ran out; advance the queue like a real player."""
+        side = self.store.state.sides.get(side_id)
+        if side is None or side.vendor != self.vendor:
+            return
+        self._advance_queue(side.coordinator_player_id, +1)
 
     def _advance_queue(self, player_id: str, step: int) -> bool:
         side = self._side_for(player_id)
@@ -189,7 +282,9 @@ class FakeVendorMixin:
                 self._ticker.seek(side, 0)  # "previous" at the first track restarts it
             return True
         self._queues[side] = (tracks, nxt)
-        self.change_track(player_id, self._track_from_playable(tracks[nxt]))
+        self.change_track(
+            player_id, self._track_from_playable(tracks[nxt]), track_id=tracks[nxt].track_id
+        )
         return True
 
     # -- scripting (simulates the vendor app) -----------------------------------------
@@ -208,7 +303,16 @@ class FakeVendorMixin:
         self._ticker.set_playing(side, state == "play")
         self._emit("play_state", player_id=player_id)
 
-    def change_track(self, player_id: str, track: FakeTrack = DEFAULT_TRACK) -> None:
+    def vendor_track_id(self, canonical_id: str) -> str:
+        """Vendor-native id for a canonical Tidal track id, matching the real adapters' shapes
+        (HEOS: bare media id; Sonos: the track URI). Overridden per fake."""
+        return canonical_id
+
+    def change_track(
+        self, player_id: str, track: FakeTrack = DEFAULT_TRACK, *, track_id: str | None = None
+    ) -> None:
+        """``track_id`` is the *canonical* service id; the fake stamps its vendor-native form on
+        ``track_id`` and the canonical one on ``content_ref``, like the real adapters do."""
         side = self._side_for(player_id)
         self.store.set_now_playing(
             side,
@@ -222,6 +326,12 @@ class FakeVendorMixin:
                 supports_next=True,  # stations skip forward on both ecosystems
                 supports_prev=track.source != "pandora",
                 duration_ms=track.duration_ms,
+                track_id=self.vendor_track_id(track_id) if track_id else None,
+                content_ref=(
+                    ContentRef(service="tidal", kind="track", id=track_id)
+                    if track_id and track.source == "tidal"
+                    else None
+                ),
             ),
         )
         self._ticker.seek(side, 0)
@@ -294,6 +404,9 @@ class FakeVendorMixin:
 
 class FakeHeos(FakeVendorMixin, HeosAdapter):
     vendor = "heos"
+
+    def vendor_track_id(self, canonical_id: str) -> str:
+        return canonical_id  # HEOS media_id is the bare Tidal id
 
     def __init__(self, store: StateStore, ticker: _Ticker, art: ArtHelper | None = None) -> None:
         super().__init__(store, art=art)
@@ -386,6 +499,34 @@ class FakeHeos(FakeVendorMixin, HeosAdapter):
 
 class FakeSonos(FakeVendorMixin, SonosAdapter):
     vendor = "sonos"
+
+    def vendor_track_id(self, canonical_id: str) -> str:
+        return f"x-sonos-http:track/{canonical_id}.flac?sid=174&flags=8224&sn=1"
+
+    async def snapshot_queue(self, player_id: str) -> dict[str, object] | None:
+        side = self._side_for(player_id)
+        queued = self._queues.get(side)
+        np = self.store.state.now_playing.get(side)
+        return {
+            "queue": (list(queued[0]), queued[1]) if queued else None,
+            "now_playing": np,
+            "play_state": self.store.state.players[player_id].play_state,
+            "position_ms": self._ticker.position(side),
+        }
+
+    async def restore_queue(self, player_id: str, snapshot: object) -> None:
+        assert isinstance(snapshot, dict)
+        side = self._side_for(player_id)
+        self.restored_queues = getattr(self, "restored_queues", 0) + 1
+        if snapshot["queue"] is not None:
+            self._queues[side] = snapshot["queue"]  # type: ignore[assignment]
+        else:
+            self._queues.pop(side, None)
+        np = snapshot["now_playing"]
+        if np is not None:
+            self.store.set_now_playing(side, np)  # type: ignore[arg-type]
+        self.sim_play_state(player_id, snapshot["play_state"])  # type: ignore[arg-type]
+        self._ticker.seek(side, int(snapshot["position_ms"]))  # type: ignore[arg-type]
 
     def __init__(self, store: StateStore, ticker: _Ticker, art: ArtHelper | None = None) -> None:
         super().__init__(store, art=art)
@@ -541,6 +682,7 @@ class FakeBundle:
         self.heos = FakeHeos(store, self.ticker, art)
         self.sonos = FakeSonos(store, self.ticker, art)
         self.denon = FakeDenon(store)
+        self.ticker.on_end = self._track_ended
         self.tidal_linked = True
         self.tidal_pending = False  # fake device-code flow in progress
         self.on_tidal_link: Callable[[bool], None] | None = None  # flips the fake catalog
@@ -583,6 +725,10 @@ class FakeBundle:
         self.set_tidal_linked(True)
         return True
 
+    def _track_ended(self, side_id: str) -> None:
+        for a in (self.heos, self.sonos):
+            a.end_of_track(side_id)
+
     @property
     def tidal_state(self) -> str:
         if self.tidal_linked:
@@ -617,6 +763,9 @@ class FakeBundle:
         "link_tidal",
         "unlink_tidal",
         "approve_tidal",
+        "sync_drift",
+        "sync_lose_sonos",
+        "sync_track_change",
     )
 
     def run_scenario(self, name: str) -> dict[str, object]:
@@ -654,4 +803,17 @@ class FakeBundle:
         if name == "approve_tidal":
             approved = self.approve_fake_link()
             return {"tidal_linked": self.tidal_linked, "approved": approved}
+        if name == "sync_drift":
+            side = self.sonos.side_id()
+            self.ticker.nudge(side, 800)
+            return {"side": side, "nudged_ms": 800}
+        if name == "sync_lose_sonos":
+            coord = self.sonos.store.state.sides[self.sonos.side_id()].coordinator_player_id
+            self.sonos.sim_play_state(coord, "pause")
+            return {"player": coord, "play_state": "pause"}
+        if name == "sync_track_change":
+            advanced = self.heos._advance_queue(HEOS_PLAYER, +1)
+            np = self.heos.store.state.now_playing.get(side_id_for_group("heos", HEOS_PLAYER))
+            title = np.title if np else None
+            return {"player": HEOS_PLAYER, "advanced": advanced, "title": title}
         raise KeyError(name)

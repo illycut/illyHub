@@ -19,6 +19,7 @@ import type { Ack, ArtRef, HubState, Position, ServerMessage, TransportAction, V
 import { interpolatePosition } from "../position";
 import { linkedVolumeLevels, sideForPlayer } from "../selectors";
 import { toast } from "../ui/toasts";
+import { SYNC_UNSUPPORTED_TOAST, transportTargetFor } from "../sync";
 
 /** What `play()` needs from a library item to update the UI optimistically. */
 export interface PlayItem {
@@ -96,6 +97,14 @@ export interface HubStore {
    * confirms. Resolves with every ack; failures toast per side.
    */
   play(sideIds: string[], item: PlayItem): Promise<Ack[]>;
+  /**
+   * Sync Play (Phase 4): one HEOS side (clock master) + one Sonos side (follower). Optimistically
+   * marks both playing with the item; the hub's `sync` state drives the chip. Refusals toast in
+   * design voice (needs_link → Connect action; unsupported_content → Tidal note).
+   */
+  syncPlay(heosTargets: string[], sonosTargets: string[], item: PlayItem): Promise<Ack>;
+  syncStop(): Promise<Ack>;
+  syncRetry(): Promise<Ack>;
 
   /** Test seams. */
   _deps: {
@@ -217,6 +226,9 @@ export const useHub = create<HubStore>((set, get) => ({
   },
 
   transport(action, target) {
+    // While a Sync Play session is live, transport for either synced side goes to the master
+    // and the hub mirrors it to the follower (docs/api.md "Sync Play").
+    target = transportTargetFor(target, get().state?.sync);
     // Pin the side being controlled so Now Playing does not hop to another playing side when
     // this one pauses (the resolver prefers playing sides only while nothing is chosen).
     if (!get().activeSideId && get().state?.sides[target]) set({ activeSideId: target });
@@ -351,6 +363,7 @@ export const useHub = create<HubStore>((set, get) => ({
           supports_prev: true,
           duration_ms: null,
           track_id: null,
+          content_ref: null,
         };
         return {
           ...s,
@@ -400,6 +413,69 @@ export const useHub = create<HubStore>((set, get) => ({
       toast(ack.error?.message ?? `${names(id)} didn't start ${item.title}.`);
     }
     return acks;
+  },
+
+  async syncPlay(heosTargets, sonosTargets, item) {
+    const heosTarget = heosTargets[0] ?? "";
+    const sonosTarget = sonosTargets[0] ?? "";
+    const patch: Patch = (s) => {
+      let next = s;
+      for (const sideId of [...heosTargets, ...sonosTargets]) {
+        const side = next.sides[sideId];
+        if (!side) continue;
+        const prev = next.now_playing[sideId];
+        next = {
+          ...next,
+          sides: { ...next.sides, [sideId]: { ...side, play_state: "play" } },
+          now_playing: {
+            ...next.now_playing,
+            [sideId]: {
+              title: item.title,
+              artist: item.subtitle,
+              album: item.content_ref.kind === "album" ? item.title : (prev?.album ?? null),
+              art: item.art,
+              source: item.content_ref.service,
+              seekable: false,
+              supports_next: true,
+              supports_prev: true,
+              duration_ms: null,
+              track_id: null,
+              content_ref: null,
+            },
+          },
+          positions: { ...next.positions, [sideId]: { position_ms: 0, reported_at: new Date(get().hubNow()).toISOString(), confidence: 0.5 } },
+        };
+      }
+      return { ...next, sync: { ...next.sync, status: "resolving", master_side: heosTarget, follower_side: sonosTarget, content_ref: item.content_ref, title: item.title, reason: null } };
+    };
+    const one = (xs: string[]) => (xs.length === 1 ? xs[0]! : xs);
+    const ack = await get().dispatch(C.syncPlay(item.content_ref, one(heosTargets), one(sonosTargets), item.start_index), patch, "Sync Play", { onFail: "keep" });
+    if (ack.ok) {
+      for (const f of ack.partial ?? []) toast(f.message);
+      return ack;
+    }
+    const code: string = ack.error?.code ?? "vendor_error";
+    const service = item.content_ref.service;
+    if (code === "needs_link") {
+      toast(ack.error?.message ?? `${item.title} didn't start.`, { label: CONNECT_LABEL[service] ?? "Connect", href: `/settings?link=${service}` });
+    } else if (code === "unsupported_content") {
+      toast(SYNC_UNSUPPORTED_TOAST);
+    } else {
+      toast(ack.error?.message ?? `Sync Play didn't start ${item.title}.`);
+    }
+    // The hub touched nothing (or reports what it did in `sync`): drop the optimistic layer.
+    get().requestResync();
+    return ack;
+  },
+
+  syncStop() {
+    const patch: Patch = (s) => ({ ...s, sync: { ...s.sync, status: "stopped" } });
+    return get().dispatch(C.syncStop(), patch, "Stop sync");
+  },
+
+  syncRetry() {
+    const patch: Patch = (s) => ({ ...s, sync: { ...s.sync, status: "priming", reason: null } });
+    return get().dispatch(C.syncRetry(), patch, "Sync retry");
   },
 
   _reset() {

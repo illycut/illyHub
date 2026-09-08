@@ -13,6 +13,7 @@ Verified only against a mocked ``pyheos.Heos``; no physical HEOS device has been
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
@@ -34,6 +35,7 @@ from .base import (
     ContentUnavailableError,
     HeosAdapter,
     PlayableTrack,
+    PrimedQueue,
     UnsupportedCommandError,
 )
 
@@ -131,6 +133,7 @@ class PyHeosAdapter(HeosAdapter):
         self._player_unsubs: dict[str, Callable[[], None]] = {}
         self._raw_players: dict[str, Any] = {}
         self._trackers: dict[str, PositionTracker] = {}
+        self._primed_qid: dict[str, int] = {}  # player id -> queue id captured at prime time
         self._disconnected = asyncio.Event()
         self._closing = False
 
@@ -232,23 +235,76 @@ class PyHeosAdapter(HeosAdapter):
             play_queue = getattr(raw, "play_queue", None)
             if play_queue is None:
                 raise RuntimeError("HEOS client cannot play a queue position; start_index dropped")
-            await self._wait_for_queue(raw, start_index + 1)
-            await play_queue(start_index + 1)
+            items = await self._wait_for_queue(raw, start_index + 1)
+            await play_queue(_queue_id(items[start_index], start_index))
+
+    async def prime_content(
+        self, player_id: str, ref: ContentRef, tracks: list[PlayableTrack], start_index: int = 0
+    ) -> PrimedQueue:
+        """Sync Play priming: ``player/clear_queue`` then ``browse/add_to_queue`` with *add to
+        end* (aid 3), which loads the container **without starting playback**, then wait until
+        ``get_queue`` shows the start position and describe what sits there. **Unverified on
+        hardware** (docs/sync-engine.md)."""
+        if not self.service_linked(ref.service):
+            raise ContentUnavailableError(f"{ref.service} is not linked in the HEOS app")
+        if not 0 <= start_index < len(tracks):
+            raise IndexError(f"start_index {start_index} out of range for {len(tracks)} tracks")
+        raw = self._raw(player_id)
+        sid = self.HEOS_SERVICE_SIDS[ref.service]
+        from pyheos.types import AddCriteriaType
+
+        add_to_end = AddCriteriaType.ADD_TO_END
+        clear_queue = getattr(raw, "clear_queue", None)
+        if clear_queue is None:
+            raise RuntimeError("HEOS client cannot clear the queue; priming unavailable")
+        await clear_queue()
+        if ref.kind == "track":
+            track = tracks[start_index]
+            await raw.add_to_queue(
+                sid, track.album_id or "", media_id=ref.id, add_criteria=add_to_end
+            )
+            needed = 1
+        else:
+            await raw.add_to_queue(sid, ref.id, add_criteria=add_to_end)
+            needed = start_index + 1
+        items = await self._wait_for_queue(raw, needed)
+        item = items[needed - 1]
+        # ADD_TO_END must not start playback; some firmware resumes anyway, so park it.
+        pause = getattr(raw, "pause", None)
+        if pause is not None:
+            with contextlib.suppress(Exception):
+                await pause()
+        expected = tracks[start_index]
+        self._primed_qid[player_id] = _queue_id(item, needed - 1)
+        return PrimedQueue(
+            track_id=str(getattr(item, "media_id", None) or expected.track_id),
+            title=str(getattr(item, "song", None) or expected.title),
+        )
+
+    async def start_primed(self, player_id: str, start_index: int = 0) -> None:
+        """Sync Play fire: ``player/play_queue`` with the queue id captured at prime time (1-based
+        on the receiver) starts the primed queue at track 0 ms."""
+        raw = self._raw(player_id)
+        play_queue = getattr(raw, "play_queue", None)
+        if play_queue is None:
+            raise RuntimeError("HEOS client cannot play a queue position")
+        await play_queue(self._primed_qid.get(player_id, start_index + 1))
 
     QUEUE_WAIT_S = 5.0
 
-    async def _wait_for_queue(self, raw: Any, needed: int) -> None:
-        """A container is added asynchronously; poll ``player/get_queue`` until at least
-        ``needed`` items are present (or time out) before asking for a queue position."""
+    async def _wait_for_queue(self, raw: Any, needed: int) -> list[Any]:
+        """A container is added asynchronously; poll ``player/get_queue`` (a **0-based** range,
+        pyheos ``get_queue(range_start, range_end)``) until at least ``needed`` items are present
+        (or time out). Returns the items ``[0, needed)``."""
         get_queue = getattr(raw, "get_queue", None)
         if get_queue is None:
             raise RuntimeError("HEOS client cannot read the queue; start_index dropped")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.QUEUE_WAIT_S
         while True:
-            items = await get_queue(1, needed)
+            items = list(await get_queue(0, needed - 1))
             if len(items) >= needed:
-                return
+                return items[:needed]
             if loop.time() >= deadline:
                 raise TimeoutError(f"HEOS queue has {len(items)} items, needed {needed}")
             await asyncio.sleep(0.2)
@@ -415,6 +471,9 @@ class PyHeosAdapter(HeosAdapter):
                 supports_prev="play_previous" in controls if controls else not is_station,
                 duration_ms=int(duration) if duration else None,
                 track_id=str(getattr(media, "media_id", "") or "") or None,
+                content_ref=_tidal_ref(
+                    getattr(media, "source_id", None), getattr(media, "media_id", None)
+                ),
             ),
         )
 
@@ -475,6 +534,26 @@ class PyHeosAdapter(HeosAdapter):
 
 
 HEOS_SOURCE_NAMES: dict[int, str] = {1: "pandora", 4: "spotify", 10: "tidal", 13: "amazon"}
+
+
+def _queue_id(item: Any, index: int) -> int:
+    """HEOS queue ids are 1-based; prefer the receiver's own ``queue_id`` on the item."""
+    qid = getattr(item, "queue_id", None)
+    try:
+        return int(qid) if qid is not None else index + 1
+    except (TypeError, ValueError):
+        return index + 1
+
+
+def _tidal_ref(source_id: Any, media_id: Any) -> ContentRef | None:
+    """Canonical track identity: the HEOS media id *is* the Tidal track id when the source is
+    Tidal (sid 10). Anything else has no cross-vendor identity."""
+    if _service_name(source_id) != "tidal" or not media_id:
+        return None
+    try:
+        return ContentRef(service="tidal", kind="track", id=str(media_id))
+    except ValueError:
+        return None
 
 
 def _service_name(source_id: Any) -> str | None:

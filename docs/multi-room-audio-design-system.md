@@ -272,3 +272,13 @@ Refinements found while implementing Phase 2. Each is a clarification of intent,
 8. **Denon zone toggles.** Each power toggle carries a `micro` label ("Main", "Zone 2") and the on state has a filled ring, so the two toggles never differ by color alone (§9).
 9. **Zone dots.** Dots model live and online separately: amber live, `signal-dim` idle, `text-tertiary` offline, with a text label such as "2 rooms playing, 1 offline".
 10. **Open questions filed as issues:** `text-tertiary` contrast versus §9 (illyHub #3), marquee trigger (#4), sheet modality (#5).
+
+### 1.2 — September 7, 2026 (Phase 4 Sync Play build and UX review)
+
+1. **Sync chip glyph.** One inline SVG glyph per state, coloured with the state token and carrying shape: filled circle "Synced", half circle "Adjusting", ring "Sync lost", dotted ring "Starting". No separate dot beside the glyph. The single 400ms pulse plays on the glyph.
+2. **Sync labels.** Room names in sync copy are joined with " and " ("Syncing Living Room Amp and Kitchen + Patio"), because grouped sides are already named with "+". The Now Playing header shows "Syncing 2 rooms"; full names live in the accessible label and the picker.
+3. **Stop sync tone.** "Stop sync" is a plain text button in `text-secondary`, not `error`: both rooms keep playing, so it is not a destructive action. §6.8's `error` rule applies to actions that stop audio.
+4. **Lost state.** The chip reads "Sync lost" and is accompanied by a visible "Retry" text button (48px) on Now Playing; the mini-player uses a compact single button "Sync lost · Retry". Only one Stop affordance exists on a screen.
+5. **Announcements.** Sync state is announced once per text change from a single hidden live region, never per drift tick; the transition to "Sync lost" is always announced.
+6. **Picker copy for Sync Play.** Button "Sync Play" or "Sync Play in N rooms"; note "{HEOS rooms} and {Sonos rooms}, together. Close, not perfect." tied to the button with `aria-describedby`. A plain secondary "Play in N rooms" stays available under it so unsynced multi-room play remains possible.
+7. **Offer placement.** The amber Sync Play offer never renders where "Stop sync" just sat, and is suppressed briefly after a stop, so a double tap cannot restart a session.

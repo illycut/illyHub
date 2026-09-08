@@ -150,6 +150,14 @@ class PlayableTrack(BaseModel):
     art_url: str | None = None
 
 
+class PrimedQueue(BaseModel):
+    """What an adapter loaded at the start position of a primed queue, for the sync engine's
+    verification step. Either field may be unknown; ``title`` is the fallback comparison."""
+
+    track_id: str | None = None
+    title: str | None = None
+
+
 class PlaybackAdapter(BaseAdapter, ABC):
     """Command surface for a music ecosystem. Player ids are hub ids (``heos-1``, ``sonos-…``).
 
@@ -205,6 +213,27 @@ class PlaybackAdapter(BaseAdapter, ABC):
         """Replace the coordinator's queue with ``tracks`` (resolved from ``ref`` by the service
         layer) and start at ``start_index``. Raises :class:`ContentUnavailableError` when the
         ecosystem has no account for the service (Phase 3, PRD review §2.1)."""
+
+    async def prime_content(
+        self, player_id: str, ref: ContentRef, tracks: list[PlayableTrack], start_index: int = 0
+    ) -> PrimedQueue:
+        """Sync Play step 2: load ``tracks`` into the coordinator's queue positioned at
+        ``start_index`` **without starting playback**, and describe what sits at that position.
+        Default: adapters that cannot load-without-playing raise ``UnsupportedCommandError``."""
+        raise UnsupportedCommandError(f"{self.name} cannot prime a queue")
+
+    async def start_primed(self, player_id: str, start_index: int = 0) -> None:
+        """Sync Play step 4: start the queue primed by :meth:`prime_content` from position 0 of
+        ``start_index``. Default: plain ``play``."""
+        await self.play(player_id)
+
+    async def snapshot_queue(self, player_id: str) -> Any | None:
+        """Capture the coordinator's queue and transport so a failed Sync Play start can put the
+        room back (Sonos: SoCo ``Snapshot``). Default: nothing to restore."""
+        return None
+
+    async def restore_queue(self, player_id: str, snapshot: Any) -> None:
+        """Undo :meth:`snapshot_queue`. Default: no-op."""
 
 
 class HeosAdapter(PlaybackAdapter, ABC):

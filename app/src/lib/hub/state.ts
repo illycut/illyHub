@@ -9,7 +9,20 @@ export function emptyState(): HubState {
     sides: {},
     now_playing: {},
     positions: {},
-    sync: { status: "idle", side_ids: [], drift_ms: null, last_correction_at: null },
+    sync: {
+      status: "idle",
+      master_side: null,
+      follower_side: null,
+      content_ref: null,
+      drift_ms: null,
+      start_delta_ms: null,
+      last_correction_at: null,
+      corrections: 0,
+      reason: null,
+      started_at: null,
+      session_id: null,
+      title: null,
+    },
     connections: {},
   };
 }

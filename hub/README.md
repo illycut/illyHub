@@ -108,3 +108,22 @@ Nothing in this package has been run against physical hardware yet; see
 
 Offline dev with a canned library: `HUB_FAKE_DEVICES=1 HUB_FAKE_TIDAL=1 uv run hub`, then
 `POST /api/dev/fake/unlink_tidal` / `link_tidal` to exercise the not-linked paths.
+
+## Phase 4: Sync Play
+
+`POST /api/sync/play {content_ref, heos_target, sonos_target, start_index}` plays one Tidal album,
+playlist or track on a HEOS side and a Sonos side together. **HEOS is the clock master** (the HEOS
+CLI cannot seek); the hub primes both queues, verifies both loaded the same first track, fires the
+slower vendor first by its measured round-trip, then samples both interpolated positions every
+`HUB_SYNC_MONITOR_S` and seeks Sonos when drift stays over `HUB_SYNC_DRIFT_MS`, at most once per
+`HUB_SYNC_CORRECTION_GAP_S`. Track changes on the master re-prime the follower if it does not
+follow within `HUB_SYNC_TRACK_GRACE_S`. `POST /api/sync/stop` releases both sides (both keep
+playing); `POST /api/sync/retry` recovers a lost session; `GET /api/sync` is the live state, also
+streamed as the `sync` WebSocket path. Sessions log `data/sync/{id}.csv`; `GET /api/sync/sessions`
+and `GET /api/sync/sessions/{id}/report` summarise them; `GET|POST /api/sync/config` tunes live.
+
+Module: `sync.py` (engine, config, drift log, reports). Adapter primitives: `prime_content` and
+`start_primed` on `PlaybackAdapter` (fake, HEOS via `clear_queue` + `add_to_queue(ADD_TO_END)` +
+`play_queue`, Sonos via `play_from_queue(index, start=False)` + `play`). Fakes simulate independent
+clocks (`ticker.set_rate`) and seek latency; dev scenarios `sync_drift`, `sync_lose_sonos`,
+`sync_track_change`. Design: `docs/sync-engine.md`. Everything here is mock-verified only.

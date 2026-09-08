@@ -698,3 +698,60 @@ def test_discover_tidal_sn_maps_service_type_44551() -> None:
     assert discover_tidal_sn("zone", account_class=NoTidal) is None
     assert discover_tidal_sn("zone", account_class=Broken) is None
     assert discover_tidal_sn(None, account_class=Accounts) is None
+
+
+async def test_prime_content_positions_queue_without_playing(
+    store: StateStore, settings: Settings
+) -> None:
+    """Sync Play priming on Sonos: clear → add → play_from_queue(index, start=False) → pause;
+    start_primed → play."""
+    from illyhub_hub.adapters.base import ContentUnavailableError, PlayableTrack
+    from illyhub_hub.content import ContentRef
+
+    h = Harness()
+    a = h.adapter(store, settings)
+    await a.connect()
+    await wait_for(lambda: a.status().state == "connected")
+    k = h.zones[0]
+
+    class Queued:
+        title = "T5"
+
+    k.clear_queue = lambda: k._rec("clear_queue")  # type: ignore[attr-defined]
+    k.add_multiple_to_queue = lambda items: k._rec("add_multiple", len(items))  # type: ignore[attr-defined]
+    k.play_from_queue = lambda i, start=True: k._rec("play_from_queue", (i, start))  # type: ignore[attr-defined]
+    k.pause = lambda: k._rec("pause")  # type: ignore[attr-defined]
+    k.play = lambda: k._rec("play")  # type: ignore[attr-defined]
+    k.get_queue = lambda start, n: (k._rec("get_queue", (start, n)), [Queued()])[1]  # type: ignore[attr-defined]
+    tracks = [
+        PlayableTrack(service="tidal", track_id=str(i), title=f"T{i}", album_id="101")
+        for i in range(8)
+    ]
+    ref = ContentRef(service="tidal", kind="album", id="101")
+    with pytest.raises(ContentUnavailableError):
+        await a.prime_content("sonos-RINCON_K", ref, tracks, 0)  # no sn
+    a.settings = settings.model_copy(update={"sonos_tidal_sn": "3"})
+    primed = await a.prime_content("sonos-RINCON_K", ref, tracks, start_index=5)
+    assert primed.track_id == "5" and primed.title == "T5"
+    names = [
+        c
+        for c in k.calls
+        if c[0] in {"clear_queue", "add_multiple", "play_from_queue", "pause", "get_queue", "play"}
+    ]
+    assert names == [
+        ("clear_queue", None),
+        ("add_multiple", 8),
+        ("play_from_queue", (5, False)),
+        ("pause", None),
+        ("get_queue", (5, 1)),
+    ]
+    assert store.state.positions["sonos:sonos-gG1"].position_ms == 0
+    await a.start_primed("sonos-RINCON_K", 5)
+    assert k.calls[-1] == ("play", None)
+    with pytest.raises(IndexError):
+        await a.prime_content("sonos-RINCON_K", ref, tracks, 99)
+    with pytest.raises(ContentUnavailableError):
+        await a.prime_content(
+            "sonos-RINCON_K", ContentRef(service="ytmusic", kind="album", id="x"), tracks, 0
+        )
+    await a.disconnect()

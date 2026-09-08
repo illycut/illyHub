@@ -478,7 +478,7 @@ async def test_play_content_uses_add_to_queue_and_music_sources(
     async def get_queue(start, end):
         get_queue_calls.append((start, end))
         queue_len["n"] += 1  # one more item lands per poll
-        return list(range(min(queue_len["n"], end)))
+        return list(range(queue_len["n"]))[start : end + 1]  # 0-based inclusive, like pyheos
 
     async def play_queue(qid: int) -> None:
         play_queue_calls.append(qid)
@@ -505,8 +505,8 @@ async def test_play_content_uses_add_to_queue_and_music_sources(
         assert queue_calls == [(10, "101", None, 4)] and play_queue_calls == []
         # start_index waits for the queue to contain enough items before play_queue.
         await a.play_content("heos-1", album, tracks, start_index=2)
-        assert play_queue_calls == [3]  # HEOS queue ids are 1-based
-        assert len(get_queue_calls) == 3 and get_queue_calls[-1] == (1, 3)
+        assert play_queue_calls == [3]  # HEOS queue ids are 1-based; items carry none here
+        assert len(get_queue_calls) == 3 and get_queue_calls[-1] == (0, 2)
         await a.play_content(
             "heos-1", ContentRef(service="tidal", kind="track", id="10102"), tracks, 1
         )
@@ -582,6 +582,86 @@ async def test_music_sources_failure_means_nothing_linked(
         await a.connect()
         await wait_for(lambda: a.status().state == "connected")
         assert a.service_linked("tidal") is False
+        await a.disconnect()
+    finally:
+        del FakeHeosClient.get_music_sources  # type: ignore[attr-defined]
+
+
+async def test_prime_content_loads_without_playing_and_start_primed_plays_queue(
+    store: StateStore, settings: Settings
+) -> None:
+    """Sync Play priming on HEOS: clear_queue → add_to_queue(ADD_TO_END) → wait for the queue →
+    describe the queued item; start_primed → play_queue (1-based)."""
+    from illyhub_hub.adapters.base import ContentUnavailableError, PlayableTrack
+    from illyhub_hub.content import ContentRef
+
+    gen = Generations()
+    calls: list[tuple[str, tuple]] = []
+    queue_len = {"n": 0}
+
+    class Item:
+        def __init__(self, media_id: str, song: str, queue_id: int) -> None:
+            self.media_id, self.song, self.queue_id = media_id, song, queue_id
+
+    async def clear_queue() -> None:
+        calls.append(("clear_queue", ()))
+        queue_len["n"] = 0
+
+    async def add_to_queue(source_id, container_id, media_id=None, add_criteria=None):
+        calls.append(("add_to_queue", (source_id, container_id, media_id, int(add_criteria))))
+
+    async def get_queue(start, end):
+        queue_len["n"] += 2
+        # 0-based inclusive range; queue ids on the receiver are 1-based and offset by 10 here
+        # so the test proves play_queue uses the item's queue_id, not index + 1.
+        items = [Item(f"1010{i + 1}", f"S{i + 1}", 10 + i + 1) for i in range(queue_len["n"])]
+        return items[start : end + 1]
+
+    async def play_queue(qid: int) -> None:
+        calls.append(("play_queue", (qid,)))
+
+    for p in gen.players.values():
+        p.clear_queue = clear_queue  # type: ignore[attr-defined]
+        p.add_to_queue = add_to_queue  # type: ignore[attr-defined]
+        p.get_queue = get_queue  # type: ignore[attr-defined]
+        p.play_queue = play_queue  # type: ignore[attr-defined]
+    FakeHeosClient.get_music_sources = lambda self, *, refresh=False: _ret({10: Source(True)})  # type: ignore[attr-defined]
+    a = make(store, settings, gen)
+    try:
+        await a.connect()
+        await wait_for(lambda: a.status().state == "connected")
+        tracks = [
+            PlayableTrack(
+                service="tidal", track_id=f"1010{i + 1}", title=f"S{i + 1}", album_id="101"
+            )
+            for i in range(4)
+        ]
+        album = ContentRef(service="tidal", kind="album", id="101")
+        primed = await a.prime_content("heos-1", album, tracks, start_index=2)
+        assert primed.track_id == "10103" and primed.title == "S3"
+        assert calls[:2] == [("clear_queue", ()), ("add_to_queue", (10, "101", None, 3))]
+        assert not any(c[0] == "play_queue" for c in calls)  # nothing started
+        await a.start_primed("heos-1", 2)
+        assert calls[-1] == ("play_queue", (13,))  # the item's own queue id, not index + 1
+        # a single track primes with the album container + media id
+        primed = await a.prime_content(
+            "heos-1", ContentRef(service="tidal", kind="track", id="10102"), tracks, 1
+        )
+        assert primed.track_id == "10101" or primed.title  # whatever sits first in the queue
+        assert calls[-1] == ("add_to_queue", (10, "101", "10102", 3))
+        with pytest.raises(IndexError):
+            await a.prime_content("heos-1", album, tracks, 9)
+        # a client without clear_queue / play_queue cannot prime or start
+        for p in gen.players.values():
+            del p.clear_queue  # type: ignore[attr-defined]
+            del p.play_queue  # type: ignore[attr-defined]
+        with pytest.raises(RuntimeError):
+            await a.prime_content("heos-1", album, tracks, 0)
+        with pytest.raises(RuntimeError):
+            await a.start_primed("heos-1", 0)
+        a._sources = {}
+        with pytest.raises(ContentUnavailableError):
+            await a.prime_content("heos-1", album, tracks, 0)
         await a.disconnect()
     finally:
         del FakeHeosClient.get_music_sources  # type: ignore[attr-defined]

@@ -106,3 +106,25 @@ src/lib/            position interpolation, scrub math, coalescer, prefs, select
 src/styles/         tokens.css (single source of truth), globals.css
 e2e/                Playwright smoke
 ```
+
+## Sync Play (Phase 4)
+
+One HEOS side (clock master) plus one Sonos side (follower) playing the same Tidal content. The
+hub owns the engine (`docs/api.md` "Sync Play", `docs/sync-engine.md`); the app only decides when
+to offer it and renders `HubState.sync`.
+
+- **Picker rule** (`src/lib/sync.ts` `syncEligibility`): at least one HEOS and one Sonos side
+  selected and Tidal content → the confirm button becomes **Sync Play**, the only amber-filled
+  button in the app, with the note "Close, not perfect." Both vendors but non-Tidal content →
+  plain Play plus a disabled Sync Play with the reason. One vendor → plain Play, nothing else.
+- **Now Playing** offers Sync Play (amber, secondary) when the active side plays Tidal and the
+  other vendor has an online side; it opens the picker with both pre-selected. During a session
+  the indicator reads "Syncing A + B", the scrubber is read-only (HEOS cannot seek), and a plain
+  "Stop sync" text button returns both rooms to independent control.
+- **Sync chip** (`SyncChip`, design §6.7): Starting / Synced / Adjusting / Sync lost from
+  `sync.status`, one 400 ms pulse per correction (keyed on `last_correction_at`), Retry and Stop
+  when lost. Shown next to the indicator and in the mini-player.
+- **Transport during a session** goes to the master side and the hub mirrors it to the follower
+  while the session is being driven (resolving through correcting); once lost or stopped each
+  side is on its own again (`transportTargetFor` in `src/lib/sync.ts`).
+- E2E: `e2e/sync.spec.ts` drives the fake hub's `sync_drift` / `sync_lose_sonos` scenarios.

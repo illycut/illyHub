@@ -31,7 +31,7 @@ describe("applyDelta", () => {
       type: "delta",
       from_version: 10,
       to_version: 11,
-      changed: { sync: { status: "locked", side_ids: ["a", "b"], drift_ms: 120, last_correction_at: null } },
+      changed: { sync: { ...sampleState().sync, status: "locked", master_side: "a", follower_side: "b", drift_ms: 120 } },
     });
     expect(next!.sync.status).toBe("locked");
   });

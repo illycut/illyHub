@@ -41,6 +41,40 @@ export function side(id: string, name: string, vendor: "heos" | "sonos", members
   } as Side;
 }
 
+export function idleSync(): HubState["sync"] {
+  return {
+    status: "idle",
+    master_side: null,
+    follower_side: null,
+    content_ref: null,
+    drift_ms: null,
+    start_delta_ms: null,
+    last_correction_at: null,
+    corrections: 0,
+    reason: null,
+    started_at: null,
+    session_id: null,
+    title: null,
+  };
+}
+
+/** A sync session between the sample HEOS side (master) and the Sonos group (follower). */
+export function sampleSync(over: Partial<HubState["sync"]> = {}): HubState["sync"] {
+  return {
+    ...idleSync(),
+    status: "locked",
+    master_side: "heos:heos-1",
+    follower_side: "sonos:sonos-gK",
+    content_ref: { service: "tidal", kind: "album", id: "a-1" },
+    drift_ms: 40,
+    start_delta_ms: 120,
+    started_at: new Date().toISOString(),
+    session_id: "s-1",
+    title: "Kind of Blue",
+    ...over,
+  };
+}
+
 export function sampleState(nowMs = Date.now()): HubState {
   const reported = new Date(nowMs).toISOString();
   return {
@@ -72,7 +106,8 @@ export function sampleState(nowMs = Date.now()): HubState {
         supports_next: true,
         supports_prev: true,
         duration_ms: 337_000,
-        track_id: "tidal:1",
+        track_id: "t1",
+        content_ref: { service: "tidal", kind: "track", id: "1" },
       },
       "sonos:sonos-gK": {
         title: "Chill Station",
@@ -85,13 +120,14 @@ export function sampleState(nowMs = Date.now()): HubState {
         supports_prev: false,
         duration_ms: null,
         track_id: null,
+        content_ref: null,
       },
     },
     positions: {
       "heos:heos-1": { position_ms: 60_000, reported_at: reported, confidence: 0.9 },
       "sonos:sonos-gK": { position_ms: 0, reported_at: reported, confidence: 1 },
     },
-    sync: { status: "idle", side_ids: [], drift_ms: null, last_correction_at: null },
+    sync: idleSync(),
     connections: {
       heos: { state: "connected", last_error: null, since: reported },
       sonos: { state: "connected", last_error: null, since: reported },

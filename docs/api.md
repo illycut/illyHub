@@ -283,6 +283,134 @@ for this endpoint:
 
 Every successful play writes a history row (below).
 
+## Sync Play
+
+Play the same Tidal content on **one HEOS side and one Sonos side** at the same moment, and hold
+them together. Design detail is in `docs/sync-engine.md`. Two constraints shape everything:
+
+- **HEOS is the clock master.** The HEOS CLI has no seek command (`docs/prd-review.md` §6a), so
+  the hub never adjusts HEOS. Sonos is the follower and the only side that gets corrected,
+  forward or backward.
+- Exactly two sides. More than one player per vendor is grouped natively first (the request may
+  list player ids; the hub groups them and syncs the two coordinators).
+
+Content must be a Tidal album, playlist or track ref. Anything else fails with
+`unsupported_content`; an unlinked service with `needs_link`; a side whose vendor app lacks Tidal
+with `not_available_on_side`. Copy for the client is "close, not perfect" (design §6.7): the chip
+reads **Synced / Adjusting / Sync lost**, never "perfect".
+
+### Endpoints
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| POST | `/api/sync/play` | `{content_ref, heos_target, sonos_target, start_index = 0}` — each target is a player id, a side id, **or a list of player ids** (grouped first) | **Ack** `action: "sync_play"`, `target: "sync"`, `applied: [master_side, follower_side]`, `session_id` |
+| POST | `/api/sync/stop` | — | **Ack** `action: "sync_stop"`. Both sides keep playing, independently |
+| POST | `/api/sync/retry` | — | **Ack** `action: "sync_retry"`. Only from `lost`: re-primes the follower from the master's current track and starts it; if the master is not playing, restarts both from that track. From `stopped` → `sync_stopped` (start a new session); while running → `invalid_argument` |
+| GET | `/api/sync` | — | the current `SyncState` (same object as `HubState.sync`) |
+| GET | `/api/sync/sessions?limit=50` | — | `{sessions: [{id, started_at, ended_at, content_ref, title, master_side, follower_side, status}]}` newest first. The hub keeps the newest `HUB_SYNC_MAX_SESSIONS` (50) on disk |
+| GET | `/api/sync/sessions/{id}/report` | — | `{id, started_at, ended_at, duration_s, samples, start_delta_ms, drift_mean_ms, drift_p95_ms, drift_max_ms, corrections, lost_reason}` |
+| GET | `/api/sync/config` | — | `SyncConfig` |
+| POST | `/api/sync/config` | any subset of `SyncConfig` | `SyncConfig` after the change; hot, no restart. LAN-trusted like every other write (host/origin policy applies) |
+
+`POST /api/sync/play` returns once the session is **starting** (play has been issued to both
+sides) or has failed; priming can take a few seconds, and the phases stream over the WebSocket
+meanwhile. `locked`/`drifting` follows on the first judged sample, and `start_delta_ms` lands a
+moment later from a background measurement. Starting a new session stops the current one first
+(its pending ack, if any, returns `sync_stopped`). A successful start writes a history row with
+`sync: true` and both side ids.
+
+**Track identity.** `now_playing[*].track_id` is vendor-native (HEOS media id, Sonos track URI)
+and is never compared across vendors. Both adapters also populate `now_playing[*].content_ref`
+(`{service: "tidal", kind: "track", id}`) when the current track's canonical Tidal id is known
+(HEOS: media id when the source is Tidal; Sonos: parsed from `x-sonos-http:track/{id}.flac`), and
+`null` otherwise. The engine judges each side against its own primed expectation through
+`content_ref`, falling back to title + artist.
+
+Error codes added: `unsupported_content` (409, only Tidal content can Sync Play), `sync_mismatch`
+(409, the two sides did not load the same first track; nothing was started), `sync_idle` (409,
+stop/retry with no session), `sync_stopped` (409, returned by the `play`/`retry` ack when
+`POST /api/sync/stop` cancelled the start mid-phase).
+
+`POST /api/sync/stop` works in **every** phase. During `resolving`/`priming`/`verifying`/`starting`
+it cancels the in-flight start, leaves both sides as they are (paused after priming is fine) and
+sets `stopped` with reason "stopped by the user"; the pending `play` ack then returns `sync_stopped`.
+
+### Transport during Sync Play
+
+There is no `target: "sync"` selector. The client sends transport commands to the **master side**
+(or to `all`) exactly as outside a session; while the session is live (any status from
+`resolving` through `correcting`, never `lost`/`stopped`/`idle`) the engine watches the acks and
+mirrors to the follower, in order, through one worker. Transport acks carry `resolved`
+(`{side id: action actually sent}`), so a `toggle` is mirrored as the `play` or `pause` it became:
+
+| command on the master side | follower | session |
+|---|---|---|
+| `pause` (or `toggle` while playing) | paused | stays in its status; `paused` sides are not "lost" |
+| `play` (or `toggle` while paused) | played | re-verifies lock: the first over-threshold sample may correct immediately (gap waived once) |
+| `next` / `prev` | same command | track boundary handled as usual; immediate correction allowed |
+| `stop` | stopped | session ends `stopped`, reason "<master> was stopped" |
+
+Commands sent to `all` reach both sides directly; the engine only updates its bookkeeping. Volume
+and mute are per side and never mirrored (use `{linked: true}` for "both"). Pausing or stopping
+the **follower** from the app ends the session as `lost` with reason "<room> was paused from the
+app"; pausing from a **vendor app** is not visible as a hub ack and counts as `lost` with
+"<room> stopped playing". A new `POST /api/play` on either synced side ends the session
+(`stopped`, "playback changed"). When the master finishes the last track, the session ends
+`stopped` with "playback ended".
+
+### `SyncState` (`HubState.sync`, streamed as the `sync` delta path)
+
+```json
+{
+  "status": "locked",
+  "session_id": "20260907T215512-3f2a",
+  "master_side": "heos:heos-1",
+  "follower_side": "sonos:sonos-gRINCON_KITCHEN:1",
+  "content_ref": {"service": "tidal", "kind": "album", "id": "101"},
+  "title": "Warm Glow",
+  "drift_ms": -120,
+  "start_delta_ms": 140,
+  "last_correction_at": "2026-09-07T21:56:01.120Z",
+  "corrections": 1,
+  "reason": null,
+  "started_at": "2026-09-07T21:55:12.400Z"
+}
+```
+
+| status | Meaning | Chip (design §6.7) |
+|---|---|---|
+| `idle` | no session ever, or the last one was cleared | hidden |
+| `resolving` | resolving the Tidal ref to tracks and checking availability | "Starting" |
+| `priming` | loading both queues, paused at the start track | "Starting" |
+| `verifying` | both sides report the same first track | "Starting" |
+| `starting` | play issued to both sides, slower first, offset by measured latency | "Starting" |
+| `locked` | drift under threshold | "Synced" |
+| `drifting` | drift over threshold, correction pending (rate-capped) | "Adjusting" |
+| `correcting` | the follower was just seeked; waiting for its first confirming report | "Adjusting" (single pulse) |
+| `lost` | a side paused/stopped outside the hub, an adapter dropped, or the follower did not reach the master's track | "Sync lost", tap → `/api/sync/retry` |
+| `stopped` | stopped by the user (both keep playing) or playback ended | hidden |
+
+`drift_ms` is follower minus master (positive: Sonos is ahead), refreshed every `monitor_s`.
+`corrections` counts follower seeks this session. `start_delta_ms` is the measured gap between the
+two sides' first position reports (follower minus master), the PRD's "start within ~200 ms" metric.
+
+### `SyncConfig`
+
+| field | default | env | Meaning |
+|---|---|---|---|
+| `drift_ms` | 300 | `HUB_SYNC_DRIFT_MS` | correction threshold. Drift is judged only on confirmed reports (both sides' `positions.*.confidence` above 0.5) |
+| `samples` | 2 | `HUB_SYNC_SAMPLES` | consecutive over-threshold samples before correcting |
+| `correction_gap_s` | 10 | `HUB_SYNC_CORRECTION_GAP_S` | at most one follower seek per this many seconds |
+| `lookahead_ms` | 400 | `HUB_SYNC_LOOKAHEAD_MS` | initial follower seek lookahead. After each correction lands, the residual drift reveals the true seek latency (`latency = lookahead − residual`), which becomes the next lookahead; one gap-exempt follow-up correction settles any residual still over threshold |
+| `monitor_s` | 0.5 | `HUB_SYNC_MONITOR_S` | drift sampling interval |
+| `track_grace_s` | 3 | `HUB_SYNC_TRACK_GRACE_S` | how long the follower may lag at a track boundary before the hub re-primes it |
+
+### Drift log
+
+Every session appends `HUB_DATA_DIR/sync/{session_id}.csv` with columns
+`t,master_pos,follower_pos,drift,action` (`action` is empty, `correct`, `reprime`, `lost`,
+`stop`). The report endpoint summarises it; the file is for tuning on the hub Mac.
+
 ## History and home
 
 The hub keeps its own play log in SQLite (`HUB_DATA_DIR/history.sqlite`, retention
@@ -360,6 +488,9 @@ queue per side: `next`/`prev` walk it and now-playing follows.
 | `reconnect_heos` | HEOS adapter back to `connected` |
 | `sonos_regroup` | Toggles Kitchen + Patio between grouped and solo |
 | `link_tidal` / `unlink_tidal` | With `HUB_FAKE_TIDAL=1`: link/unlink the canned Tidal library everywhere at once (hub account and both vendor apps), so `needs_link` and `not_available_on_side` paths can be exercised |
+| `sync_drift` | Pushes the fake Sonos clock 800 ms ahead so the engine must correct |
+| `sync_lose_sonos` | Pauses the fake Sonos side as if from the Sonos app → `lost` |
+| `sync_track_change` | Advances the fake HEOS master to its next queued track → follower re-verify / re-prime |
 | `approve_tidal` | Completes a pending fake link flow immediately. (`POST /api/auth/tidal/start` in fake mode goes `pending` for about a second, then `linked`, so the pending UI can be exercised.) |
 
 Unknown scenario → 404 with the list of valid names.
@@ -398,9 +529,9 @@ revert the optimistic state, and send `resync`.
   "zones":       {"denon-10.0.0.5:main": {"id", "key", "name", "power", "online", "host", "device_id", "player_ids"}},
   "groups":      {"sonos-gRINCON_…": {"id", "vendor", "coordinator_player_id", "member_ids", "name"}},
   "sides":       {"sonos:sonos-gRINCON_…": {"id", "vendor", "coordinator_player_id", "member_ids", "name", "play_state", "volume", "muted", "capabilities"}},
-  "now_playing": {"<side id>": {"title", "artist", "album", "art": {"url", "cache_key", "accent", "accent_is_safe"}, "source", "seekable", "supports_next", "supports_prev", "duration_ms", "track_id"}},
+  "now_playing": {"<side id>": {"title", "artist", "album", "art": {"url", "cache_key", "accent", "accent_is_safe"}, "source", "seekable", "supports_next", "supports_prev", "duration_ms", "track_id", "content_ref": {"service", "kind", "id"} | null}},
   "positions":   {"<side id>": {"position_ms", "reported_at", "confidence"}},
-  "sync":        {"status", "side_ids", "drift_ms", "last_correction_at"},
+  "sync":        {"status", "session_id", "master_side", "follower_side", "content_ref", "title", "drift_ms", "start_delta_ms", "last_correction_at", "corrections", "reason", "started_at"},
   "connections": {"heos": {"state", "last_error", "since"}, "sonos": {...}, "denon": {...}}
 }
 ```

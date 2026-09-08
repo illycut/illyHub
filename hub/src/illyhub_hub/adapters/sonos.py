@@ -16,6 +16,7 @@ Verified only against fakes of the SoCo objects; no physical Sonos player has be
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -34,7 +35,7 @@ from ..state import (
     side_id_for,
 )
 from ..tasks import stop_task
-from .base import Backoff, ContentUnavailableError, PlayableTrack, SonosAdapter
+from .base import Backoff, ContentUnavailableError, PlayableTrack, PrimedQueue, SonosAdapter
 
 SERVICES = ("avTransport", "renderingControl")
 SUBSCRIPTION_TIMEOUT_S = 600
@@ -194,6 +195,17 @@ def tidal_parent_id(album_id: str | None, playlist_id: str | None) -> str:
     if album_id:
         return f"1004206calbum/{album_id}"
     return "10032020"
+
+
+TIDAL_URI_RE = re.compile(r"^x-sonos-http:track/(\d+)\.flac")
+
+
+def tidal_ref_from_uri(uri: str | None) -> ContentRef | None:
+    """Canonical identity of a Sonos Tidal track: ``x-sonos-http:track/{id}.flac?…`` → id."""
+    if not uri:
+        return None
+    m = TIDAL_URI_RE.match(uri)
+    return ContentRef(service="tidal", kind="track", id=m.group(1)) if m else None
 
 
 def build_tidal_didl(track: PlayableTrack, sn: str) -> Any:
@@ -470,6 +482,71 @@ class SoCoAdapter(SonosAdapter):
         self._trackers.pop(side, None)
         self.store.set_position(side, optimistic_position(0))
 
+    async def prime_content(
+        self, player_id: str, ref: ContentRef, tracks: list[PlayableTrack], start_index: int = 0
+    ) -> PrimedQueue:
+        """Sync Play priming: replace the queue, then ``play_from_queue(index, start=False)``,
+        which selects the queue and positions it **without playing**. Returns the queued item's
+        title for verification. **Unverified on hardware** (docs/sync-engine.md)."""
+        if ref.service != "tidal":
+            raise ContentUnavailableError(f"{ref.service} is not playable on Sonos from the hub")
+        sn = self.tidal_sn
+        if not sn:
+            raise ContentUnavailableError("Tidal is not linked in the Sonos app")
+        raw = self._raw(player_id)
+        if not 0 <= start_index < len(tracks):
+            raise IndexError(f"start_index {start_index} out of range for {len(tracks)} tracks")
+
+        def work() -> Any:
+            items = [build_tidal_didl(t, sn) for t in tracks]
+            raw.clear_queue()
+            raw.add_multiple_to_queue(items)
+            raw.play_from_queue(start_index, start=False)
+            try:
+                raw.pause()  # belt and braces: some firmware starts anyway
+            except Exception:  # noqa: BLE001 - pausing an already-stopped transport errors
+                pass
+            queued = raw.get_queue(start_index, 1)
+            return queued[0] if queued else None
+
+        item = await self._run_sync(work)
+        side = side_id_for(self.store.state.players[player_id])
+        self._trackers.pop(side, None)
+        if side in self.store.state.sides:
+            self.store.set_position(side, optimistic_position(0))
+        expected = tracks[start_index]
+        return PrimedQueue(
+            track_id=expected.track_id,
+            title=str(getattr(item, "title", None) or expected.title),
+        )
+
+    async def start_primed(self, player_id: str, start_index: int = 0) -> None:
+        raw = self._raw(player_id)
+        await self._run_sync(raw.play)
+
+    async def snapshot_queue(self, player_id: str) -> Any | None:
+        """SoCo ``Snapshot(device, snapshot_queue=True)`` captures queue, transport and position
+        so a failed Sync Play start can put the room back. **Unverified on hardware.**"""
+        raw = self._raw(player_id)
+
+        def work() -> Any:
+            from soco.snapshot import Snapshot
+
+            snap = Snapshot(raw, snapshot_queue=True)
+            snap.snapshot()
+            return snap
+
+        try:
+            return await self._run_sync(work)
+        except Exception as exc:  # noqa: BLE001 - a missing snapshot only weakens the rollback
+            self.log.warning("sonos queue snapshot failed", extra={"extra": {"error": str(exc)}})
+            return None
+
+    async def restore_queue(self, player_id: str, snapshot: Any) -> None:
+        if snapshot is None:
+            return
+        await self._run_sync(snapshot.restore)
+
     def _sync_pollers(self) -> None:
         """One poller per side whose coordinator is playing; stop the rest."""
         state = self.store.state
@@ -639,6 +716,7 @@ class SoCoAdapter(SonosAdapter):
             supports_prev=not broadcast,
             duration_ms=_hms_to_ms(duration) if duration else None,
             track_id=uri or None,
+            content_ref=tidal_ref_from_uri(uri),
         )
 
     async def _refresh_groups(self, zone: ZoneSnapshot) -> None:

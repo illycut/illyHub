@@ -9,6 +9,7 @@ import { readLastTarget, rememberTargets } from "@/lib/prefs";
 import { refKey } from "@/lib/hub/library";
 import type { PlayRequest } from "@/lib/ui/chrome";
 import type { HubState, Side, Zone } from "@/lib/hub/types";
+import { SYNC_BUTTON, syncButtonLabel, syncEligibility, syncNote, type Eligibility } from "@/lib/sync";
 
 /** Sentence-case status copy (design system §10). Offline is the only tertiary state. */
 export function sideStatus(side: Side, coordinatorOnline: boolean, zones: Zone[]): { text: string; tone: "secondary" | "tertiary" | "signal" } {
@@ -35,7 +36,8 @@ export function unavailableReason(side: Side, play: PlayRequest | null | undefin
  */
 export function initialSelection(play: PlayRequest, state: HubState | null, activeSideId: string | null): string[] {
   const sideIds = Object.keys(state?.sides ?? {});
-  const usable = (id: string) => sideIds.includes(id) && !unavailableReason(state!.sides[id]!, play);
+  const online = (id: string) => state?.players[state.sides[id]!.coordinator_player_id]?.online ?? true;
+  const usable = (id: string) => sideIds.includes(id) && online(id) && !unavailableReason(state!.sides[id]!, play);
   const fromHistory = play.preferred.filter(usable);
   if (fromHistory.length) return fromHistory;
   const remembered = readLastTarget(refKey(play.content_ref))?.filter(usable) ?? [];
@@ -70,9 +72,11 @@ export function ZonePicker({
   open: boolean;
   onClose: () => void;
   play?: PlayRequest | null;
-  onConfirm?: (targets: string[]) => void;
+  /** Play mode: `mode` is "sync" when the button was Sync Play (one HEOS + one Sonos side, Tidal content). */
+  onConfirm?: (targets: string[], mode: Eligibility) => void;
 }) {
   const rows = useHub((s) => zoneRowsForState(s.state));
+  const sides = useHub((s) => s.state?.sides);
   const sideIds = useHub(useShallow((s) => Object.keys(s.state?.sides ?? {})));
   const selected = useHub((s) => s.selectedTargets);
   const setTargets = useHub((s) => s.setTargets);
@@ -114,12 +118,18 @@ export function ZonePicker({
     }
   };
 
-  const confirm = () => {
+  const eligibility: Eligibility = useMemo(
+    () => (play ? syncEligibility(playSel, sides ?? {}, play.content_ref) : { mode: "play", syncReason: null }),
+    [play, playSel, sides],
+  );
+
+  const confirm = (mode: Eligibility = eligibility) => {
     if (!play || playSel.length === 0) return;
     rememberTargets(playSel, refKey(play.content_ref));
     setTargets(playSel);
-    selectSide(playSel[0]!);
-    onConfirm?.(playSel);
+    // Sync Play shows the master (HEOS) in Now Playing; a plain play shows the first target.
+    selectSide(mode.mode === "sync" ? mode.heos[0]! : playSel[0]!);
+    onConfirm?.(playSel, mode);
     onClose();
   };
 
@@ -184,17 +194,64 @@ export function ZonePicker({
         })}
       </ul>
       {rows.length === 0 ? <p className="py-4 text-body text-secondary">No rooms yet. The hub is still discovering players.</p> : null}
-      {playMode ? (
-        <div className="pt-4">
+      {playMode && eligibility.mode === "sync" ? (
+        // Sync Play is the only amber-filled button in the app (design system §6.8): it creates a live audio state.
+        <div className="flex flex-col items-center gap-2 pt-4">
+          <button
+            type="button"
+            className="flex h-target w-full items-center justify-center rounded-control bg-signal text-body font-semibold text-base"
+            onClick={() => confirm()}
+            data-testid="confirm-play"
+            data-mode="sync"
+            aria-describedby="sync-note"
+          >
+            {syncButtonLabel(playSel.length)}
+          </button>
+          <p id="sync-note" className="text-center text-micro text-secondary" data-testid="sync-note">
+            {syncNote(
+              eligibility.heos.map((id) => rows.find((r) => r.side.id === id)?.side.name ?? "another room"),
+              eligibility.sonos.map((id) => rows.find((r) => r.side.id === id)?.side.name ?? "another room"),
+            )}
+            {play!.note ? (
+              <>
+                <br />
+                <span data-testid="sync-offer-note">{play!.note}</span>
+              </>
+            ) : null}
+          </p>
+          {/* Unsynced multi-room play stays one tap away: plain secondary button, 8px below the note. */}
+          <button
+            type="button"
+            className="mt-gap-min flex min-h-target w-full items-center justify-center rounded-control text-body text-secondary"
+            onClick={() => confirm({ mode: "play", syncReason: null })}
+            data-testid="confirm-play-plain"
+          >
+            {playButtonLabel(names)}
+          </button>
+        </div>
+      ) : playMode ? (
+        <div className="flex flex-col gap-2 pt-4">
           <button
             type="button"
             className="flex h-target w-full items-center justify-center rounded-control bg-overlay text-body text-primary disabled:opacity-40"
             disabled={playSel.length === 0}
-            onClick={confirm}
+            onClick={() => confirm()}
             data-testid="confirm-play"
+            data-mode="play"
           >
             {playButtonLabel(names)}
           </button>
+          {eligibility.mode === "play" && eligibility.syncReason ? (
+            // Both vendors selected but the content cannot sync: say why instead of silently falling back.
+            <div className="flex flex-col items-center gap-1">
+              <button type="button" className="flex h-target w-full items-center justify-center rounded-control border border-stroke text-body text-secondary" disabled aria-disabled="true" data-testid="sync-play-disabled">
+                {SYNC_BUTTON}
+              </button>
+              <p className="text-micro text-tertiary" data-testid="sync-reason">
+                {eligibility.syncReason}
+              </p>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </Sheet>
