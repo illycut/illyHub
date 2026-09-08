@@ -1,10 +1,24 @@
 # Product Requirements Document
 ## Multi-Room Audio Control App (HEOS + Sonos)
 
-**Version:** 1.0 Final
+**Version:** 1.2
 **Owner:** James
-**Date:** September 7, 2026
-**Status:** Approved for build
+**Date:** September 8, 2026
+**Status:** Phases 0-6 built; hub running on the LAN
+
+---
+
+## Revision history
+
+| Version | Date | Change |
+|---------|------|--------|
+| 1.0 | Sept 7, 2026 | Approved for build. |
+| 1.1 | — | Never issued. The `docs/prd-review.md` changes were adopted in the build plan and the backlog but not folded back into this document; 1.2 does that. |
+| 1.2 | Sept 8, 2026 | Corrects this document against what the hardware actually does. The hub now runs on the LAN against a Denon AVR-X3400H and a Sonos Amp, and three architectural claims here did not survive that: the Denon HTTP control API, HEOS volume on an AVR, and the LaunchAgent deployment model. Also folds in the adopted review items. Every change is marked **[1.2]** in place, and `ops/RUNBOOK.md` section 5 holds the raw verification log. |
+
+**How to read this document.** Requirement IDs are stable; do not renumber them. Where hardware
+contradicted an earlier assumption, the original claim is struck rather than deleted, so a
+reader can see what was believed and why it changed.
 
 ---
 
@@ -88,6 +102,24 @@ Household members controlling music playback. Technical setup and maintenance ha
 | VOL-2 | Linked "both" master slider moving all volumes proportionally | P1 |
 | VOL-3 | Mute toggle per device | P1 |
 
+**Notes [1.2]:**
+- **An AVR-hosted HEOS player has no volume of its own.** `heos://player/set_volume` returns
+  `success` and applies nothing, and `get_volume` reports `0` regardless of the receiver's real
+  `MV` (verified on an AVR-X3400H, firmware 3.139.173). VOL-1 and VOL-3 for that player route to
+  the amplifier zone over the Denon link, and the zone's level mirrors onto the player so the UI
+  has one truthful number. A hub that trusted the HEOS values would show a dead slider.
+- **An amplifier zone is a volume target in its own right.** A zone driving an external amp owns
+  no player, so `POST /api/volume` and `/api/mute` accept a zone id as well as a player or side.
+- **Not every zone can be attenuated.** A zone wired as a fixed pre-out to an external amp
+  reports `supports_volume: false` / `supports_mute: false`, and the hub refuses the command
+  (`unsupported_action`) rather than sending one the hardware ignores. The client must hide the
+  slider on those zones. Zone 2 in the owner's install is one; the HEOS app likewise offers it
+  as power-only.
+- **The hub scale is coarser than the receiver's.** Hub `0-100` maps onto `MV 0-HUB_DENON_MAX_VOLUME`
+  (default 60, so 61 steps), capped deliberately because `MV98` is +18 dB. A slider will settle a
+  point or two from where it was dropped; VOL-2 records the settled level, not the request, so
+  quantisation is not mistaken for someone turning the knob.
+
 ### 3.4 Now Playing
 
 | ID | Requirement | Priority |
@@ -139,7 +171,23 @@ Household members controlling music playback. Technical setup and maintenance ha
 | ZON-3 | Zone status display (on/off/playing) | P1 |
 
 **Notes:**
-- Denon power/zone control uses the legacy telnet/HTTP API on port 23 (`ZMON`/`ZMOFF`, `Z2ON`/`Z2OFF`), not the HEOS CLI, which handles power poorly.
+- Denon power/zone control uses the legacy telnet API on port 23 (`ZMON`/`ZMOFF`, `Z2ON`/`Z2OFF`), not the HEOS CLI, which handles power poorly.
+
+**Notes [1.2] — what the hardware forced:**
+- **The HTTP form API is gone on current firmware.** `/goform/formiPhoneAppDirect.xml`,
+  `formMainZone_MainZoneXml.xml`, `Deviceinfo.xml` and `AppCommand.xml` all return **403** on an
+  AVR-X3400H running 3.139.173 (it serves nginx on 80/443 and redirects 80 to 443). Telnet is the
+  only control path there. This reverses `docs/prd-review.md` 2.3, which recommended HTTP for
+  commands and telnet only for event streaming; the hub now probes HTTP at connect and uses it
+  only if the receiver actually answers, so older models still work.
+- **Zone power has cross-zone side effects.** `Z2OFF` dropped the whole unit to `PWSTANDBY` and
+  took the main zone with it, when main was the only other zone on. Every power command reads
+  `PW?`/`ZM?`/`Z2?` back instead of writing an optimistic value; ZON-3 status must come from that
+  read-back.
+- **Telnet is single-client**, so the hub holds one connection for both commands and the status
+  stream. A vendor app or a Home Assistant holding port 23 locks the hub out; that surfaces as a
+  refused connection and is retried with backoff.
+- **ZON-1 is per-zone, not per-player.** A zone with a fixed pre-out is power-only (see 3.3).
 
 ---
 
@@ -209,9 +257,13 @@ Household members controlling music playback. Technical setup and maintenance ha
 - Connects to hub WebSocket for state, REST for commands
 - Distribution: PWA served by the hub itself (add to home screen) — zero app-store friction. React Native as a later option if native scrub feel demands it.
 
-### 4.5 API Contract (sketch)
+### 4.5 API Contract
 
-**REST (commands):**
+**[1.2] `docs/api.md` is the contract.** It is generated against the built hub and covers every
+endpoint, the ack and error envelopes, the art object and the WebSocket messages. The live
+OpenAPI document is at `/openapi.json` on the running hub. The sketch below is kept only as the
+shape of the thing; where the two disagree, `docs/api.md` wins.
+
 ```
 GET  /api/devices                      # all discovered players + zones
 GET  /api/browse/{service}/{path}      # library navigation
@@ -219,16 +271,24 @@ POST /api/play                         # {target, content_ref}
 POST /api/transport/{action}           # play|pause|next|prev|skip±15
 POST /api/seek                         # {target, position_ms}
 POST /api/volume                       # {target, level} | {linked: true, delta}
+POST /api/mute                         # {target, muted}
 POST /api/sync/play                    # {content_ref} → dual resolution + start
-POST /api/zone/power                   # {zone, on|off}
+POST /api/zone/power                   # {zone_id, on}
 GET  /api/art/{cache_key}              # proxied artwork
 ```
 
+**[1.2] Contract change for the client:** `POST /api/volume` and `POST /api/mute` now accept an
+**amplifier zone id** as `target`, alongside a player id, a side id and `"all"`. This exists
+because a zone driving an external amp owns no player and was otherwise unaddressable. `Zone`
+gained `volume`, `muted`, `supports_volume` and `supports_mute`; a client must read those flags
+and hide the control rather than offer one the hardware ignores. See 3.3 and `docs/api.md`
+"Concepts" and "Command endpoints".
+
 **WebSocket (state push):**
 ```
-{type: "state", devices: [...], now_playing: {...}, positions: {...}, sync: {...}}
+{type: "snapshot", state: {...}}   then   {type: "delta", ...}
 ```
-Full-state snapshots on connect, deltas thereafter.
+Full-state snapshot on connect, deltas thereafter, plus `ack` messages carrying command outcomes.
 
 ---
 
@@ -241,9 +301,9 @@ Full-state snapshots on connect, deltas thereafter.
 | HEOS | `pyheos` | Battle-tested (powers Home Assistant HEOS integration) |
 | Sonos | `SoCo` | Mature, full UPnP + MusicService coverage |
 | YT Music | `ytmusicapi` | Unofficial but stable library access |
-| Denon power | Raw telnet (asyncio) | Trivial protocol, no dependency needed |
-| Client | Next.js PWA (TypeScript/React) | Matches existing stack; served from hub or Vercel; installable |
-| Process supervision | `launchd` LaunchAgent, `KeepAlive=true` | Native macOS, restarts on crash, starts on boot |
+| Denon power **and volume** | Raw telnet (asyncio), port 23 | **[1.2]** Trivial protocol, no dependency. Now the primary control path: current firmware 403s the HTTP form API, and HEOS cannot set volume on an AVR (see 3.3, 3.6) |
+| Client | Next.js PWA (TypeScript/React) | Matches existing stack; served from hub or Vercel; installable. **[1.2]** Needs Node 20+ to build (`next` 16, `react` 19); `app/package.json` declares `engines.node >=20.9` with `engine-strict` so a stale Node fails loudly |
+| Process supervision | **`launchd` LaunchDaemon (root, system context)**, `KeepAlive=true` | **[1.2]** Was a user LaunchAgent. macOS Sequoia's Local Network gate denies LAN access to an agent, and to a daemon with `UserName` set, with no way to grant it; only the system context reaches the LAN. Upside: starts at boot with no login, so FileVault stays on (see 6.2) |
 | Remote access | Tailscale | Zero port-forwarding, secure by default |
 
 ---
@@ -258,19 +318,37 @@ Full-state snapshots on connect, deltas thereafter.
 
 ### 6.2 macOS Configuration
 - [ ] System Settings → Energy: prevent sleep when display off; start up automatically after power failure; wake for network access
-- [ ] `caffeinate -s` in the LaunchAgent (or Amphetamine) as sleep insurance
+- [ ] `caffeinate -s` in the LaunchDaemon (or Amphetamine) as sleep insurance
 - [ ] Static IP or DHCP reservation for the hub
 - [ ] DHCP reservations for all HEOS/Sonos/Denon devices (stable addressing survives discovery hiccups)
 - [ ] Enable SSH + Screen Sharing (headless administration)
 - [ ] Install Tailscale; verify client reachability
-- [ ] Auto-login enabled (required for LaunchAgent + AirPlay bridge in user session)
+- [x] ~~Auto-login enabled (required for LaunchAgent + AirPlay bridge in user session)~~
+      **[1.2] Not needed, and FileVault can stay ON.** The hub is a root LaunchDaemon and starts
+      at boot with nobody logged in. This retires the "FileVault and auto-login are mutually
+      exclusive" trade-off in `docs/prd-review.md` 5 for everything except the Phase 7 AirPlay
+      bridge, which does need a user session and should carry its own helper rather than
+      weakening disk encryption for the whole machine.
 - [ ] Confirm AirPlay 2 multi-output works manually before scripting it (Music app → output to both systems)
+- [ ] **[1.2]** Clone the repo somewhere a launchd job can read it: **not** `~/Documents`,
+      `~/Desktop` or `~/Downloads`. Those are TCC-protected, a daemon has no consent grant, and
+      the hub then hangs with nothing in any log. `~/illyHub` is fine; `ops/install.sh` refuses
+      the protected paths.
 
 ### 6.3 Service Deployment
-- [ ] Python via `uv` or pyenv; project virtualenv
-- [ ] LaunchAgent plist: `KeepAlive`, `RunAtLoad`, stdout/stderr to rotating logs
+- [ ] Python via `uv`; project virtualenv. `uv` installs without Homebrew:
+      `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- [ ] **[1.2] LaunchDaemon** plist in `/Library/LaunchDaemons`, running as root:
+      `KeepAlive`, `RunAtLoad`, stdout/stderr to rotating logs. `ops/install.sh` installs it and
+      retires any older user agent. A user LaunchAgent cannot reach the LAN (see 5).
+- [ ] **[1.2] `HUB_DATA_DIR` must be an absolute path outside the repo** (`/usr/local/var/illyhub`,
+      mode 0700, `vault.key` 0600). As root the hub would otherwise leave root-owned files through
+      the checkout and break running the hub or the tests as yourself.
 - [ ] Log rotation (`newsyslog` or app-level)
 - [ ] Health endpoint (`GET /api/health`) + optional uptime ping
+- [ ] **[1.2] Intel-Mac dependency constraints** (see `ops/RUNBOOK.md` 3b): `cryptography` is
+      pinned `<43` because 43+ publishes arm64-only macOS wheels and the hub Mac is Intel;
+      Node 20+ is required to build the PWA.
 
 ### 6.4 OS Lifecycle Note
 Intel Macs end OS support after macOS Tahoe, with security updates for a few years beyond — roughly end-of-decade safe service life for a LAN-only hub behind Tailscale. Plan eventual migration to a Mac mini; the hub is a portable Python service, so migration is copy + relink LaunchAgent.
@@ -288,6 +366,22 @@ Intel Macs end OS support after macOS Tahoe, with security updates for a few yea
 7. **Track boundaries:** on track change, re-verify both systems advanced to the same track; re-prime if diverged.
 
 **Known limits:** correction granularity is bounded by seek precision (~100–500ms on these platforms). Same-room listening will exhibit audible artifacts; positioning in UI as multi-room feature. Long-session clock drift is expected and handled by the monitor loop.
+
+**[1.2] Measured on the hardware.** Three numbers from the first LAN run bear directly on steps
+3 to 6, all in `ops/RUNBOOK.md` 5:
+
+- **Position reports are whole-second and drift against the wall clock.** A Sonos Amp held
+  `1:33:01` for two consecutive samples, then moved `1:33:04 → 1:33:06`. This confirms
+  `docs/prd-review.md` 1.2: the 300 ms threshold in step 6 cannot be read off raw position
+  deltas. The hub timestamps tick edges and interpolates, and `Position.confidence` reports how
+  tight the estimate is; step 5 must compare interpolated estimates, never two reported seconds.
+- **Command acknowledgement is not a usable clock.** A play took 1.7-1.9 s to confirm in hub
+  state while a pause took 0.21 s, because both vendors emit a transitional state for about a
+  second while a stream buffers (Sonos `TRANSITIONING`, HEOS `state=unknown`). Step 3's latency
+  estimate must come from position observations, not from when a state change lands.
+- **Seek works on a YouTube Music HLS stream** (`x-sonosapi-hls-static`, `sid=284`) and restored
+  an exact position, so step 6's correction mechanism is available on YT Music content on the
+  Sonos side, not only on Tidal.
 
 ---
 
@@ -334,6 +428,16 @@ Intel Macs end OS support after macOS Tahoe, with security updates for a few yea
 
 Phases 0–2 are the de-risking core: all-native APIs, no service auth complexity. Everything after is additive.
 
+**[1.2] Status.** Phases 0-6 are built and their tests pass. The hub runs on the LAN as a root
+LaunchDaemon and sees the real HEOS, Sonos and Denon devices. What is verified against hardware
+versus still only against the protocol fakes is tracked in `ops/RUNBOOK.md` 5, not here, so the
+list stays current. Verified so far: discovery, Sonos transport and seek, hub state following a
+device change over UPnP events, Denon zone power, and per-zone volume and mute end to end
+through REST. Not yet exercised on hardware: Sync Play (Phase 4), Pandora browse and play
+(Phase 5), YouTube Music (Phase 6), and the two Phase 0 gates ai-dev #9 and #10. The PWA is not
+built on the hub Mac yet (`/api/health` reports `static.app: false`), so the API is running
+without a UI in front of it.
+
 ---
 
 ## 9. Risks & Mitigations
@@ -348,6 +452,10 @@ Phases 0–2 are the de-risking core: all-native APIs, no service auth complexit
 | MacBook battery swelling (age) | Medium | Medium | Periodic physical check; battery pull as option |
 | AppleScript AirPlay automation fragility | High | Low | P2/experimental; manual AirPlay flow always available |
 | Multicast blocked by network gear | Low | High | Flat LAN requirement documented; IGMP snooping config note |
+| **[1.2]** macOS gates LAN access from background processes | **Realised** | High | Sequoia's Local Network permission denies a user LaunchAgent and a `UserName` daemon with no way to grant it. Mitigation in place: root LaunchDaemon in the system context. A future macOS could close that too, in which case the hub needs a logged-in session or a signed, notarised app bundle |
+| **[1.2]** Tidal concurrent-stream limit breaks Sync Play | Unknown | High | The gap `docs/prd-review.md` 1.1 flagged, still untested (ai-dev #9). Note the accounts differ per ecosystem in this install (HEOS Tidal is one account; Sonos was playing YouTube Music), so the limit may not bite here. Fallback remains a second Tidal account, one per ecosystem |
+| **[1.2]** Vendor firmware removes a local control API | **Realised** | Med | The Denon HTTP form API now 403s on current firmware; telnet still works and is the primary path. The hub probes at connect and degrades rather than assuming. Same class of risk as the HEOS CLI row above, but already realised once |
+| **[1.2]** Dependency wheels drop Intel macOS | **Realised** | Med | `cryptography` 43+ is arm64-only on macOS and broke `uv sync` on the Intel hub Mac. Pinned `<43`. Expect this to recur as more wheels go arm64-only; the long-term fix is the Mac mini migration in 6.4 |
 
 ---
 
@@ -368,3 +476,18 @@ Phases 0–2 are the de-risking core: all-native APIs, no service auth complexit
 4. **Recents behavior:** tapping a Recently Played card always opens the target picker before playing, with the last-used target pre-highlighted so the common case stays two fast taps.
 5. **Art cache:** disk-backed with 30-day TTL, keyed by service + content ID; pre-blurred backdrop variants cached alongside.
 6. **Multi-user auth:** none in v1. Trusted LAN plus Tailscale is the security boundary.
+7. **[1.2] Deployment model:** root LaunchDaemon in the system context. Not a preference — it is
+   the only context macOS Sequoia grants LAN access to (see 5). FileVault stays on and auto-login
+   is retired.
+8. **[1.2] Amplifier zones own their volume.** Where a HEOS player is hosted by an AVR, the
+   amplifier zone is the authority for level and mute and the zone value mirrors onto the player.
+   HEOS's own volume surface is not trustworthy on such a player.
+9. **[1.2] Zone volume capability is declared, not assumed.** A zone wired as a fixed pre-out
+   reports `supports_volume: false` and the hub refuses the command. The client hides the control.
+   Matching the vendor app's own affordances is the deciding test: the HEOS app offers the
+   owner's Zone 2 as power-only.
+10. **[1.2] Credential vault stays a Fernet file, not macOS Keychain.** Keychain was considered to
+    drop the `cryptography` dependency, but the login keychain is locked when nobody is logged in
+    — which is the hub's normal state — and the tests plus Linux CI cannot use Keychain, so a
+    second backend would be needed anyway. The Fernet key lives beside the ciphertext, so
+    directory permissions (0700/0600) do the real work, with FileVault underneath.

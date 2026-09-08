@@ -3691,9 +3691,31 @@
       "title": "Power",
       "default": false
      },
+     "volume": {
+      "type": "integer",
+      "maximum": 100.0,
+      "minimum": 0.0,
+      "title": "Volume",
+      "default": 0
+     },
+     "muted": {
+      "type": "boolean",
+      "title": "Muted",
+      "default": false
+     },
      "online": {
       "type": "boolean",
       "title": "Online",
+      "default": true
+     },
+     "supports_volume": {
+      "type": "boolean",
+      "title": "Supports Volume",
+      "default": true
+     },
+     "supports_mute": {
+      "type": "boolean",
+      "title": "Supports Mute",
       "default": true
      },
      "host": {

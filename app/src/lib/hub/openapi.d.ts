@@ -1626,10 +1626,30 @@ export interface components {
              */
             power: boolean;
             /**
+             * Volume
+             * @default 0
+             */
+            volume: number;
+            /**
+             * Muted
+             * @default false
+             */
+            muted: boolean;
+            /**
              * Online
              * @default true
              */
             online: boolean;
+            /**
+             * Supports Volume
+             * @default true
+             */
+            supports_volume: boolean;
+            /**
+             * Supports Mute
+             * @default true
+             */
+            supports_mute: boolean;
             /** Host */
             host?: string | null;
             /** Device Id */
