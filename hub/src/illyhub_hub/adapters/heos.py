@@ -97,6 +97,25 @@ def default_heos_factory(host: str, settings: Settings) -> HeosClient:  # pragma
     )
 
 
+# HEOS wraps a service's own ids in its browse hierarchy rather than accepting them bare.
+# Verified on a Denon AVR-X3400H against its live Tidal library (sid 10):
+#
+#   album     "Awaken, My Love!"    -> LIBALBUM-390695104
+#   playlist  "1995 Hip-Hop Hits"   -> LIBPLAYLIST-045e426d-4ce9-44ae-8cff-6fbf20916e50
+#   artist    "Beatrice Verdi"      -> LIBARTIST-7018022
+#
+# The suffix is exactly the Tidal id the hub already holds, so no browse is needed at play time.
+# Sending the bare id (what this adapter did) is refused with HEOS error 14, "Media can't be
+# played" -- which is what "Tidal won't play on the amp" was. docs/spikes/tidal-refs.md guessed
+# the bare id and said so; this replaces the guess.
+HEOS_CONTAINER_PREFIX = {"album": "LIBALBUM-", "playlist": "LIBPLAYLIST-", "artist": "LIBARTIST-"}
+
+
+def heos_container_id(kind: str, content_id: str) -> str:
+    """HEOS ``cid`` for a service container. Unknown kinds pass through unchanged."""
+    return f"{HEOS_CONTAINER_PREFIX.get(kind, '')}{content_id}"
+
+
 def player_id(pid: int | str) -> str:
     return f"heos-{pid}"
 
@@ -243,8 +262,9 @@ class PyHeosAdapter(HeosAdapter):
     ) -> None:
         """Replace-and-play via ``browse/add_to_queue`` (HEOS CLI 4.4.11/4.4.12).
 
-        Tidal on HEOS is source id 10; container ids for Tidal albums/playlists and media ids for
-        tracks are the Tidal ids (see docs/spikes/tidal-refs.md — **unverified on hardware**).
+        Tidal on HEOS is source id 10. Container ids are the Tidal id behind a HEOS prefix
+        (``LIBALBUM-``/``LIBPLAYLIST-``, see :func:`heos_container_id`); media ids for tracks are
+        the bare Tidal id. Verified on an AVR-X3400H.
         Starting mid-list uses ``player/play_queue`` after the container loads.
         """
         if not self.service_linked(ref.service):
@@ -259,10 +279,10 @@ class PyHeosAdapter(HeosAdapter):
         replace = AddCriteriaType.REPLACE_AND_PLAY
         if ref.kind == "track":
             track = tracks[start_index]
-            cid = track.album_id or ""
+            cid = heos_container_id("album", track.album_id) if track.album_id else ""
             await raw.add_to_queue(sid, cid, media_id=ref.id, add_criteria=replace)
             return
-        await raw.add_to_queue(sid, ref.id, add_criteria=replace)
+        await raw.add_to_queue(sid, heos_container_id(ref.kind, ref.id), add_criteria=replace)
         if start_index > 0:
             play_queue = getattr(raw, "play_queue", None)
             if play_queue is None:
@@ -395,12 +415,12 @@ class PyHeosAdapter(HeosAdapter):
         await clear_queue()
         if ref.kind == "track":
             track = tracks[start_index]
-            await raw.add_to_queue(
-                sid, track.album_id or "", media_id=ref.id, add_criteria=add_to_end
-            )
+            cid = heos_container_id("album", track.album_id) if track.album_id else ""
+            await raw.add_to_queue(sid, cid, media_id=ref.id, add_criteria=add_to_end)
             needed = 1
         else:
-            await raw.add_to_queue(sid, ref.id, add_criteria=add_to_end)
+            cid = heos_container_id(ref.kind, ref.id)
+            await raw.add_to_queue(sid, cid, add_criteria=add_to_end)
             needed = start_index + 1
         items = await self._wait_for_queue(raw, needed)
         item = items[needed - 1]

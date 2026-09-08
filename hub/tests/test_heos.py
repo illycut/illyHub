@@ -504,7 +504,7 @@ async def test_play_content_uses_add_to_queue_and_music_sources(
         ]
         album = ContentRef(service="tidal", kind="album", id="101")
         await a.play_content("heos-1", album, tracks, start_index=0)
-        assert queue_calls == [(10, "101", None, 4)] and play_queue_calls == []
+        assert queue_calls == [(10, "LIBALBUM-101", None, 4)] and play_queue_calls == []
         # start_index waits for the queue to contain enough items before play_queue.
         await a.play_content("heos-1", album, tracks, start_index=2)
         assert play_queue_calls == [3]  # HEOS queue ids are 1-based; items carry none here
@@ -512,7 +512,7 @@ async def test_play_content_uses_add_to_queue_and_music_sources(
         await a.play_content(
             "heos-1", ContentRef(service="tidal", kind="track", id="10102"), tracks, 1
         )
-        assert queue_calls[-1] == (10, "101", "10102", 4)
+        assert queue_calls[-1] == (10, "LIBALBUM-101", "10102", 4)
         with pytest.raises(IndexError):
             await a.play_content("heos-1", album, tracks, 9)
         sources[10].available = False
@@ -641,7 +641,7 @@ async def test_prime_content_loads_without_playing_and_start_primed_plays_queue(
         album = ContentRef(service="tidal", kind="album", id="101")
         primed = await a.prime_content("heos-1", album, tracks, start_index=2)
         assert primed.track_id == "10103" and primed.title == "S3"
-        assert calls[:2] == [("clear_queue", ()), ("add_to_queue", (10, "101", None, 3))]
+        assert calls[:2] == [("clear_queue", ()), ("add_to_queue", (10, "LIBALBUM-101", None, 3))]
         assert not any(c[0] == "play_queue" for c in calls)  # nothing started
         await a.start_primed("heos-1", 2)
         assert calls[-1] == ("play_queue", (13,))  # the item's own queue id, not index + 1
@@ -650,7 +650,7 @@ async def test_prime_content_loads_without_playing_and_start_primed_plays_queue(
             "heos-1", ContentRef(service="tidal", kind="track", id="10102"), tracks, 1
         )
         assert primed.track_id == "10101" or primed.title  # whatever sits first in the queue
-        assert calls[-1] == ("add_to_queue", (10, "101", "10102", 3))
+        assert calls[-1] == ("add_to_queue", (10, "LIBALBUM-101", "10102", 3))
         with pytest.raises(IndexError):
             await a.prime_content("heos-1", album, tracks, 9)
         # a client without clear_queue / play_queue cannot prime or start
@@ -924,3 +924,26 @@ async def test_transient_state_report_holds_the_known_play_state(
     raw.fire(heos_mod.EVENT_PLAYER_STATE_CHANGED)
     assert store.state.players["heos-1"].play_state == "pause"
     await a.disconnect()
+
+
+def test_heos_container_ids_wrap_the_service_id() -> None:
+    """HEOS refuses a service's bare id; the container id carries a HEOS prefix.
+
+    Verified against a Denon AVR-X3400H's live Tidal library, and the failure is not subtle:
+
+        cid=390695104            -> fail, eid=14 "cannot play"
+        cid=LIBALBUM-390695104   -> success, 11 tracks queued
+
+    which is exactly why "Tidal won't play on the amp". docs/spikes/tidal-refs.md had guessed the
+    bare id and flagged it unverified.
+    """
+    assert heos_mod.heos_container_id("album", "390695104") == "LIBALBUM-390695104"
+    assert (
+        heos_mod.heos_container_id("playlist", "045e426d-4ce9-44ae-8cff-6fbf20916e50")
+        == "LIBPLAYLIST-045e426d-4ce9-44ae-8cff-6fbf20916e50"
+    )
+    assert heos_mod.heos_container_id("artist", "7018022") == "LIBARTIST-7018022"
+    # A track is addressed by media id inside its album container, so it needs no prefix of its
+    # own; an unknown kind passes through rather than inventing one.
+    assert heos_mod.heos_container_id("track", "10101") == "10101"
+    assert heos_mod.heos_container_id("station", "s1") == "s1"

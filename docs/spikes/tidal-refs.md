@@ -73,3 +73,39 @@ source id 10 as `available`.
 - [ ] A playlist on each side.
 - [ ] Concurrent-stream test (ai-dev #9): does either side pause when the other starts?
 - [ ] Record `sn`, `flags`, and any id mapping needed above; update this file and the adapters.
+
+---
+
+## HEOS container ids: resolved on hardware (September 8, 2026)
+
+This spike (ai-dev #10) assumed a Tidal id could be used directly as a HEOS ``cid``. It cannot.
+Browsing an AVR-X3400H's Tidal source (sid 10) shows HEOS wrapping the service's ids in its own
+browse hierarchy:
+
+| Kind | HEOS container id | Example |
+|---|---|---|
+| Album | ``LIBALBUM-<tidal album id>`` | ``LIBALBUM-390695104`` ("Awaken, My Love!") |
+| Playlist | ``LIBPLAYLIST-<tidal playlist uuid>`` | ``LIBPLAYLIST-045e426d-4ce9-44ae-8cff-6fbf20916e50`` |
+| Artist | ``LIBARTIST-<tidal artist id>`` | ``LIBARTIST-7018022`` |
+
+Tracks keep the bare Tidal id as the ``mid`` inside the album container.
+
+The suffix is exactly the id the hub already holds, so the mapping is a prefix and needs no
+browse at play time. Sending the bare id fails loudly:
+
+```
+cid=390695104            -> fail    eid=14&text=cannot play
+cid=LIBALBUM-390695104   -> success 11 tracks queued
+```
+
+Browse notes for anyone extending this:
+
+- The CLI wants container ids **unencoded** on the wire. ``cid=My%20Music`` is accepted but
+  silently returns the root listing instead of the child, which reads like a broken hierarchy.
+- The hierarchy is ``My Music`` -> ``My Music-Albums`` / ``My Music-Playlists`` -> and playlists
+  split again into ``My Music-Playlists-Created by me`` and ``-Favorited``. Top-level
+  ``Playlists`` is Tidal's curated genres, not the user's.
+- ``browse/get_search_criteria?sid=10`` offers Artist (1), Album (2), Track (3), Playlist (6),
+  which is the fallback if a future id ever needs looking up by name.
+- Validate a container with ``add_to_queue`` and ``aid=3`` (add to end): it proves the id without
+  starting playback. Remove what it added with ``player/remove_from_queue``.
